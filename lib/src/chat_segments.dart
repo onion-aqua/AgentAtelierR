@@ -1,5 +1,6 @@
 import 'app_controller.dart';
 import 'character_expression.dart';
+import 'character_performance.dart';
 
 enum ChatSpeaker { narrator, ryza }
 
@@ -14,6 +15,14 @@ final RegExp _speakerPrefix = RegExp(r'^\s*(旁白|莱莎)\s*[：:]\s*', multiLi
 final RegExp _fishCue = RegExp(r'\[[^\[\]\r\n]+\]');
 final RegExp _faceCue = RegExp(
   r'\[face\s*:\s*([^\[\]\r\n]+)\]',
+  caseSensitive: false,
+);
+final RegExp _actionCue = RegExp(
+  r'\[action\s*:\s*([^\[\]\r\n]+)\]',
+  caseSensitive: false,
+);
+final RegExp _appCue = RegExp(
+  r'\[(?:face|action)\s*:\s*[^\[\]\r\n]+\]',
   caseSensitive: false,
 );
 final RegExp _leadingFishCue = RegExp(
@@ -59,20 +68,93 @@ String fishEmotionForMood(CharacterMood mood) => switch (mood) {
 };
 
 String ensureFishEmotionCue(String text, CharacterMood fallbackMood) {
-  final trimmed = text.replaceAll(_faceCue, '').trim();
+  final trimmed = text.replaceAll(_appCue, '').trim();
   if (trimmed.isEmpty || _leadingFishCue.hasMatch(trimmed)) return trimmed;
   return '${fishEmotionForMood(fallbackMood)} $trimmed';
 }
 
-CharacterExpression expressionForAssistantResponse(String response) {
-  var expression = CharacterExpression.neutral;
+class CharacterPerformanceCue {
+  const CharacterPerformanceCue({
+    this.expression,
+    this.action,
+    this.actionCueCount = 0,
+  });
+
+  final CharacterExpression? expression;
+  final CharacterAction? action;
+  final int actionCueCount;
+
+  bool get isEmpty => expression == null && action == null;
+}
+
+class RyzaPerformanceSegment {
+  const RyzaPerformanceSegment({
+    required this.speechText,
+    this.expression,
+    this.action,
+  });
+
+  final String speechText;
+  final CharacterExpression? expression;
+  final CharacterAction? action;
+}
+
+List<RyzaPerformanceSegment> performanceSegmentsForAssistantResponse(
+  String response, {
+  required CharacterMood fallbackMood,
+}) {
+  final result = <RyzaPerformanceSegment>[];
+  for (final segment in parseAssistantSegments(response)) {
+    if (segment.speaker != ChatSpeaker.ryza) continue;
+    CharacterExpression? expression;
+    CharacterAction? action;
+    final faceMatches = _faceCue.allMatches(segment.text);
+    for (final match in faceMatches) {
+      expression = characterExpressionFromTag(match.group(1) ?? '');
+    }
+    final actionMatches = _actionCue.allMatches(segment.text);
+    for (final match in actionMatches) {
+      final parsed = characterActionFromTag(match.group(1) ?? '');
+      if (parsed != CharacterAction.none) action = parsed;
+    }
+    final speechText = ensureFishEmotionCue(segment.text, fallbackMood);
+    if (speechText.isEmpty) continue;
+    result.add(
+      RyzaPerformanceSegment(
+        speechText: speechText,
+        expression: expression,
+        action: action,
+      ),
+    );
+  }
+  return result;
+}
+
+CharacterPerformanceCue performanceCueForAssistantResponse(String response) {
+  CharacterExpression? expression;
+  CharacterAction? action;
+  var actionCueCount = 0;
   for (final segment in parseAssistantSegments(response)) {
     if (segment.speaker != ChatSpeaker.ryza) continue;
     for (final match in _faceCue.allMatches(segment.text)) {
       expression = characterExpressionFromTag(match.group(1) ?? '');
     }
+    for (final match in _actionCue.allMatches(segment.text)) {
+      actionCueCount += 1;
+      final parsed = characterActionFromTag(match.group(1) ?? '');
+      if (parsed != CharacterAction.none) action = parsed;
+    }
   }
-  return expression;
+  return CharacterPerformanceCue(
+    expression: expression,
+    action: action,
+    actionCueCount: actionCueCount,
+  );
+}
+
+CharacterExpression expressionForAssistantResponse(String response) {
+  return performanceCueForAssistantResponse(response).expression ??
+      CharacterExpression.neutral;
 }
 
 String ttsTextForAssistantResponse(
@@ -102,4 +184,11 @@ String displayTextForAssistantResponse(String response) {
       })
       .where((line) => line.isNotEmpty)
       .join('\n');
+}
+
+String conversationTextForAssistantResponse(
+  String response, {
+  required bool showRawOutput,
+}) {
+  return showRawOutput ? response : displayTextForAssistantResponse(response);
 }

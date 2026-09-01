@@ -1,6 +1,9 @@
 import 'dart:convert';
+import 'dart:math';
 
 import 'package:flutter/services.dart';
+
+import 'character_expression.dart';
 
 class CharacterAppearance {
   const CharacterAppearance({
@@ -136,12 +139,47 @@ Future<List<CharacterMotionGroup>> loadCharacterMotionGroups(
   CharacterAppearance appearance,
 ) async {
   final source = await rootBundle.loadString(appearance.gestureAsset);
+  return parseCharacterMotionGroups(source);
+}
+
+List<CharacterMotionGroup> parseCharacterMotionGroups(String source) {
   final json = jsonDecode(source) as Map<String, dynamic>;
   final emotionalGesture = json['emotionalGesture'] as Map<String, dynamic>;
   final groups = emotionalGesture['MotionGroups'] as List<dynamic>;
+  final weightsByGroup = <String, Map<CharacterExpression, double>>{};
+  final profiles = emotionalGesture['EmotionProfilesV4'];
+  if (profiles is Map<String, dynamic>) {
+    for (final profileEntry in profiles.entries) {
+      final expression = characterExpressionFromTag(profileEntry.key);
+      final profile = profileEntry.value;
+      if (profile is! Map<String, dynamic>) continue;
+      final intensityProfiles = profile['intensityProfiles'];
+      if (intensityProfiles is! Map<String, dynamic>) continue;
+      final normal = intensityProfiles['normal'];
+      if (normal is! Map<String, dynamic>) continue;
+      Object? rawWeights = normal['armGroupWeights'];
+      if (rawWeights == null) {
+        final byPose = normal['armGroupWeightsByPoseType'];
+        if (byPose is Map<String, dynamic>) rawWeights = byPose[''];
+      }
+      if (rawWeights is! Map<String, dynamic>) continue;
+      for (final weightEntry in rawWeights.entries) {
+        final weight = (weightEntry.value as num?)?.toDouble() ?? 0;
+        if (weight <= 0) continue;
+        weightsByGroup.putIfAbsent(weightEntry.key, () => {})[expression] =
+            weight;
+      }
+    }
+  }
   return groups
       .whereType<Map<String, dynamic>>()
-      .map(CharacterMotionGroup.fromJson)
+      .map(
+        (group) => CharacterMotionGroup.fromJson(
+          group,
+          emotionWeights:
+              weightsByGroup[group['GroupId'] as String? ?? ''] ?? const {},
+        ),
+      )
       .where((group) => group.animation1.isNotEmpty)
       .toList(growable: false);
 }
@@ -158,6 +196,8 @@ class CharacterMotionGroup {
     required this.speed1,
     required this.speed2,
     required this.blendTime,
+    required this.applicablePoseIds,
+    this.emotionWeights = const {},
   });
 
   final String id;
@@ -170,6 +210,13 @@ class CharacterMotionGroup {
   final double speed1;
   final double speed2;
   final double blendTime;
+  final List<String> applicablePoseIds;
+  final Map<CharacterExpression, double> emotionWeights;
+
+  bool supportsPose(String? pose) =>
+      pose == null ||
+      applicablePoseIds.isEmpty ||
+      applicablePoseIds.contains(pose);
 
   List<int> get occupiedTracks => occupancy
       .split('')
@@ -177,7 +224,10 @@ class CharacterMotionGroup {
       .whereType<int>()
       .toList(growable: false);
 
-  factory CharacterMotionGroup.fromJson(Map<String, dynamic> json) {
+  factory CharacterMotionGroup.fromJson(
+    Map<String, dynamic> json, {
+    Map<CharacterExpression, double> emotionWeights = const {},
+  }) {
     double number(String key, [double fallback = 1]) =>
         double.tryParse(json[key] as String? ?? '') ?? fallback;
 
@@ -193,8 +243,71 @@ class CharacterMotionGroup {
       speed1: number('Speed1'),
       speed2: number('Speed2'),
       blendTime: number('BlendTime', 0.3),
+      applicablePoseIds: (json['ApplicablePoseIds'] as String? ?? '')
+          .split(',')
+          .map((value) => value.trim())
+          .where((value) => value.isNotEmpty)
+          .toList(growable: false),
+      emotionWeights: Map.unmodifiable(emotionWeights),
     );
   }
+
+  double weightFor(CharacterExpression expression) =>
+      emotionWeights[expression] ?? 0;
+}
+
+CharacterMotionGroup? selectCharacterAmbientMotionGroup({
+  required List<CharacterMotionGroup> groups,
+  required CharacterExpression expression,
+  required String? pose,
+  required Set<String> recentGroupIds,
+  required Random random,
+  required bool allowLargePostureChanges,
+  double explorationChance = 0.2,
+}) {
+  var compatible = groups
+      .where(
+        (group) =>
+            group.supportsPose(pose) &&
+            group.occupiedTracks.isNotEmpty &&
+            !recentGroupIds.contains(group.id) &&
+            (allowLargePostureChanges || !group.occupancy.contains('C')),
+      )
+      .toList();
+  if (compatible.isEmpty && recentGroupIds.isNotEmpty) {
+    compatible = groups
+        .where(
+          (group) =>
+              group.supportsPose(pose) &&
+              group.occupiedTracks.isNotEmpty &&
+              (allowLargePostureChanges || !group.occupancy.contains('C')),
+        )
+        .toList();
+  }
+  if (compatible.isEmpty) return null;
+
+  final preferred = compatible
+      .where((group) => group.weightFor(expression) > 0)
+      .toList();
+  final explore = preferred.isEmpty || random.nextDouble() < explorationChance;
+  final pool = explore ? compatible : preferred;
+  if (explore) return pool[random.nextInt(pool.length)];
+
+  final variantsPerId = <String, int>{};
+  for (final group in pool) {
+    variantsPerId[group.id] = (variantsPerId[group.id] ?? 0) + 1;
+  }
+  final total = pool.fold<double>(
+    0,
+    (sum, group) =>
+        sum + group.weightFor(expression) / variantsPerId[group.id]!,
+  );
+  var target = random.nextDouble() * total;
+  for (final group in pool) {
+    target -= group.weightFor(expression) / variantsPerId[group.id]!;
+    if (target <= 0) return group;
+  }
+  return pool.last;
 }
 
 int? motionTrackForOccupancyLetter(String letter) {

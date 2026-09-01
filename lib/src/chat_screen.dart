@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:math';
 import 'dart:ui' show ImageFilter;
 
@@ -9,8 +10,11 @@ import 'package:spine_flutter/spine_flutter.dart' hide Color;
 
 import 'ai_services.dart';
 import 'app_controller.dart';
+import 'audio_envelope.dart';
 import 'character_appearance.dart';
+import 'character_camera.dart';
 import 'character_expression.dart';
+import 'character_performance.dart';
 import 'chat_segments.dart';
 import 'tap_reaction.dart';
 
@@ -61,6 +65,13 @@ class ChatScreen extends StatefulWidget {
   State<ChatScreen> createState() => _ChatScreenState();
 }
 
+class _PreparedSpeech {
+  const _PreparedSpeech({required this.path, required this.envelope});
+
+  final String path;
+  final AudioAmplitudeEnvelope? envelope;
+}
+
 class _ChatScreenState extends State<ChatScreen> {
   final _audioPlayer = AudioPlayer();
   final _effectPlayer = AudioPlayer();
@@ -75,13 +86,32 @@ class _ChatScreenState extends State<ChatScreen> {
   Timer? _idleTimer;
   Timer? _tapLabelTimer;
   Timer? _speechFallbackTimer;
+  Timer? _microMotionTimer;
+  Timer? _expressionRelaxTimer;
+  Timer? _facialDetailTimer;
+  Timer? _blinkTimer;
+  Timer? _blinkRestoreTimer;
+  StreamSubscription<Duration>? _audioPositionSubscription;
   String? _currentIdleAnimation;
   String? _lastTappedPart;
   bool _spineReady = false;
   bool _isReplying = false;
   bool _isCharacterSpeaking = false;
+  bool _tapReactionActive = false;
   CharacterExpression _currentExpression = CharacterExpression.neutral;
+  CharacterFacialDetail? _activeFacialDetail;
+  List<CharacterMotionGroup> _motionGroups = const [];
+  final List<String> _recentAmbientGroupIds = <String>[];
+  int _motionLoadGeneration = 0;
+  String? _lastPerformanceActionKey;
+  DateTime? _lastSemanticActionAt;
   final Stopwatch _speechStopwatch = Stopwatch();
+  AudioAmplitudeEnvelope? _activeSpeechEnvelope;
+  TrackEntry? _lipSyncEntry;
+  double _currentSpeechEnergy = 0;
+  int _speechPlaybackGeneration = 0;
+  Completer<void>? _speechCancellation;
+  final Set<String> _temporarySpeechPaths = <String>{};
   int _motionGeneration = 0;
   double _glassPanelFraction = 0.36;
   double? _stableBottomSafeInset;
@@ -97,6 +127,9 @@ class _ChatScreenState extends State<ChatScreen> {
     if (_appearance.animated) {
       _spineController = _createSpineController(_appearance);
     }
+    _audioPositionSubscription = _audioPlayer.onPositionChanged.listen(
+      _updateLipSyncFromPlaybackPosition,
+    );
     widget.controller.addListener(_handleControllerChange);
   }
 
@@ -116,6 +149,7 @@ class _ChatScreenState extends State<ChatScreen> {
         _scheduleIdleChange();
         if (mounted) setState(() => _spineReady = true);
         _applyExpression(_currentExpression);
+        unawaited(_loadMotionGroups(appearance));
       },
     );
     return spineController;
@@ -127,13 +161,33 @@ class _ChatScreenState extends State<ChatScreen> {
     );
     if (next.id == _appearance.id) return;
     _idleTimer?.cancel();
+    _microMotionTimer?.cancel();
+    _facialDetailTimer?.cancel();
+    _blinkTimer?.cancel();
+    _blinkRestoreTimer?.cancel();
+    _motionLoadGeneration += 1;
     setState(() {
       _appearance = next;
       _spineReady = false;
       _currentIdleAnimation = null;
+      _motionGroups = const [];
+      _recentAmbientGroupIds.clear();
+      _lastPerformanceActionKey = null;
       _spineController = next.animated ? _createSpineController(next) : null;
     });
     unawaited(_playSkinChangeEffect());
+  }
+
+  Future<void> _loadMotionGroups(CharacterAppearance appearance) async {
+    final generation = ++_motionLoadGeneration;
+    try {
+      final groups = await loadCharacterMotionGroups(appearance);
+      if (!mounted || generation != _motionLoadGeneration) return;
+      _motionGroups = groups;
+      _scheduleMicroMotion();
+    } on Object {
+      if (generation == _motionLoadGeneration) _motionGroups = const [];
+    }
   }
 
   Future<void> _playSkinChangeEffect() async {
@@ -189,6 +243,7 @@ class _ChatScreenState extends State<ChatScreen> {
         spineController.skeletonData.findAnimation(group.animation1) == null) {
       return;
     }
+    if (!group.supportsPose(_currentIdleAnimation)) return;
     final tracks = group.occupiedTracks;
     if (tracks.isEmpty) return;
 
@@ -246,28 +301,57 @@ class _ChatScreenState extends State<ChatScreen> {
     spineController.animationState.apply(spineController.skeleton);
   }
 
-  void _setFacialAnimation(int track, String animation, {bool loop = true}) {
+  void _setFacialAnimation(
+    int track,
+    String animation, {
+    bool loop = true,
+    double alpha = 1,
+    double timeScale = 1,
+  }) {
     final spineController = _spineController;
     if (!_spineReady ||
         spineController == null ||
         spineController.skeletonData.findAnimation(animation) == null) {
       return;
     }
-    spineController.animationState
-        .setAnimationByName(track, animation, loop)
-        .setMixBlend(MixBlend.replace);
+    spineController.animationState.setAnimationByName(track, animation, loop)
+      ..setMixBlend(MixBlend.replace)
+      ..setAlpha(alpha)
+      ..setTimeScale(timeScale);
   }
 
   void _applyExpression(CharacterExpression expression) {
+    _expressionRelaxTimer?.cancel();
     _currentExpression = expression;
-    if (!_spineReady || _spineController == null) return;
+    if (!_spineReady || _spineController == null || _tapReactionActive) return;
+    if (expression == CharacterExpression.neutral && !_isCharacterSpeaking) {
+      for (var track = 11; track <= 16; track++) {
+        _spineController!.animationState.clearTrack(track);
+      }
+      return;
+    }
     final preset = characterExpressionPreset(_appearance.id, expression);
+    _activeFacialDetail = null;
     _setFacialAnimation(11, preset.eye);
     _setFacialAnimation(12, preset.eyebrow);
-    _setFacialAnimation(
-      13,
-      _isCharacterSpeaking ? preset.lipSync : preset.mouth,
-    );
+    if (_isCharacterSpeaking) {
+      final animation = _spineController!.skeletonData.findAnimation(
+        preset.lipSync,
+      );
+      _lipSyncEntry = animation == null
+          ? null
+          : (_spineController!.animationState.setAnimationByName(
+                13,
+                preset.lipSync,
+                false,
+              )
+              ..setMixBlend(MixBlend.replace)
+              ..setAlpha(preset.lipSyncAlpha)
+              ..setTimeScale(0));
+    } else {
+      _lipSyncEntry = null;
+      _setFacialAnimation(13, preset.mouth);
+    }
     _setFacialEffect(
       14,
       _appearance.id == 'standing_99'
@@ -305,43 +389,279 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
-  void _startSpeakingAnimation() {
+  void _startSpeakingAnimation({AudioAmplitudeEnvelope? envelope}) {
     _speechFallbackTimer?.cancel();
+    _activeSpeechEnvelope = envelope;
+    _currentSpeechEnergy = envelope == null ? 0.45 : 0;
+    if (_isCharacterSpeaking) {
+      _applyExpression(_currentExpression);
+      _scheduleFacialDetailChange();
+      _scheduleSpeechBlink();
+      return;
+    }
     _isCharacterSpeaking = true;
     _speechStopwatch
       ..reset()
       ..start();
     _applyExpression(_currentExpression);
+    _scheduleMicroMotion();
+    _scheduleFacialDetailChange();
+    _scheduleSpeechBlink();
   }
 
   void _stopSpeakingAnimation() {
     _speechFallbackTimer?.cancel();
+    _microMotionTimer?.cancel();
+    _facialDetailTimer?.cancel();
+    _blinkTimer?.cancel();
+    _blinkRestoreTimer?.cancel();
     _speechStopwatch.stop();
     _isCharacterSpeaking = false;
+    _activeSpeechEnvelope = null;
+    _lipSyncEntry = null;
+    _currentSpeechEnergy = 0;
+    _activeFacialDetail = null;
     _applyExpression(_currentExpression);
+    _scheduleMicroMotion();
+    _scheduleExpressionRelax();
+  }
+
+  void _scheduleExpressionRelax() {
+    _expressionRelaxTimer?.cancel();
+    _expressionRelaxTimer = Timer(const Duration(milliseconds: 4600), () {
+      if (mounted && !_isCharacterSpeaking && !_tapReactionActive) {
+        _applyExpression(CharacterExpression.neutral);
+      }
+    });
   }
 
   void _applySpeakingHeadMotion(SpineWidgetController controller) {
     if (!_isCharacterSpeaking || !_speechStopwatch.isRunning) return;
     final seconds = _speechStopwatch.elapsedMicroseconds / 1000000;
-    final nod = sin(seconds * pi * 1.35) * 0.75;
-    final sway = sin(seconds * pi * 0.62 + 0.8) * 0.35;
-    final head = controller.skeleton.findBone('head');
-    final neck = controller.skeleton.findBone('neck');
-    if (head == null && neck == null) return;
+    final fallbackLipSyncEntry = _lipSyncEntry;
+    if (_activeSpeechEnvelope == null && fallbackLipSyncEntry != null) {
+      final phase = (seconds * 5.2) % 1;
+      final closure = phase < 0.28;
+      final pulse = closure ? 0.0 : sin((phase - 0.28) / 0.72 * pi).abs();
+      _currentSpeechEnergy = closure ? 0 : 0.24 + pulse * 0.46;
+      fallbackLipSyncEntry.setTrackTime(
+        fallbackLipSyncEntry.getAnimation().getDuration() *
+            _currentSpeechEnergy *
+            0.48,
+      );
+    }
+    final energy = _currentSpeechEnergy;
+    final phraseEnvelope = pow(sin(seconds * pi * 0.24).abs(), 1.8).toDouble();
+    final nod =
+        sin(seconds * pi * 0.82 + 0.25) *
+        (1.15 + energy * 2.35) *
+        (0.38 + phraseEnvelope * 0.62);
+    final sway =
+        sin(seconds * pi * 0.29 + 0.8) * (3.15 + energy * 1.25) +
+        sin(seconds * pi * 0.11 + 1.9) * 0.84;
+    final head =
+        controller.skeleton.findBone('control_roll_head') ??
+        controller.skeleton.findBone('head');
+    final neck =
+        controller.skeleton.findBone('control_roll_neck') ??
+        controller.skeleton.findBone('neck');
+    final upperBody = controller.skeleton.findBone('control_roll_body_upper');
+    final lowerBody = controller.skeleton.findBone('control_roll_body_lower');
+    if (head == null &&
+        neck == null &&
+        upperBody == null &&
+        lowerBody == null) {
+      return;
+    }
     head?.setRotation(head.getRotation() + nod + sway);
-    neck?.setRotation(neck.getRotation() + nod * 0.28);
+    neck?.setRotation(neck.getRotation() + nod * 0.45 - sway * 0.18);
+    upperBody?.setRotation(upperBody.getRotation() + nod * 0.12 + sway * 0.16);
+    lowerBody?.setRotation(lowerBody.getRotation() - nod * 0.05 - sway * 0.08);
     controller.skeleton.updateWorldTransform(Physics.none);
+  }
+
+  void _updateLipSyncFromPlaybackPosition(Duration position) {
+    final envelope = _activeSpeechEnvelope;
+    final entry = _lipSyncEntry;
+    if (!_isCharacterSpeaking || envelope == null || entry == null) return;
+    final energy = envelope.valueAt(position);
+    _currentSpeechEnergy = energy;
+    final mouthOpen = energy < 0.08
+        ? 0.0
+        : (pow((energy - 0.08) / 0.92, 0.78) * 0.48).clamp(0.0, 0.48);
+    entry.setTrackTime(entry.getAnimation().getDuration() * mouthOpen);
+  }
+
+  void _scheduleFacialDetailChange() {
+    _facialDetailTimer?.cancel();
+    if (!_isCharacterSpeaking) return;
+    _facialDetailTimer = Timer(
+      Duration(milliseconds: 1500 + _random.nextInt(1600)),
+      _rotateFacialDetail,
+    );
+  }
+
+  void _rotateFacialDetail() {
+    if (!mounted ||
+        !_isCharacterSpeaking ||
+        _tapReactionActive ||
+        !_spineReady ||
+        _spineController == null) {
+      return;
+    }
+    final skeletonData = _spineController!.skeletonData;
+    final candidates =
+        characterFacialDetails(_appearance.id, _currentExpression)
+            .where(
+              (detail) =>
+                  detail != _activeFacialDetail &&
+                  skeletonData.findAnimation(detail.eye) != null &&
+                  skeletonData.findAnimation(detail.eyebrow) != null,
+            )
+            .toList();
+    if (candidates.isNotEmpty) {
+      final detail = candidates[_random.nextInt(candidates.length)];
+      _activeFacialDetail = detail;
+      _setFacialAnimation(11, detail.eye);
+      _setFacialAnimation(12, detail.eyebrow);
+    }
+    _scheduleFacialDetailChange();
+  }
+
+  void _scheduleSpeechBlink() {
+    _blinkTimer?.cancel();
+    if (!_isCharacterSpeaking) return;
+    _blinkTimer = Timer(
+      Duration(milliseconds: 1700 + _random.nextInt(1800)),
+      _performSpeechBlink,
+    );
+  }
+
+  void _performSpeechBlink() {
+    if (!mounted ||
+        !_isCharacterSpeaking ||
+        _tapReactionActive ||
+        !_spineReady ||
+        _spineController == null) {
+      return;
+    }
+    final details = characterFacialDetails(_appearance.id, _currentExpression);
+    final detail =
+        _activeFacialDetail ?? (details.isEmpty ? null : details.first);
+    final closedEye = detail?.closedEye;
+    if (closedEye != null &&
+        _spineController!.skeletonData.findAnimation(closedEye) != null) {
+      _setFacialAnimation(11, closedEye, loop: false, timeScale: 1.15);
+      _blinkRestoreTimer?.cancel();
+      _blinkRestoreTimer = Timer(
+        Duration(milliseconds: 95 + _random.nextInt(45)),
+        () {
+          if (!mounted || !_isCharacterSpeaking || _tapReactionActive) return;
+          final eye =
+              _activeFacialDetail?.eye ??
+              characterExpressionPreset(_appearance.id, _currentExpression).eye;
+          _setFacialAnimation(11, eye);
+        },
+      );
+    }
+    _scheduleSpeechBlink();
+  }
+
+  void _scheduleMicroMotion() {
+    _microMotionTimer?.cancel();
+    if (!_spineReady || !_appearance.animated) return;
+    final delay = _isCharacterSpeaking
+        ? Duration(milliseconds: 1800 + _random.nextInt(2000))
+        : Duration(milliseconds: 3800 + _random.nextInt(3600));
+    _microMotionTimer = Timer(delay, () {
+      if (!mounted || _tapReactionActive) {
+        _scheduleMicroMotion();
+        return;
+      }
+      final recentlyActed =
+          _lastSemanticActionAt != null &&
+          DateTime.now().difference(_lastSemanticActionAt!) <
+              const Duration(milliseconds: 2300);
+      if (!recentlyActed) _playAmbientMotion();
+      _scheduleMicroMotion();
+    });
+  }
+
+  void _playAmbientMotion({double explorationChance = 0.2}) {
+    if (!_spineReady || _tapReactionActive || _motionGroups.isEmpty) return;
+    final group = selectCharacterAmbientMotionGroup(
+      groups: _motionGroups,
+      expression: _currentExpression,
+      pose: _currentIdleAnimation,
+      recentGroupIds: _recentAmbientGroupIds.toSet(),
+      random: _random,
+      allowLargePostureChanges: !_isCharacterSpeaking,
+      explorationChance: explorationChance,
+    );
+    if (group == null) return;
+    _recentAmbientGroupIds
+      ..remove(group.id)
+      ..add(group.id);
+    if (_recentAmbientGroupIds.length > 5) {
+      _recentAmbientGroupIds.removeAt(0);
+    }
+    _playMotionGroup(group);
+  }
+
+  void _applyPerformanceFromResponse(String response) {
+    final cue = performanceCueForAssistantResponse(response);
+    final expression = cue.expression;
+    if (expression != null && expression != _currentExpression) {
+      _applyExpression(expression);
+    }
+    final action = cue.action;
+    if (action == null || action == CharacterAction.none) return;
+    final key = '${action.name}:${cue.actionCueCount}';
+    if (_lastPerformanceActionKey == key) return;
+    _lastPerformanceActionKey = key;
+    _performSemanticAction(action);
+  }
+
+  void _performSemanticAction(CharacterAction action) {
+    if (!_spineReady || _tapReactionActive) return;
+    final plan = characterActionPlan(_appearance.id, action);
+    for (final id in plan.motionGroupIds) {
+      for (final group in _motionGroups) {
+        if (group.id == id && group.supportsPose(_currentIdleAnimation)) {
+          _lastSemanticActionAt = DateTime.now();
+          _playMotionGroup(group);
+          return;
+        }
+      }
+    }
+    final fallback = plan.oneShotFallback;
+    if (fallback != null) {
+      _lastSemanticActionAt = DateTime.now();
+      _playOneShotAnimation(fallback);
+    }
   }
 
   @override
   void dispose() {
     widget.controller.removeListener(_handleControllerChange);
+    final cancellation = _speechCancellation;
+    if (cancellation != null && !cancellation.isCompleted) {
+      cancellation.complete();
+    }
+    for (final path in _temporarySpeechPaths.toList()) {
+      unawaited(_deleteTemporarySpeech(path));
+    }
+    _audioPositionSubscription?.cancel();
     _audioPlayer.dispose();
     _effectPlayer.dispose();
     _idleTimer?.cancel();
     _tapLabelTimer?.cancel();
     _speechFallbackTimer?.cancel();
+    _microMotionTimer?.cancel();
+    _expressionRelaxTimer?.cancel();
+    _facialDetailTimer?.cancel();
+    _blinkTimer?.cancel();
+    _blinkRestoreTimer?.cancel();
     _inputController.dispose();
     _scrollController.dispose();
     super.dispose();
@@ -352,15 +672,24 @@ class _ChatScreenState extends State<ChatScreen> {
     if (reaction == null) return;
     widget.controller.recordCharacterTouch();
     if (_spineReady && _spineController != null) {
+      _tapReactionActive = true;
       _resetMotionOverlays();
-      _spineController!.animationState
+      final state = _spineController!.animationState;
+      for (var track = 11; track <= 16; track++) {
+        state.clearTrack(track);
+      }
+      state
         ..setAnimationByName(1, reaction.animation, false)
         ..addEmptyAnimation(1, 0.3, 0);
     }
     _tapLabelTimer?.cancel();
     if (mounted) setState(() => _lastTappedPart = reaction.label);
-    _tapLabelTimer = Timer(const Duration(milliseconds: 1100), () {
-      if (mounted) setState(() => _lastTappedPart = null);
+    _tapLabelTimer = Timer(const Duration(milliseconds: 1350), () {
+      if (!mounted) return;
+      _tapReactionActive = false;
+      _applyExpression(_currentExpression);
+      if (!_isCharacterSpeaking) _scheduleExpressionRelax();
+      setState(() => _lastTappedPart = null);
     });
     if (!widget.controller.voiceEnabled || _isReplying) return;
     await _audioPlayer.stop();
@@ -410,10 +739,13 @@ class _ChatScreenState extends State<ChatScreen> {
     final attachments = List<ChatAttachment>.unmodifiable(_pendingAttachments);
     final text = rawText.isEmpty ? '请分析我发送的附件。' : rawText;
 
+    _cancelSpeechPlayback();
+
     _inputController.clear();
     widget.controller.addUserMessage(text, attachments: attachments);
     _applyMoodAnimation();
-    _startSpeakingAnimation();
+    _playAmbientMotion(explorationChance: 0.12);
+    _lastPerformanceActionKey = null;
     setState(() {
       _pendingAttachments.clear();
       _isReplying = true;
@@ -425,7 +757,6 @@ class _ChatScreenState extends State<ChatScreen> {
       if (!mounted) return;
       final reply = widget.controller.demoReply(text);
       widget.controller.addAssistantMessage(reply);
-      _applyExpression(expressionForAssistantResponse(reply));
       await _playFishTtsIfConfigured(reply);
       if (mounted) setState(() => _isReplying = false);
       _scrollToBottom();
@@ -460,11 +791,15 @@ class _ChatScreenState extends State<ChatScreen> {
             : null,
         agentEnabled: widget.controller.agentEnabled,
       )) {
+        if (!widget.controller.fishTtsEnabled &&
+            !_isCharacterSpeaking &&
+            delta.trim().isNotEmpty) {
+          _startSpeakingAnimation();
+        }
         widget.controller.appendAssistantDelta(delta);
-        final expression = expressionForAssistantResponse(
-          widget.controller.messages.last.text,
-        );
-        if (expression != _currentExpression) _applyExpression(expression);
+        if (!widget.controller.fishTtsEnabled) {
+          _applyPerformanceFromResponse(widget.controller.messages.last.text);
+        }
         _scrollToBottom();
       }
       final reply = widget.controller.messages.last.text;
@@ -502,47 +837,142 @@ class _ChatScreenState extends State<ChatScreen> {
       _stopSpeakingAnimation();
       return;
     }
-    _applyExpression(expressionForAssistantResponse(text));
     if (!widget.controller.fishTtsEnabled) {
+      _startSpeakingAnimation();
+      _applyPerformanceFromResponse(text);
       _scheduleSpeechFallback(text);
       return;
     }
-    final speech = ttsTextForAssistantResponse(
+    final segments = performanceSegmentsForAssistantResponse(
       text,
       fallbackMood: widget.controller.characterMood,
     );
-    if (speech.isEmpty) {
+    if (segments.isEmpty) {
       _stopSpeakingAnimation();
       return;
     }
     final apiKey = await _secretStore.readFishAudioKey();
     if (apiKey.isEmpty || widget.controller.fishAudioReferenceId.isEmpty) {
+      _startSpeakingAnimation();
+      _applyPerformanceFromResponse(text);
       _scheduleSpeechFallback(text);
       return;
     }
+    final generation = ++_speechPlaybackGeneration;
+    final previousCancellation = _speechCancellation;
+    if (previousCancellation != null && !previousCancellation.isCompleted) {
+      previousCancellation.complete();
+    }
+    final cancellation = Completer<void>();
+    _speechCancellation = cancellation;
     try {
-      final path = await _fishAudioClient.synthesize(
-        apiKey: apiKey,
-        referenceId: widget.controller.fishAudioReferenceId,
-        model: widget.controller.fishAudioModel,
-        format: widget.controller.fishAudioFormat,
-        latency: widget.controller.fishAudioLatency,
-        speed: widget.controller.fishAudioSpeed,
-        text: speech,
+      Future<_PreparedSpeech> pending = _prepareFishSpeech(
+        segments.first,
+        apiKey,
+        generation,
       );
-      await _audioPlayer.stop();
-      await _audioPlayer.setVolume(widget.controller.voiceVolume);
-      final completed = _audioPlayer.onPlayerComplete.first;
-      await _audioPlayer.play(DeviceFileSource(path));
-      await completed;
+      for (var index = 0; index < segments.length; index++) {
+        final prepared = await pending;
+        if (!mounted || generation != _speechPlaybackGeneration) {
+          unawaited(_deleteTemporarySpeech(prepared.path));
+          return;
+        }
+        final next = index + 1 < segments.length
+            ? _prepareFishSpeech(segments[index + 1], apiKey, generation)
+            : null;
+        final segment = segments[index];
+        if (segment.expression case final expression?) {
+          _applyExpression(expression);
+        }
+        if (segment.action case final action?) {
+          _performSemanticAction(action);
+        }
+        _startSpeakingAnimation(envelope: prepared.envelope);
+        await _audioPlayer.stop();
+        await _audioPlayer.setVolume(widget.controller.voiceVolume);
+        final completed = _audioPlayer.onPlayerComplete.first;
+        await _audioPlayer.play(DeviceFileSource(prepared.path));
+        await Future.any([completed, cancellation.future]);
+        await _deleteTemporarySpeech(prepared.path);
+        if (generation != _speechPlaybackGeneration) return;
+        _stopSpeakingAnimation();
+        if (next != null) pending = next;
+      }
       _stopSpeakingAnimation();
+      if (identical(_speechCancellation, cancellation)) {
+        _speechCancellation = null;
+      }
     } on Object {
       _stopSpeakingAnimation();
+      if (generation != _speechPlaybackGeneration) return;
+      _speechPlaybackGeneration += 1;
+      if (!cancellation.isCompleted) cancellation.complete();
+      if (identical(_speechCancellation, cancellation)) {
+        _speechCancellation = null;
+      }
+      for (final path in _temporarySpeechPaths.toList()) {
+        unawaited(_deleteTemporarySpeech(path));
+      }
+      _startSpeakingAnimation();
+      _applyPerformanceFromResponse(text);
+      _scheduleSpeechFallback(text);
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Fish Audio 语音生成失败，文本回复不受影响')),
       );
     }
+  }
+
+  Future<_PreparedSpeech> _prepareFishSpeech(
+    RyzaPerformanceSegment segment,
+    String apiKey,
+    int generation,
+  ) async {
+    // WAV keeps the PCM samples available for deterministic lip sync. The
+    // format preference remains useful for the settings-page voice preview.
+    final path = await _fishAudioClient.synthesize(
+      apiKey: apiKey,
+      referenceId: widget.controller.fishAudioReferenceId,
+      model: widget.controller.fishAudioModel,
+      format: 'wav',
+      latency: widget.controller.fishAudioLatency,
+      speed: widget.controller.fishAudioSpeed,
+      text: segment.speechText,
+    );
+    _temporarySpeechPaths.add(path);
+    if (generation != _speechPlaybackGeneration) {
+      await _deleteTemporarySpeech(path);
+      throw const AiServiceException('语音播放已取消');
+    }
+    final bytes = await File(path).readAsBytes();
+    return _PreparedSpeech(
+      path: path,
+      envelope: AudioAmplitudeEnvelope.tryParseWav(bytes),
+    );
+  }
+
+  Future<void> _deleteTemporarySpeech(String path) async {
+    _temporarySpeechPaths.remove(path);
+    try {
+      final file = File(path);
+      if (await file.exists()) await file.delete();
+    } on FileSystemException {
+      // The OS may still hold the decoder handle briefly; temp cleanup is best effort.
+    }
+  }
+
+  void _cancelSpeechPlayback() {
+    _speechPlaybackGeneration += 1;
+    final cancellation = _speechCancellation;
+    if (cancellation != null && !cancellation.isCompleted) {
+      cancellation.complete();
+    }
+    _speechCancellation = null;
+    unawaited(_audioPlayer.stop());
+    for (final path in _temporarySpeechPaths.toList()) {
+      unawaited(_deleteTemporarySpeech(path));
+    }
+    if (_isCharacterSpeaking) _stopSpeakingAnimation();
   }
 
   void _scheduleSpeechFallback(String text) {
@@ -953,71 +1383,61 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Widget _buildCharacter() {
-    return Semantics(
-      button: true,
-      label: '莱莎，点击触发互动',
-      child: GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onTapUp: (details) => _reactToTap(details.localPosition),
-        child: Stack(
-          fit: StackFit.expand,
-          children: [
-            if (_appearance.animated)
-              SpineWidget.fromAsset(
-                _appearance.atlasAsset,
-                _appearance.skeletonAsset,
-                _spineController!,
-                key: ValueKey(_appearance.id),
-                fit: BoxFit.contain,
-                alignment: Alignment.bottomCenter,
-              )
-            else
-              Padding(
-                padding: const EdgeInsets.fromLTRB(12, 28, 12, 0),
-                child: Image.asset(
-                  _appearance.previewAsset,
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        CharacterCamera(
+          onTap: _reactToTap,
+          child: _appearance.animated
+              ? SpineWidget.fromAsset(
+                  _appearance.atlasAsset,
+                  _appearance.skeletonAsset,
+                  _spineController!,
+                  key: ValueKey(_appearance.id),
                   fit: BoxFit.contain,
                   alignment: Alignment.bottomCenter,
-                  filterQuality: FilterQuality.high,
+                )
+              : Padding(
+                  padding: const EdgeInsets.fromLTRB(12, 28, 12, 0),
+                  child: Image.asset(
+                    _appearance.previewAsset,
+                    fit: BoxFit.contain,
+                    alignment: Alignment.bottomCenter,
+                    filterQuality: FilterQuality.high,
+                  ),
                 ),
-              ),
-            if (_appearance.animated && !_spineReady)
-              const Center(child: CircularProgressIndicator.adaptive()),
-            const Positioned(left: 16, bottom: 10, child: _CharacterLabel()),
-            Positioned(
-              right: 16,
-              top: 10,
-              child: Column(
-                children: [
-                  _CharacterToolButton(
-                    tooltip: '动作',
-                    icon: Icons.animation_outlined,
-                    onPressed: _showMotionPicker,
-                  ),
-                  const SizedBox(height: 8),
-                  _CharacterToolButton(
-                    tooltip: '服装',
-                    icon: Icons.checkroom_outlined,
-                    onPressed: _showAppearancePicker,
-                  ),
-                ],
-              ),
-            ),
-            if (_lastTappedPart case final part?)
-              Positioned(
-                right: 16,
-                bottom: 10,
-                child: _TapResultLabel(part: part),
-              ),
-            if (!_appearance.animated)
-              const Positioned(
-                right: 16,
-                bottom: 10,
-                child: _StaticAppearanceLabel(),
-              ),
-          ],
         ),
-      ),
+        if (_appearance.animated && !_spineReady)
+          const Center(child: CircularProgressIndicator.adaptive()),
+        const Positioned(left: 16, bottom: 10, child: _CharacterLabel()),
+        Positioned(
+          right: 16,
+          top: 10,
+          child: Column(
+            children: [
+              _CharacterToolButton(
+                tooltip: '动作',
+                icon: Icons.animation_outlined,
+                onPressed: _showMotionPicker,
+              ),
+              const SizedBox(height: 8),
+              _CharacterToolButton(
+                tooltip: '服装',
+                icon: Icons.checkroom_outlined,
+                onPressed: _showAppearancePicker,
+              ),
+            ],
+          ),
+        ),
+        if (_lastTappedPart case final part?)
+          Positioned(right: 16, bottom: 10, child: _TapResultLabel(part: part)),
+        if (!_appearance.animated)
+          const Positioned(
+            right: 16,
+            bottom: 10,
+            child: _StaticAppearanceLabel(),
+          ),
+      ],
     );
   }
 }
@@ -2224,6 +2644,7 @@ class _ConversationSheet extends StatefulWidget {
 
 class _ConversationSheetState extends State<_ConversationSheet> {
   final _controller = ScrollController();
+  bool _showRawOutput = false;
 
   @override
   void initState() {
@@ -2270,12 +2691,32 @@ class _ConversationSheetState extends State<_ConversationSheet> {
               ],
             ),
           ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(18, 0, 12, 8),
+            child: Row(
+              children: [
+                const Expanded(
+                  child: Text(
+                    '显示原始输出',
+                    style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+                  ),
+                ),
+                Switch.adaptive(
+                  value: _showRawOutput,
+                  onChanged: (value) {
+                    setState(() => _showRawOutput = value);
+                  },
+                ),
+              ],
+            ),
+          ),
           Flexible(
             child: _MessageList(
               messages: widget.messages,
               isReplying: widget.isReplying,
               controller: _controller,
               reverse: true,
+              showRawOutput: _showRawOutput,
             ),
           ),
         ],
@@ -2290,12 +2731,14 @@ class _MessageList extends StatelessWidget {
     required this.isReplying,
     this.controller,
     this.reverse = false,
+    this.showRawOutput = false,
   });
 
   final List<ChatMessage> messages;
   final bool isReplying;
   final ScrollController? controller;
   final bool reverse;
+  final bool showRawOutput;
 
   @override
   Widget build(BuildContext context) {
@@ -2345,7 +2788,10 @@ class _MessageList extends StatelessWidget {
                 Text(
                   message.isUser
                       ? message.text
-                      : displayTextForAssistantResponse(message.text),
+                      : conversationTextForAssistantResponse(
+                          message.text,
+                          showRawOutput: showRawOutput,
+                        ),
                   style: TextStyle(
                     color: message.isUser
                         ? Colors.white

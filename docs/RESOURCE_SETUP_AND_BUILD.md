@@ -48,7 +48,7 @@ assets/character/ryza/crf_skn_002_0001_99/crf_skn_002_0001_99.png
 assets/character/ryza/crf_skn_002_0001_99/crf_skn_002_0001_99_gesture.json
 ```
 
-服装 `crf_skn_002_0002_01`、`crf_skn_002_0003_01`、`crf_skn_002_0004_01` 在当前代码中只有候选入口，没有完整模型。若要启用，每套也必须提供同名 `.skel/.atlas/.png/_gesture.json` 四件套，并在 `lib/src/character_appearance.dart` 中把 `available` 条件改为真实文件探测结果。
+服装 `crf_skn_002_0002_01`、`crf_skn_002_0003_01`、`crf_skn_002_0004_01` 在当前代码中只有候选入口，没有完整模型。若要启用，每套也必须提供同名 `.skel/.atlas/.png/_gesture.json` 四件套，并在 `lib/src/character_appearance.dart` 中将对应条目的 `animated` 设为 `true`。启用前必须确认骨骼、图集、纹理和动作映射属于同一套导出物。
 
 这些历史兼容文件名可能指向第三方 IP。公开发行时，推荐改成自己的角色 ID，例如 `assets/character/custom/default/`，并同步替换角色名称、提示词和 UI 文案。
 
@@ -131,12 +131,28 @@ TTS 生成内容也必须获得声音权利人的授权，不能未经同意模�
 5. 图片建议使用 PNG/JPG；音频按当前实现使用 M4A。若改格式，同步修改代码路径。
 6. 不要修改 `.gitignore` 来上传受限资源。合法但不允许公开的资源应只保存在本地。
 7. 使用 `git status --ignored` 确认资源处于 ignored 状态，再提交代码。
+8. 在 `lib/src/character_appearance.dart` 中只为已提供完整四件套且验证通过的服装设置 `animated: true`。
 
 ## 5. API 配置
 
 OpenAI 兼容接口和 Fish Audio Key 通过应用设置页填写，由平台安全存储保存，不写入仓库，也不会进入本地备份 JSON。不要把 Key 写入 Dart 常量、测试快照、截图或 Issue。
 
 高级推理参数只对模型名以 `gpt-5` 开头的模型开放。兼容服务需要支持 `reasoning_effort`、`max_completion_tokens` 和标准 Chat Completions `tools/tool_calls`；否则应关闭对应选项。
+
+用户称呼、自画像、关系定位、互动偏好和边界说明只保存在本地偏好设置与用户主动导出的备份中。它们会以数据 JSON 注入系统提示词，并被明确标记为不能覆盖角色、安全和输出格式规则。导出文件可能包含私人描述，用户应自行妥善保管，不要提交到 Git 或公开 Issue。
+
+### 5.1 版本 0.3.9 的代码能力
+
+本仓库当前代码包含以下接口，但角色表现效果仍取决于用户提供的合法且兼容的资源：
+
+- 140 项组合动作、53 项闲置动作的候选池和情绪权重选取；
+- LLM 情绪、表情、动作指令解析，以及原始模型输出查看；
+- TTS 音频包络驱动的间歇口型、说话微表情和头颈/上身演出；
+- 双指缩放与纵向镜头调整，默认角色近景为 `1.25x`；
+- 图片和文档附件、液态玻璃聊天 UI、Agent 与 GPT 高级参数；
+- 用户称呼、自画像、关系定位、互动偏好和边界的本地持久化、导入导出与提示词注入。
+
+这些功能不附带任何角色模型、动作 JSON、表情差分、图片或音频。动作名和轨道必须针对你自己的 Spine 文件重新校验。
 
 ## 6. 构建
 
@@ -177,13 +193,13 @@ Debug APK 默认输出到 `build/app/outputs/flutter-apk/app-debug.apk`。
 执行规则：
 1. 先阅读 README.md、docs/RESOURCE_SETUP_AND_BUILD.md、pubspec.yaml、.gitignore 和相关 lib/src 文件。
 2. 在复制任何资源前，要求用户明确确认资源来源及其使用许可。许可不清楚时停止资源复制，只提供路径和格式建议。
-3. 资源只放到文档规定的 assets 路径；若使用自定义文件名，同步更新集中映射，避免在多个页面散落硬编码。
-4. 不把 API Key、local.properties、签名文件、资源文件、APK/AAB 或构建缓存加入 Git。执行 git status --ignored 检查。
-5. Spine 套装必须保持 skel、atlas、纹理、gesture JSON 同源且版本兼容。先解析 atlas 和动作名，再接入动作、表情、点击区域与服装切换。不得混用不同套装的骨骼或纹理。
+3. 资源只放到文档规定的 assets 路径；若使用自定义文件名，同步更新集中映射，避免在多个页面散落硬编码。不要把用户提供的任何资源复制到其他公开目录。
+4. 不把 API Key、local.properties、签名文件、用户导出的聊天/画像备份、资源文件、APK/AAB 或构建缓存加入 Git。执行 git status --ignored 检查。
+5. Spine 套装必须保持 skel、atlas、纹理、gesture JSON 同源且版本兼容。先核对 Spine 4.2 Runtime 兼容性，再解析 atlas 和动作名，最后接入动作、表情、点击区域与服装切换。不得混用不同套装的骨骼或纹理；只有四件套齐全并验证通过后，才把对应 CharacterAppearance 的 animated 设为 true。
 6. 音频逐类验证：TTS、点击语音、BGM、环境音、音效、闹钟。不得未经授权克隆角色或演员声音。
 7. 资源缺失时保留明确的降级 UI，不伪造成功，不使用网络上的相似素材代替。
 8. 完成后依次运行 flutter pub get、flutter analyze、flutter test、flutter build apk --debug。
-9. 检查 APK 路径和大小，启动模拟器验证主界面、聊天、动作、换装、音频、附件、设置和闹钟。
+9. 检查 APK 路径和大小，启动模拟器验证主界面、聊天、动作映射、换装、音频、附件、用户设定、设置和闹钟。
 10. 最终报告必须列出：接入文件、许可确认依据、修改代码、测试结果、APK 路径、仍缺失资源和未验证风险。不得在报告中泄露密钥。
 
 优先做最小、安全、可维护的修改，沿用项目现有结构；不要引入无必要依赖，不要修改远端历史，不要删除用户本地原始资源。

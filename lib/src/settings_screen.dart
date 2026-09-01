@@ -125,6 +125,22 @@ class SettingsScreen extends StatelessWidget {
             trailing: Text('${(controller.ambientVolume * 100).round()}%'),
           ),
           const Divider(indent: 16, endIndent: 16),
+          const _SectionLabel('用户设定'),
+          Card(
+            margin: const EdgeInsets.fromLTRB(12, 4, 12, 12),
+            child: ListTile(
+              leading: const Icon(Icons.badge_outlined),
+              title: const Text('称呼与自画像'),
+              subtitle: Text(
+                '${controller.userAddress} · ${controller.userRelationshipRole.label} · ${controller.userInteractionStyle.label}',
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+              ),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => _showUserProfileSettings(context),
+            ),
+          ),
+          const Divider(indent: 16, endIndent: 16),
           const _SectionLabel('AI 对话'),
           ListTile(
             leading: const Icon(Icons.auto_awesome_outlined),
@@ -230,7 +246,7 @@ class SettingsScreen extends StatelessWidget {
           const ListTile(
             leading: Icon(Icons.info_outline),
             title: Text('Ryza Chat Prototype'),
-            subtitle: Text('版本 0.3.0 · OpenAI 兼容接口 + Fish Audio'),
+            subtitle: Text('版本 0.3.9 · 用户设定 + 动态说话演出 + Fish Audio'),
           ),
           const Padding(
             padding: EdgeInsets.fromLTRB(72, 0, 24, 12),
@@ -267,6 +283,134 @@ class SettingsScreen extends StatelessWidget {
       ),
     );
     if (confirmed == true) controller.clearChatHistory();
+  }
+
+  Future<void> _showUserProfileSettings(BuildContext context) async {
+    final address = TextEditingController(text: controller.userAddress);
+    final portrait = TextEditingController(text: controller.userPortrait);
+    final boundaries = TextEditingController(
+      text: controller.userInteractionBoundaries,
+    );
+    var relationshipRole = controller.userRelationshipRole;
+    var interactionStyle = controller.userInteractionStyle;
+    final result = await showDialog<bool>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('用户设定'),
+          content: SizedBox(
+            width: 420,
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  TextField(
+                    controller: address,
+                    maxLength: 24,
+                    decoration: const InputDecoration(
+                      labelText: '莱莎对你的称呼',
+                      hintText: '伙伴',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: portrait,
+                    minLines: 3,
+                    maxLines: 5,
+                    maxLength: 500,
+                    decoration: const InputDecoration(
+                      labelText: '用户自画像',
+                      hintText: '性格、兴趣、外观或身份设定',
+                      alignLabelWithHint: true,
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  DropdownButtonFormField<UserRelationshipRole>(
+                    initialValue: relationshipRole,
+                    isExpanded: true,
+                    decoration: const InputDecoration(
+                      labelText: '关系定位',
+                      border: OutlineInputBorder(),
+                    ),
+                    items: UserRelationshipRole.values
+                        .map(
+                          (value) => DropdownMenuItem(
+                            value: value,
+                            child: Text(value.label),
+                          ),
+                        )
+                        .toList(),
+                    onChanged: (value) {
+                      if (value != null) {
+                        setDialogState(() => relationshipRole = value);
+                      }
+                    },
+                  ),
+                  const SizedBox(height: 12),
+                  DropdownButtonFormField<UserInteractionStyle>(
+                    initialValue: interactionStyle,
+                    isExpanded: true,
+                    decoration: const InputDecoration(
+                      labelText: '互动偏好',
+                      border: OutlineInputBorder(),
+                    ),
+                    items: UserInteractionStyle.values
+                        .map(
+                          (value) => DropdownMenuItem(
+                            value: value,
+                            child: Text(value.label),
+                          ),
+                        )
+                        .toList(),
+                    onChanged: (value) {
+                      if (value != null) {
+                        setDialogState(() => interactionStyle = value);
+                      }
+                    },
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: boundaries,
+                    minLines: 2,
+                    maxLines: 4,
+                    maxLength: 300,
+                    decoration: const InputDecoration(
+                      labelText: '需要避开的称呼或话题',
+                      alignLabelWithHint: true,
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('保存'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (result == true) {
+      controller.configureUserProfile(
+        address: address.text,
+        portrait: portrait.text,
+        relationshipRole: relationshipRole,
+        interactionStyle: interactionStyle,
+        boundaries: boundaries.text,
+      );
+    }
+    address.dispose();
+    portrait.dispose();
+    boundaries.dispose();
   }
 
   Future<void> _showAiSettings(BuildContext context) async {
@@ -456,215 +600,255 @@ class SettingsScreen extends StatelessWidget {
     final result = await showDialog<bool>(
       context: context,
       builder: (context) => StatefulBuilder(
-        builder: (context, setDialogState) => AlertDialog(
-          title: const Text('Fish Audio TTS'),
-          content: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                SwitchListTile(
-                  contentPadding: EdgeInsets.zero,
-                  value: enabled,
-                  onChanged: (value) => setDialogState(() => enabled = value),
-                  title: const Text('AI 回复后自动播放'),
-                  subtitle: const Text('只合成“莱莎：”台词，旁白不会发声'),
-                ),
-                const InputDecorator(
-                  decoration: InputDecoration(
-                    labelText: '官方 API 端点',
-                    border: OutlineInputBorder(),
-                  ),
-                  child: SelectableText(FishAudioClient.endpoint),
-                ),
-                const SizedBox(height: 12),
-                DropdownButtonFormField<String>(
-                  initialValue: model,
-                  decoration: const InputDecoration(
-                    labelText: 'TTS 模型',
-                    border: OutlineInputBorder(),
-                  ),
-                  items: const [
-                    DropdownMenuItem(value: 's2-pro', child: Text('s2-pro')),
-                    DropdownMenuItem(
-                      value: 's2.1-pro',
-                      child: Text('s2.1-pro'),
-                    ),
-                    DropdownMenuItem(
-                      value: 's2.1-pro-free',
-                      child: Text('s2.1-pro-free（开发者免费层）'),
-                    ),
-                  ],
-                  onChanged: (value) {
-                    if (value != null) setDialogState(() => model = value);
-                  },
-                ),
-                const SizedBox(height: 12),
-                TextField(
-                  controller: referenceId,
-                  decoration: const InputDecoration(
-                    labelText: 'Voice model ID / reference_id',
-                    helperText: 'Fish Audio 声音库或自建声音模型的 ID',
-                    border: OutlineInputBorder(),
-                  ),
-                ),
-                const SizedBox(height: 12),
-                Row(
+        builder: (context, setDialogState) {
+          final contentWidth = (MediaQuery.sizeOf(context).width - 128).clamp(
+            240.0,
+            420.0,
+          );
+          final stackedFields = contentWidth < 340;
+          final fieldWidth = stackedFields
+              ? contentWidth
+              : (contentWidth - 12) / 2;
+          return AlertDialog(
+            title: const Text('Fish Audio TTS'),
+            content: SizedBox(
+              width: contentWidth,
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
                   children: [
-                    Expanded(
-                      child: DropdownButtonFormField<String>(
-                        initialValue: format,
-                        decoration: const InputDecoration(
-                          labelText: '输出格式',
-                          border: OutlineInputBorder(),
+                    SwitchListTile(
+                      contentPadding: EdgeInsets.zero,
+                      value: enabled,
+                      onChanged: (value) =>
+                          setDialogState(() => enabled = value),
+                      title: const Text('AI 回复后自动播放'),
+                      subtitle: const Text('只合成“莱莎：”台词，旁白不会发声'),
+                    ),
+                    const InputDecorator(
+                      decoration: InputDecoration(
+                        labelText: '官方 API 端点',
+                        border: OutlineInputBorder(),
+                      ),
+                      child: SelectableText(FishAudioClient.endpoint),
+                    ),
+                    const SizedBox(height: 12),
+                    DropdownButtonFormField<String>(
+                      initialValue: model,
+                      isExpanded: true,
+                      decoration: const InputDecoration(
+                        labelText: 'TTS 模型',
+                        border: OutlineInputBorder(),
+                      ),
+                      items: const [
+                        DropdownMenuItem(
+                          value: 's2-pro',
+                          child: Text('s2-pro'),
                         ),
-                        items: const [
-                          DropdownMenuItem(value: 'mp3', child: Text('MP3')),
-                          DropdownMenuItem(value: 'wav', child: Text('WAV')),
-                          DropdownMenuItem(value: 'opus', child: Text('Opus')),
-                        ],
-                        onChanged: (value) {
-                          if (value != null) {
-                            setDialogState(() => format = value);
-                          }
-                        },
+                        DropdownMenuItem(
+                          value: 's2.1-pro',
+                          child: Text('s2.1-pro'),
+                        ),
+                        DropdownMenuItem(
+                          value: 's2.1-pro-free',
+                          child: Text('s2.1-pro-free（开发者免费层）'),
+                        ),
+                      ],
+                      selectedItemBuilder: (context) => const [
+                        Text('s2-pro', overflow: TextOverflow.ellipsis),
+                        Text('s2.1-pro', overflow: TextOverflow.ellipsis),
+                        Text('s2.1-pro-free', overflow: TextOverflow.ellipsis),
+                      ],
+                      onChanged: (value) {
+                        if (value != null) setDialogState(() => model = value);
+                      },
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: referenceId,
+                      decoration: const InputDecoration(
+                        labelText: 'Voice model ID / reference_id',
+                        helperText: 'Fish Audio 声音库或自建声音模型的 ID',
+                        border: OutlineInputBorder(),
                       ),
                     ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: DropdownButtonFormField<String>(
-                        initialValue: latency,
-                        decoration: const InputDecoration(
-                          labelText: '延迟策略',
-                          border: OutlineInputBorder(),
+                    const SizedBox(height: 12),
+                    Wrap(
+                      spacing: 12,
+                      runSpacing: 12,
+                      children: [
+                        SizedBox(
+                          width: fieldWidth,
+                          child: DropdownButtonFormField<String>(
+                            initialValue: format,
+                            isExpanded: true,
+                            decoration: const InputDecoration(
+                              labelText: '输出格式',
+                              border: OutlineInputBorder(),
+                            ),
+                            items: const [
+                              DropdownMenuItem(
+                                value: 'mp3',
+                                child: Text('MP3'),
+                              ),
+                              DropdownMenuItem(
+                                value: 'wav',
+                                child: Text('WAV'),
+                              ),
+                              DropdownMenuItem(
+                                value: 'opus',
+                                child: Text('Opus'),
+                              ),
+                            ],
+                            onChanged: (value) {
+                              if (value != null) {
+                                setDialogState(() => format = value);
+                              }
+                            },
+                          ),
                         ),
-                        items: const [
-                          DropdownMenuItem(
-                            value: 'normal',
-                            child: Text('质量优先'),
+                        SizedBox(
+                          width: fieldWidth,
+                          child: DropdownButtonFormField<String>(
+                            initialValue: latency,
+                            isExpanded: true,
+                            decoration: const InputDecoration(
+                              labelText: '延迟策略',
+                              border: OutlineInputBorder(),
+                            ),
+                            items: const [
+                              DropdownMenuItem(
+                                value: 'normal',
+                                child: Text('质量优先'),
+                              ),
+                              DropdownMenuItem(
+                                value: 'balanced',
+                                child: Text('平衡'),
+                              ),
+                              DropdownMenuItem(
+                                value: 'low',
+                                child: Text('低延迟'),
+                              ),
+                            ],
+                            onChanged: (value) {
+                              if (value != null) {
+                                setDialogState(() => latency = value);
+                              }
+                            },
                           ),
-                          DropdownMenuItem(
-                            value: 'balanced',
-                            child: Text('平衡'),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        const SizedBox(width: 58, child: Text('语速')),
+                        Expanded(
+                          child: Slider(
+                            value: speed,
+                            min: 0.5,
+                            max: 2.0,
+                            divisions: 15,
+                            label: '${speed.toStringAsFixed(1)}x',
+                            onChanged: (value) =>
+                                setDialogState(() => speed = value),
                           ),
-                          DropdownMenuItem(value: 'low', child: Text('低延迟')),
-                        ],
-                        onChanged: (value) {
-                          if (value != null) {
-                            setDialogState(() => latency = value);
-                          }
-                        },
+                        ),
+                        SizedBox(
+                          width: 42,
+                          child: Text('${speed.toStringAsFixed(1)}x'),
+                        ),
+                      ],
+                    ),
+                    TextField(
+                      controller: apiKey,
+                      obscureText: true,
+                      decoration: const InputDecoration(
+                        labelText: 'Fish Audio API Key',
+                        hintText: '留空则保留当前 Key',
+                        border: OutlineInputBorder(),
                       ),
                     ),
+                    if (testError != null) ...[
+                      const SizedBox(height: 8),
+                      Text(
+                        testError!,
+                        style: TextStyle(
+                          color: Theme.of(context).colorScheme.error,
+                        ),
+                      ),
+                    ],
                   ],
                 ),
-                const SizedBox(height: 8),
-                Row(
-                  children: [
-                    const SizedBox(width: 58, child: Text('语速')),
-                    Expanded(
-                      child: Slider(
-                        value: speed,
-                        min: 0.5,
-                        max: 2.0,
-                        divisions: 15,
-                        label: '${speed.toStringAsFixed(1)}x',
-                        onChanged: (value) =>
-                            setDialogState(() => speed = value),
-                      ),
-                    ),
-                    SizedBox(
-                      width: 42,
-                      child: Text('${speed.toStringAsFixed(1)}x'),
-                    ),
-                  ],
-                ),
-                TextField(
-                  controller: apiKey,
-                  obscureText: true,
-                  decoration: const InputDecoration(
-                    labelText: 'Fish Audio API Key',
-                    hintText: '留空则保留当前 Key',
-                    border: OutlineInputBorder(),
-                  ),
-                ),
-                if (testError != null) ...[
-                  const SizedBox(height: 8),
-                  Text(
-                    testError!,
-                    style: TextStyle(
-                      color: Theme.of(context).colorScheme.error,
-                    ),
-                  ),
-                ],
-              ],
+              ),
             ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () async {
-                await const SecretStore().writeFishAudioKey('');
-                if (context.mounted) Navigator.pop(context, false);
-              },
-              child: const Text('清除 Key'),
-            ),
-            TextButton.icon(
-              onPressed: isTesting
-                  ? null
-                  : () async {
-                      final key = apiKey.text.trim().isNotEmpty
-                          ? apiKey.text.trim()
-                          : await const SecretStore().readFishAudioKey();
-                      if (key.isEmpty || referenceId.text.trim().isEmpty) {
-                        setDialogState(
-                          () => testError = '请先填写 API Key 和 reference_id',
-                        );
-                        return;
-                      }
-                      setDialogState(() {
-                        isTesting = true;
-                        testError = null;
-                      });
-                      try {
-                        final path = await FishAudioClient().synthesize(
-                          apiKey: key,
-                          referenceId: referenceId.text.trim(),
-                          text: '[curious] 这个素材的性质很特别呢。',
-                          model: model,
-                          format: format,
-                          latency: latency,
-                          speed: speed,
-                        );
-                        await player.stop();
-                        await player.setVolume(controller.voiceVolume);
-                        await player.play(DeviceFileSource(path));
-                      } on Object catch (error) {
-                        if (context.mounted) {
-                          setDialogState(() => testError = error.toString());
+            actions: [
+              TextButton(
+                onPressed: () async {
+                  await const SecretStore().writeFishAudioKey('');
+                  if (context.mounted) Navigator.pop(context, false);
+                },
+                child: const Text('清除 Key'),
+              ),
+              TextButton.icon(
+                onPressed: isTesting
+                    ? null
+                    : () async {
+                        final key = apiKey.text.trim().isNotEmpty
+                            ? apiKey.text.trim()
+                            : await const SecretStore().readFishAudioKey();
+                        if (key.isEmpty || referenceId.text.trim().isEmpty) {
+                          setDialogState(
+                            () => testError = '请先填写 API Key 和 reference_id',
+                          );
+                          return;
                         }
-                      } finally {
-                        if (context.mounted) {
-                          setDialogState(() => isTesting = false);
+                        setDialogState(() {
+                          isTesting = true;
+                          testError = null;
+                        });
+                        try {
+                          final path = await FishAudioClient().synthesize(
+                            apiKey: key,
+                            referenceId: referenceId.text.trim(),
+                            text: '[curious] 这个素材的性质很特别呢。',
+                            model: model,
+                            format: format,
+                            latency: latency,
+                            speed: speed,
+                          );
+                          await player.stop();
+                          await player.setVolume(controller.voiceVolume);
+                          await player.play(DeviceFileSource(path));
+                        } on Object catch (error) {
+                          if (context.mounted) {
+                            setDialogState(() => testError = error.toString());
+                          }
+                        } finally {
+                          if (context.mounted) {
+                            setDialogState(() => isTesting = false);
+                          }
                         }
-                      }
-                    },
-              icon: isTesting
-                  ? const SizedBox.square(
-                      dimension: 16,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : const Icon(Icons.play_arrow),
-              label: const Text('试音'),
-            ),
-            TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: const Text('取消'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.pop(context, true),
-              child: const Text('保存'),
-            ),
-          ],
-        ),
+                      },
+                icon: isTesting
+                    ? const SizedBox.square(
+                        dimension: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.play_arrow),
+                label: const Text('试音'),
+              ),
+              TextButton(
+                onPressed: () => Navigator.pop(context, false),
+                child: const Text('取消'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.pop(context, true),
+                child: const Text('保存'),
+              ),
+            ],
+          );
+        },
       ),
     );
     await player.dispose();

@@ -1,13 +1,18 @@
 import 'dart:convert';
+import 'dart:math';
 import 'dart:typed_data';
 
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:ryza_chat_mvp/src/ai_services.dart';
 import 'package:ryza_chat_mvp/src/app_controller.dart';
+import 'package:ryza_chat_mvp/src/audio_envelope.dart';
 import 'package:ryza_chat_mvp/src/character_appearance.dart';
+import 'package:ryza_chat_mvp/src/character_camera.dart';
 import 'package:ryza_chat_mvp/src/character_expression.dart';
+import 'package:ryza_chat_mvp/src/character_performance.dart';
 import 'package:ryza_chat_mvp/src/chat_segments.dart';
 import 'package:ryza_chat_mvp/src/tap_reaction.dart';
 import 'package:ryza_chat_mvp/src/world_map_screen.dart';
@@ -301,7 +306,7 @@ void main() {
   });
 
   test('assistant face cue controls expression but is excluded from TTS', () {
-    const response = '莱莎：[happy][face:happy] 太好了！';
+    const response = '莱莎：[happy][face:happy][action:excited] 太好了！';
     final speech = ttsTextForAssistantResponse(
       response,
       fallbackMood: CharacterMood.neutral,
@@ -310,7 +315,112 @@ void main() {
     expect(expressionForAssistantResponse(response), CharacterExpression.happy);
     expect(speech, '[happy] 太好了！');
     expect(speech, isNot(contains('[face:')));
+    expect(speech, isNot(contains('[action:')));
     expect(displayTextForAssistantResponse(response), '莱莎：太好了！');
+  });
+
+  test('conversation raw output bypasses all assistant filtering', () {
+    const response = ' 旁白：风吹过窗边。\n莱莎：[excited][face:happy][action:wave] 出发吧！\n';
+
+    expect(
+      conversationTextForAssistantResponse(response, showRawOutput: true),
+      same(response),
+    );
+    final filtered = conversationTextForAssistantResponse(
+      response,
+      showRawOutput: false,
+    );
+    expect(filtered, isNot(contains('[face:')));
+    expect(filtered, isNot(contains('[action:')));
+    expect(filtered, isNot(endsWith('\n')));
+  });
+
+  test('assistant performance cue selects the latest face and action', () {
+    const response = '''莱莎：[curious][face:tease][action:think] 让我想想。
+莱莎：[excited][face:happy][action:explain] 我知道该怎么做了！''';
+
+    final cue = performanceCueForAssistantResponse(response);
+
+    expect(cue.expression, CharacterExpression.happy);
+    expect(cue.action, CharacterAction.explain);
+    expect(cue.actionCueCount, 2);
+  });
+
+  test('assistant performance segments preserve per-line timing cues', () {
+    const response = '''旁白：风吹过工房门口。
+莱莎：[curious][face:tease][action:think] 这个气味有点熟悉。
+莱莎：[excited][face:happy][action:explain] 我知道了，是新素材！''';
+
+    final segments = performanceSegmentsForAssistantResponse(
+      response,
+      fallbackMood: CharacterMood.neutral,
+    );
+
+    expect(segments, hasLength(2));
+    expect(segments.first.speechText, '[curious] 这个气味有点熟悉。');
+    expect(segments.first.expression, CharacterExpression.tease);
+    expect(segments.first.action, CharacterAction.think);
+    expect(segments.last.speechText, '[excited] 我知道了，是新素材！');
+    expect(segments.last.expression, CharacterExpression.happy);
+    expect(segments.last.action, CharacterAction.explain);
+    expect(
+      segments.expand((segment) => segment.speechText.codeUnits),
+      isNotEmpty,
+    );
+    expect(
+      segments.map((segment) => segment.speechText).join(),
+      isNot(contains('风吹过')),
+    );
+    expect(
+      segments.map((segment) => segment.speechText).join(),
+      isNot(contains('[face:')),
+    );
+  });
+
+  test('WAV envelope follows silence and speech energy', () {
+    const sampleRate = 8000;
+    const samples = sampleRate ~/ 2;
+    final bytes = Uint8List(44 + samples * 2);
+    final data = ByteData.sublistView(bytes);
+    void writeAscii(int offset, String value) {
+      for (var index = 0; index < value.length; index++) {
+        bytes[offset + index] = value.codeUnitAt(index);
+      }
+    }
+
+    writeAscii(0, 'RIFF');
+    data.setUint32(4, bytes.length - 8, Endian.little);
+    writeAscii(8, 'WAVE');
+    writeAscii(12, 'fmt ');
+    data.setUint32(16, 16, Endian.little);
+    data.setUint16(20, 1, Endian.little);
+    data.setUint16(22, 1, Endian.little);
+    data.setUint32(24, sampleRate, Endian.little);
+    data.setUint32(28, sampleRate * 2, Endian.little);
+    data.setUint16(32, 2, Endian.little);
+    data.setUint16(34, 16, Endian.little);
+    writeAscii(36, 'data');
+    data.setUint32(40, samples * 2, Endian.little);
+    for (var index = samples ~/ 2; index < samples; index++) {
+      final sample = index.isEven ? 18000 : -18000;
+      data.setInt16(44 + index * 2, sample, Endian.little);
+    }
+
+    final envelope = AudioAmplitudeEnvelope.tryParseWav(bytes);
+
+    expect(envelope, isNotNull);
+    expect(envelope!.valueAt(const Duration(milliseconds: 80)), lessThan(0.05));
+    expect(
+      envelope.valueAt(const Duration(milliseconds: 420)),
+      greaterThan(0.7),
+    );
+    final voicedFrames = envelope.values.skip(envelope.values.length ~/ 2);
+    expect(
+      voicedFrames.where((value) => value == 0).length,
+      greaterThanOrEqualTo(2),
+    );
+    expect(voicedFrames.where((value) => value > 0.5), isNotEmpty);
+    expect(envelope.values.every((value) => value >= 0 && value <= 1), isTrue);
   });
 
   test('invalid assistant face cue falls back to neutral', () {
@@ -332,7 +442,7 @@ void main() {
   test('Fish Audio request matches official S2 JSON API', () async {
     final client = MockClient((request) async {
       expect(request.url.toString(), FishAudioClient.endpoint);
-      expect(request.headers['authorization'], 'Bearer test-key');
+      expect(request.headers['authorization'], 'Bearer fish-test-key');
       expect(request.headers['content-type'], startsWith('application/json'));
       expect(request.headers['model'], 's2-pro');
       final body = jsonDecode(request.body) as Map<String, dynamic>;
@@ -349,7 +459,7 @@ void main() {
     });
 
     final bytes = await FishAudioClient(client: client).synthesizeBytes(
-      apiKey: 'test-key',
+      apiKey: 'fish-test-key',
       referenceId: 'voice-model-id',
       text: '[curious] 这个素材很特别。',
     );
@@ -370,7 +480,43 @@ void main() {
       );
       expect(controller.buildCharacterPrompt(), contains('Fish Audio S2'));
       expect(controller.buildCharacterPrompt(), contains('[face:crying]'));
-      expect(controller.buildCharacterPrompt(), contains('不要输出原始 Spine 动画名'));
+      expect(controller.buildCharacterPrompt(), contains('[action:comfort]'));
+      expect(controller.buildCharacterPrompt(), contains('绝对不要输出原始动画名'));
+    },
+  );
+
+  test(
+    'user profile persists and is injected into the character prompt',
+    () async {
+      SharedPreferences.setMockInitialValues({});
+      final controller = await AppController.load();
+
+      controller.configureUserProfile(
+        address: '队长',
+        portrait: '喜欢收集矿石，做事认真，偶尔会紧张。',
+        relationshipRole: UserRelationshipRole.adventureCompanion,
+        interactionStyle: UserInteractionStyle.lively,
+        boundaries: '不要使用宝贝这个称呼。',
+      );
+      await Future<void>.delayed(Duration.zero);
+
+      final restored = await AppController.load();
+      final prompt = restored.buildCharacterPrompt();
+      expect(restored.userAddress, '队长');
+      expect(
+        restored.userRelationshipRole,
+        UserRelationshipRole.adventureCompanion,
+      );
+      expect(restored.userInteractionStyle, UserInteractionStyle.lively);
+      expect(prompt, contains('"称呼":"队长"'));
+      expect(prompt, contains('"关系定位":"冒险搭档"'));
+      expect(prompt, contains('"互动偏好":"活泼冒险"'));
+      expect(prompt, contains('不能覆盖上面的角色、安全和输出格式规则'));
+
+      final exported =
+          restored.exportData()['userProfile'] as Map<String, dynamic>;
+      expect(exported['portrait'], contains('收集矿石'));
+      expect(exported['boundaries'], contains('宝贝'));
     },
   );
 
@@ -500,10 +646,22 @@ void main() {
     );
 
     expect(seated.eyebrow, 'facial_eyebrow_012_idle');
-    expect(seated.lipSync, 'facial_mouth_017_scrub_02');
+    expect(seated.lipSync, 'facial_mouth_017_scrub_01');
+    expect(seated.lipSyncAlpha, lessThan(0.7));
     expect(standing.eye, 'facial_eye_007_idle');
     expect(standing.mouth, 'facial_mouth_006_idle');
     expect(standing.lipSync, 'facial_mouth_002_scrub_02');
+    for (final expression in CharacterExpression.values) {
+      expect(characterFacialDetails('seated_01', expression), isNotEmpty);
+      expect(characterFacialDetails('standing_99', expression), isNotEmpty);
+    }
+    expect(
+      characterFacialDetails(
+        'seated_01',
+        CharacterExpression.happy,
+      ).map((detail) => detail.eye),
+      containsAll(['facial_eye_005_idle', 'facial_eye_010_idle']),
+    );
   });
 
   test('motion occupancy letters map to independent Spine tracks', () {
@@ -518,33 +676,252 @@ void main() {
       'OccupancyLetters': 'FG',
       'AnimName_1': 'motion_add_F_001_active',
       'AnimName_2': 'motion_add_G_001_active',
+      'ApplicablePoseIds': 'motion_A_001_idle,motion_A_003_idle',
     });
     expect(group.occupiedTracks, [6, 7]);
+    expect(group.supportsPose('motion_A_003_idle'), isTrue);
+    expect(group.supportsPose('motion_A_006_idle'), isFalse);
   });
 
-  test('composited motion groups parse without bundled character data', () {
-    final group = CharacterMotionGroup.fromJson({
-      'GroupId': 'custom-wave',
-      'Label': 'Custom wave',
-      'OccupancyLetters': 'FG',
-      'AnimName_1': 'custom_arm_left',
-      'AnimName_2': 'custom_arm_right',
-      'Alpha1': '0.8',
-      'Alpha2': '0.6',
-      'Speed1': '1.2',
-      'Speed2': '0.9',
-      'BlendTime': '0.25',
-    });
+  test('semantic actions map to pose-specific safe motion plans', () {
+    final seated = characterActionPlan('seated_01', CharacterAction.excited);
+    final standing = characterActionPlan('standing_99', CharacterAction.shy);
 
-    expect(group.id, 'custom-wave');
-    expect(group.animation1, 'custom_arm_left');
-    expect(group.animation2, 'custom_arm_right');
-    expect(group.occupiedTracks, [6, 7]);
-    expect(group.alpha1, 0.8);
-    expect(group.alpha2, 0.6);
-    expect(group.speed1, 1.2);
-    expect(group.speed2, 0.9);
-    expect(group.blendTime, 0.25);
+    expect(seated.motionGroupIds, contains('grp_fg_030'));
+    expect(standing.motionGroupIds, contains('grp_fg_004'));
+    expect(
+      characterActionPlan(
+        'standing_99',
+        CharacterAction.acknowledge,
+      ).oneShotFallback,
+      'motion_oneshot_D_001_active',
+    );
+  });
+
+  test('gesture parser exposes composited groups and emotion weights', () {
+    final groups = parseCharacterMotionGroups(
+      jsonEncode({
+        'emotionalGesture': {
+          'MotionGroups': [
+            {
+              'GroupId': 'group-a',
+              'Label': 'composited test group',
+              'OccupancyLetters': 'FG',
+              'AnimName_1': 'motion_add_F_001_active',
+              'AnimName_2': 'motion_add_G_001_active',
+              'ApplicablePoseIds': 'pose-a',
+            },
+          ],
+          'EmotionProfilesV4': {
+            'happy': {
+              'intensityProfiles': {
+                'normal': {
+                  'armGroupWeights': {'group-a': 1.0},
+                },
+              },
+            },
+            'tease': {
+              'intensityProfiles': {
+                'normal': {
+                  'armGroupWeightsByPoseType': {
+                    '': {'group-a': 0.5},
+                  },
+                },
+              },
+            },
+          },
+        },
+      }),
+    );
+
+    expect(groups, hasLength(1));
+    expect(groups.single.animation2, isNotNull);
+    expect(
+      groups.single.weightFor(CharacterExpression.happy),
+      1.0,
+    );
+    expect(
+      groups.single.weightFor(CharacterExpression.tease),
+      0.5,
+    );
+  });
+
+  test('ambient motion prefers groups weighted for the current emotion', () {
+    final weighted = _motionGroup(
+      id: 'happy',
+      emotionWeights: const {CharacterExpression.happy: 1},
+    );
+    final unweighted = _motionGroup(id: 'neutral');
+
+    final selected = selectCharacterAmbientMotionGroup(
+      groups: [unweighted, weighted],
+      expression: CharacterExpression.happy,
+      pose: 'pose-a',
+      recentGroupIds: const {},
+      random: Random(1),
+      allowLargePostureChanges: true,
+      explorationChance: 0,
+    );
+
+    expect(selected?.id, 'happy');
+  });
+
+  test('ambient motion avoids recently used group ids', () {
+    final selected = selectCharacterAmbientMotionGroup(
+      groups: [
+        _motionGroup(id: 'recent'),
+        _motionGroup(id: 'fresh'),
+      ],
+      expression: CharacterExpression.neutral,
+      pose: 'pose-a',
+      recentGroupIds: const {'recent'},
+      random: Random(2),
+      allowLargePostureChanges: true,
+      explorationChance: 1,
+    );
+
+    expect(selected?.id, 'fresh');
+  });
+
+  test('speaking ambient motion excludes large posture changes', () {
+    final selected = selectCharacterAmbientMotionGroup(
+      groups: [
+        _motionGroup(id: 'posture', occupancy: 'C'),
+        _motionGroup(id: 'gesture'),
+      ],
+      expression: CharacterExpression.neutral,
+      pose: 'pose-a',
+      recentGroupIds: const {},
+      random: Random(3),
+      allowLargePostureChanges: false,
+      explorationChance: 1,
+    );
+
+    expect(selected?.id, 'gesture');
+  });
+
+  test('ambient exploration still respects the active pose', () {
+    final selected = selectCharacterAmbientMotionGroup(
+      groups: [
+        _motionGroup(id: 'wrong-pose', applicablePoseIds: const ['pose-b']),
+        _motionGroup(id: 'right-pose', applicablePoseIds: const ['pose-a']),
+      ],
+      expression: CharacterExpression.neutral,
+      pose: 'pose-a',
+      recentGroupIds: const {},
+      random: Random(4),
+      allowLargePostureChanges: true,
+      explorationChance: 1,
+    );
+
+    expect(selected?.id, 'right-pose');
+  });
+
+  testWidgets('two-finger pinch scales only the character camera', (
+    tester,
+  ) async {
+    Offset? tappedPosition;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SizedBox(
+            width: 400,
+            height: 600,
+            child: CharacterCamera(
+              onTap: (position) => tappedPosition = position,
+              initialScale: 1,
+              initialVerticalOffsetFraction: 0,
+              child: const ColoredBox(color: Colors.orange),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    final stage = find.byKey(characterCameraGestureKey);
+    final transformFinder = find.byKey(characterCameraTransformKey);
+    final offsetFinder = find.byKey(characterCameraOffsetKey);
+    expect(stage, findsOneWidget);
+    expect(transformFinder, findsOneWidget);
+    expect(offsetFinder, findsOneWidget);
+    expect(
+      tester.widget<Transform>(transformFinder).transform.getMaxScaleOnAxis(),
+      closeTo(1, 0.001),
+    );
+
+    final center = tester.getCenter(stage);
+    final first = await tester.createGesture(pointer: 1);
+    final second = await tester.createGesture(pointer: 2);
+    await first.down(center + const Offset(-40, 0));
+    await second.down(center + const Offset(40, 0));
+    await first.moveTo(center + const Offset(-90, 0));
+    await second.moveTo(center + const Offset(90, 0));
+    await tester.pump();
+
+    final scale = tester
+        .widget<Transform>(transformFinder)
+        .transform
+        .getMaxScaleOnAxis();
+    expect(scale, greaterThan(1));
+
+    await first.moveBy(const Offset(0, 80));
+    await second.moveBy(const Offset(0, 80));
+    await tester.pump();
+    final verticalOffset = tester
+        .widget<Transform>(offsetFinder)
+        .transform
+        .storage[13];
+    expect(verticalOffset, greaterThan(60));
+
+    await first.up();
+    await second.up();
+    await tester.pump();
+    expect(tappedPosition, isNull);
+
+    await tester.pump(const Duration(milliseconds: 300));
+    final stageRect = tester.getRect(stage);
+    final visualPosition = Offset(
+      stageRect.width / 2 + 80,
+      stageRect.height - 120,
+    );
+    await tester.tapAt(stageRect.topLeft + visualPosition);
+    await tester.pump();
+    final origin = Offset(stageRect.width / 2, stageRect.height);
+    final translated = visualPosition - Offset(0, verticalOffset);
+    final expectedPosition = origin + (translated - origin) / scale;
+    expect(tappedPosition?.dx, closeTo(expectedPosition.dx, 0.01));
+    expect(tappedPosition?.dy, closeTo(expectedPosition.dy, 0.01));
+  });
+
+  testWidgets('character camera defaults to a closer upper-body framing', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SizedBox(
+            width: 400,
+            height: 600,
+            child: CharacterCamera(
+              onTap: (_) {},
+              child: const ColoredBox(color: Colors.orange),
+            ),
+          ),
+        ),
+      ),
+    );
+
+    final scale = tester
+        .widget<Transform>(find.byKey(characterCameraTransformKey))
+        .transform
+        .getMaxScaleOnAxis();
+    final verticalOffset = tester
+        .widget<Transform>(find.byKey(characterCameraOffsetKey))
+        .transform
+        .storage[13];
+    expect(scale, closeTo(1.25, 0.001));
+    expect(verticalOffset, closeTo(120, 0.01));
   });
 
   test(
@@ -565,3 +942,23 @@ void main() {
     },
   );
 }
+
+CharacterMotionGroup _motionGroup({
+  required String id,
+  String occupancy = 'F',
+  List<String> applicablePoseIds = const [],
+  Map<CharacterExpression, double> emotionWeights = const {},
+}) => CharacterMotionGroup(
+  id: id,
+  label: id,
+  occupancy: occupancy,
+  animation1: 'motion_$id',
+  animation2: null,
+  alpha1: 1,
+  alpha2: 1,
+  speed1: 1,
+  speed2: 1,
+  blendTime: 0.3,
+  applicablePoseIds: applicablePoseIds,
+  emotionWeights: emotionWeights,
+);
