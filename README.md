@@ -1,4 +1,16 @@
-# LLMAtelier-
+> **⚠️ Disclaimer**
+>
+> This is an unofficial research and reimplementation project.
+>
+> This repository contains only independently written code, implementation methods, tools, and technical documentation. **Original images, audio, models, fonts, videos, APKs, and other original assets are not included.**
+>
+> All third-party copyrights and intellectual property rights remain with their respective owners.
+>
+> The license of this repository applies only to content created and owned by this project.
+
+
+
+# LLMAtelier
 这是一个通用的安卓端的AI Agent软件
 # 免责声明 / Disclaimer
 
