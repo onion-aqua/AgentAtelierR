@@ -1,3 +1,5 @@
+import 'app_localization.dart';
+
 class TapReaction {
   const TapReaction({
     required this.number,
@@ -16,6 +18,14 @@ class TapReaction {
     final clip = variant.clamp(1, 3).toString().padLeft(2, '0');
     return 'audio/tap_voice/jp/normal/'
         'jp_normal_motion_touch_A_${group}_$clip.m4a';
+  }
+
+  String localizedVoiceAsset(AppLanguage language, int variant) {
+    final locale = language.audioLocaleCode;
+    final group = number.toString().padLeft(3, '0');
+    final clip = variant.clamp(1, 3).toString().padLeft(2, '0');
+    return 'audio/tap_voice/$locale/normal/'
+        '${locale}_normal_motion_touch_A_${group}_$clip.m4a';
   }
 }
 

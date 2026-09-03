@@ -2,7 +2,7 @@ import 'app_controller.dart';
 import 'character_expression.dart';
 import 'character_performance.dart';
 
-enum ChatSpeaker { narrator, ryza }
+enum ChatSpeaker { narrator, ryza, translation }
 
 class ChatSegment {
   const ChatSegment({required this.speaker, required this.text});
@@ -11,7 +11,10 @@ class ChatSegment {
   final String text;
 }
 
-final RegExp _speakerPrefix = RegExp(r'^\s*(旁白|莱莎)\s*[：:]\s*', multiLine: true);
+final RegExp _speakerPrefix = RegExp(
+  r'^\s*(旁白|莱莎|译文)\s*[：:]\s*',
+  multiLine: true,
+);
 final RegExp _fishCue = RegExp(r'\[[^\[\]\r\n]+\]');
 final RegExp _faceCue = RegExp(
   r'\[face\s*:\s*([^\[\]\r\n]+)\]',
@@ -41,9 +44,11 @@ List<ChatSegment> parseAssistantSegments(String response) {
 
     final prefix = _speakerPrefix.firstMatch(line);
     if (prefix != null) {
-      activeSpeaker = prefix.group(1) == '旁白'
-          ? ChatSpeaker.narrator
-          : ChatSpeaker.ryza;
+      activeSpeaker = switch (prefix.group(1)) {
+        '旁白' => ChatSpeaker.narrator,
+        '译文' => ChatSpeaker.translation,
+        _ => ChatSpeaker.ryza,
+      };
       final content = line.substring(prefix.end).trim();
       if (content.isNotEmpty) {
         segments.add(ChatSegment(speaker: activeSpeaker, text: content));
@@ -179,12 +184,19 @@ String displayTextForAssistantResponse(String response) {
         if (!hasExplicitSpeaker && segment.speaker == ChatSpeaker.ryza) {
           return text;
         }
-        final label = segment.speaker == ChatSpeaker.narrator ? '旁白' : '莱莎';
+        final label = switch (segment.speaker) {
+          ChatSpeaker.narrator => '旁白',
+          ChatSpeaker.ryza => '莱莎',
+          ChatSpeaker.translation => '译文',
+        };
         return '$label：$text';
       })
       .where((line) => line.isNotEmpty)
       .join('\n');
 }
+
+String displayTextForAssistantSegment(ChatSegment segment) =>
+    segment.text.replaceAll(_fishCue, '').trim();
 
 String conversationTextForAssistantResponse(
   String response, {

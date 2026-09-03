@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:io';
 import 'dart:math';
-import 'dart:ui' show ImageFilter;
 
 import 'package:audioplayers/audioplayers.dart';
 import 'package:file_picker/file_picker.dart';
@@ -10,12 +9,15 @@ import 'package:spine_flutter/spine_flutter.dart' hide Color;
 
 import 'ai_services.dart';
 import 'app_controller.dart';
+import 'app_localization.dart';
 import 'audio_envelope.dart';
 import 'character_appearance.dart';
 import 'character_camera.dart';
 import 'character_expression.dart';
 import 'character_performance.dart';
 import 'chat_segments.dart';
+import 'enhanced_animation_system.dart';
+import 'glass_ui.dart';
 import 'tap_reaction.dart';
 
 extension SceneTimeIcon on SceneTime {
@@ -51,6 +53,36 @@ String _mimeTypeForFile(String name) {
   };
 }
 
+double conversationPanelFractionForText({
+  required String text,
+  required double viewportWidth,
+  required double viewportHeight,
+  required bool isWide,
+  int segmentCount = 1,
+  bool hasAttachments = false,
+  bool hasImageAttachments = false,
+  bool isReplying = false,
+}) {
+  final charactersPerLine = isWide ? 52 : max(16, (viewportWidth / 18).floor());
+  final wrappedLines = text
+      .split('\n')
+      .fold<int>(
+        0,
+        (sum, line) => sum + max(1, (line.length / charactersPerLine).ceil()),
+      );
+  final visibleLines = wrappedLines.clamp(1, 12);
+  final separatorHeight = max(0, segmentCount - 1) * 17.0;
+  final targetHeight =
+      184.0 +
+      visibleLines * 20.0 +
+      separatorHeight +
+      12.0 +
+      (hasAttachments ? (hasImageAttachments ? 108.0 : 42.0) : 0.0) +
+      (isReplying ? 32.0 : 0.0);
+  final availableHeight = viewportHeight.clamp(480.0, 1200.0);
+  return (targetHeight / availableHeight).clamp(0.22, 0.68);
+}
+
 class ChatScreen extends StatefulWidget {
   const ChatScreen({
     super.key,
@@ -72,11 +104,27 @@ class _PreparedSpeech {
   final AudioAmplitudeEnvelope? envelope;
 }
 
+class _CachedSpeechSegment {
+  const _CachedSpeechSegment({
+    required this.path,
+    required this.envelope,
+    required this.expression,
+    required this.action,
+  });
+
+  final String path;
+  final AudioAmplitudeEnvelope? envelope;
+  final CharacterExpression? expression;
+  final CharacterAction? action;
+}
+
 class _ChatScreenState extends State<ChatScreen> {
   final _audioPlayer = AudioPlayer();
   final _effectPlayer = AudioPlayer();
   final _aiClient = OpenAiCompatibleClient();
   final _fishAudioClient = FishAudioClient();
+  final _dashScopeTtsClient = DashScopeTtsClient();
+  final _genericTtsClient = GenericTtsClient();
   final _secretStore = const SecretStore();
   final _inputController = TextEditingController();
   final _scrollController = ScrollController();
@@ -112,11 +160,17 @@ class _ChatScreenState extends State<ChatScreen> {
   int _speechPlaybackGeneration = 0;
   Completer<void>? _speechCancellation;
   final Set<String> _temporarySpeechPaths = <String>{};
+  List<_CachedSpeechSegment> _lastSpeech = const [];
   int _motionGeneration = 0;
-  double _glassPanelFraction = 0.36;
+  int _replyGeneration = 0;
+  StreamIterator<String>? _replyIterator;
+  double? _manualPanelFraction;
   double? _stableBottomSafeInset;
   double? _stableBodyHeight;
   final List<ChatAttachment> _pendingAttachments = [];
+  bool _characterToolsExpanded = false;
+
+  double _currentEmotionalIntensity = 0.5;
 
   @override
   void initState() {
@@ -139,13 +193,14 @@ class _ChatScreenState extends State<ChatScreen> {
       onAfterUpdateWorldTransforms: _applySpeakingHeadMotion,
       onInitialized: (controller) {
         if (!identical(spineController, _spineController)) return;
-        controller.animationState.getData().setDefaultMix(0.22);
+        controller.animationState.getData().setDefaultMix(0.38);
         _currentIdleAnimation = appearance.idleAnimations.first;
         controller.animationState.setAnimationByName(
           0,
           _currentIdleAnimation!,
           true,
         );
+
         _scheduleIdleChange();
         if (mounted) setState(() => _spineReady = true);
         _applyExpression(_currentExpression);
@@ -216,9 +271,11 @@ class _ChatScreenState extends State<ChatScreen> {
         spineController.skeletonData.findAnimation(animation) == null) {
       return;
     }
-    _resetMotionOverlays();
+    _resetMotionOverlays(mixDuration: 0.32);
     _currentIdleAnimation = animation;
-    spineController.animationState.setAnimationByName(0, animation, true);
+    spineController.animationState
+        .setAnimationByName(0, animation, true)
+        .setMixDuration(0.42);
     _scheduleIdleChange();
   }
 
@@ -229,10 +286,10 @@ class _ChatScreenState extends State<ChatScreen> {
         spineController.skeletonData.findAnimation(animation) == null) {
       return;
     }
-    _resetMotionOverlays();
-    spineController.animationState
-      ..setAnimationByName(1, animation, false)
-      ..addEmptyAnimation(1, 0.3, 0);
+    _resetMotionOverlays(mixDuration: 0.28);
+    final state = spineController.animationState;
+    state.setAnimationByName(1, animation, false).setMixDuration(0.34);
+    state.addEmptyAnimation(1, 0.36, 0);
     _scheduleIdleChange();
   }
 
@@ -247,12 +304,18 @@ class _ChatScreenState extends State<ChatScreen> {
     final tracks = group.occupiedTracks;
     if (tracks.isEmpty) return;
 
-    _resetMotionOverlays();
+    // ✨ 使用动态混合时间替代固定值
+    final dynamicBlend = AnimationBlendCalculator.calculateBlendTime(
+      fromType: AnimationType.idle,
+      toType: AnimationType.action,
+      emotionalIntensity: _currentEmotionalIntensity,
+      currentExpression: _currentExpression.name,
+    );
+    _resetMotionOverlays(mixDuration: dynamicBlend);
+
     final generation = ++_motionGeneration;
     final state = spineController.animationState;
-    state.clearTrack(1);
-    spineController.skeleton.setSlotsToSetupPose();
-    state.apply(spineController.skeleton);
+    state.setEmptyAnimation(1, dynamicBlend);
 
     final animations = <({String name, double alpha, double speed})>[
       (name: group.animation1, alpha: group.alpha1, speed: group.speed1),
@@ -267,16 +330,25 @@ class _ChatScreenState extends State<ChatScreen> {
           spineController.skeletonData.findAnimation(animation.name) == null) {
         continue;
       }
+
+      // ✨ 应用情感权重到动画速度
+      final emotionalTimeScale = EmotionalWeights.getTimeScale(
+        _currentExpression.name,
+      );
+      final adjustedSpeed = animation.speed * emotionalTimeScale;
+
       final entry =
           state.setAnimationByName(tracks[index], animation.name, false)
             ..setAlpha(animation.alpha)
-            ..setTimeScale(animation.speed)
-            // motion_add_* means an overlay track in the source project. Its
-            // keyed transforms are absolute, so Spine's additive math would
-            // apply the arm translation twice and stretch the mesh.
+            ..setTimeScale(adjustedSpeed)
             ..setMixBlend(MixBlend.replace)
-            ..setMixDuration(group.blendTime);
-      final speed = animation.speed.abs() < 0.01 ? 1.0 : animation.speed.abs();
+            ..setMixDuration(max(0.28, group.blendTime));
+
+      // ✨ 应用缓动函数到alpha
+      final easedAlpha = AnimationEasing.easeOutQuad(animation.alpha);
+      entry.setAlpha(easedAlpha);
+
+      final speed = adjustedSpeed.abs() < 0.01 ? 1.0 : adjustedSpeed.abs();
       final duration = entry.getAnimation().getDuration() / speed;
       if (duration > longestDuration) {
         longestDuration = duration;
@@ -285,20 +357,18 @@ class _ChatScreenState extends State<ChatScreen> {
     }
     longestEntry?.setListener((type, _, _) {
       if (type != EventType.complete || generation != _motionGeneration) return;
-      _resetMotionOverlays();
+      _resetMotionOverlays(mixDuration: max(0.3, group.blendTime));
     });
     _scheduleIdleChange();
   }
 
-  void _resetMotionOverlays() {
+  void _resetMotionOverlays({double mixDuration = 0.28}) {
     final spineController = _spineController;
     if (!_spineReady || spineController == null) return;
     _motionGeneration += 1;
     for (var track = 2; track <= 10; track++) {
-      spineController.animationState.clearTrack(track);
+      spineController.animationState.setEmptyAnimation(track, mixDuration);
     }
-    spineController.skeleton.setSlotsToSetupPose();
-    spineController.animationState.apply(spineController.skeleton);
   }
 
   void _setFacialAnimation(
@@ -316,6 +386,7 @@ class _ChatScreenState extends State<ChatScreen> {
     }
     spineController.animationState.setAnimationByName(track, animation, loop)
       ..setMixBlend(MixBlend.replace)
+      ..setMixDuration(0.16)
       ..setAlpha(alpha)
       ..setTimeScale(timeScale);
   }
@@ -323,6 +394,7 @@ class _ChatScreenState extends State<ChatScreen> {
   void _applyExpression(CharacterExpression expression) {
     _expressionRelaxTimer?.cancel();
     _currentExpression = expression;
+
     if (!_spineReady || _spineController == null || _tapReactionActive) return;
     if (expression == CharacterExpression.neutral && !_isCharacterSpeaking) {
       for (var track = 11; track <= 16; track++) {
@@ -438,6 +510,8 @@ class _ChatScreenState extends State<ChatScreen> {
   void _applySpeakingHeadMotion(SpineWidgetController controller) {
     if (!_isCharacterSpeaking || !_speechStopwatch.isRunning) return;
     final seconds = _speechStopwatch.elapsedMicroseconds / 1000000;
+
+    // 保留原有的唇同步逻辑
     final fallbackLipSyncEntry = _lipSyncEntry;
     if (_activeSpeechEnvelope == null && fallbackLipSyncEntry != null) {
       final phase = (seconds * 5.2) % 1;
@@ -450,15 +524,17 @@ class _ChatScreenState extends State<ChatScreen> {
             0.48,
       );
     }
+
     final energy = _currentSpeechEnergy;
-    final phraseEnvelope = pow(sin(seconds * pi * 0.24).abs(), 1.8).toDouble();
+    final phraseEnvelope = pow(sin(seconds * pi * 0.22).abs(), 1.6).toDouble();
     final nod =
-        sin(seconds * pi * 0.82 + 0.25) *
-        (1.15 + energy * 2.35) *
-        (0.38 + phraseEnvelope * 0.62);
+        sin(seconds * pi * 0.72 + 0.25) *
+        (3.2 + energy * 6.4) *
+        (0.42 + phraseEnvelope * 0.58);
     final sway =
-        sin(seconds * pi * 0.29 + 0.8) * (3.15 + energy * 1.25) +
-        sin(seconds * pi * 0.11 + 1.9) * 0.84;
+        sin(seconds * pi * 0.27 + 0.8) * (7.4 + energy * 3.8) +
+        sin(seconds * pi * 0.105 + 1.9) * 2.6;
+    final tilt = sin(seconds * pi * 0.16 + 2.35) * (2.2 + phraseEnvelope * 3.6);
     final head =
         controller.skeleton.findBone('control_roll_head') ??
         controller.skeleton.findBone('head');
@@ -473,10 +549,15 @@ class _ChatScreenState extends State<ChatScreen> {
         lowerBody == null) {
       return;
     }
-    head?.setRotation(head.getRotation() + nod + sway);
-    neck?.setRotation(neck.getRotation() + nod * 0.45 - sway * 0.18);
-    upperBody?.setRotation(upperBody.getRotation() + nod * 0.12 + sway * 0.16);
-    lowerBody?.setRotation(lowerBody.getRotation() - nod * 0.05 - sway * 0.08);
+    final headRotation = (nod + sway + tilt).clamp(-24.0, 24.0).toDouble();
+    head?.setRotation(head.getRotation() + headRotation);
+    neck?.setRotation(
+      neck.getRotation() + nod * 0.58 - sway * 0.22 + tilt * 0.36,
+    );
+    upperBody?.setRotation(
+      upperBody.getRotation() + nod * 0.18 + sway * 0.2 - tilt * 0.12,
+    );
+    lowerBody?.setRotation(lowerBody.getRotation() - nod * 0.07 - sway * 0.09);
     controller.skeleton.updateWorldTransform(Physics.none);
   }
 
@@ -609,6 +690,10 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   void _applyPerformanceFromResponse(String response) {
+    // ✨ 新增：从响应分析情感强度
+    _currentEmotionalIntensity = LLMSemanticAnalyzer.analyzeEmotionalIntensity(
+      response,
+    );
     final cue = performanceCueForAssistantResponse(response);
     final expression = cue.expression;
     if (expression != null && expression != _currentExpression) {
@@ -643,6 +728,10 @@ class _ChatScreenState extends State<ChatScreen> {
 
   @override
   void dispose() {
+    _replyGeneration += 1;
+    final replyIterator = _replyIterator;
+    _replyIterator = null;
+    if (replyIterator != null) unawaited(replyIterator.cancel());
     widget.controller.removeListener(_handleControllerChange);
     final cancellation = _speechCancellation;
     if (cancellation != null && !cancellation.isCompleted) {
@@ -650,6 +739,9 @@ class _ChatScreenState extends State<ChatScreen> {
     }
     for (final path in _temporarySpeechPaths.toList()) {
       unawaited(_deleteTemporarySpeech(path));
+    }
+    for (final segment in _lastSpeech) {
+      unawaited(_deleteTemporarySpeech(segment.path));
     }
     _audioPositionSubscription?.cancel();
     _audioPlayer.dispose();
@@ -662,6 +754,7 @@ class _ChatScreenState extends State<ChatScreen> {
     _facialDetailTimer?.cancel();
     _blinkTimer?.cancel();
     _blinkRestoreTimer?.cancel();
+
     _inputController.dispose();
     _scrollController.dispose();
     super.dispose();
@@ -679,8 +772,8 @@ class _ChatScreenState extends State<ChatScreen> {
         state.clearTrack(track);
       }
       state
-        ..setAnimationByName(1, reaction.animation, false)
-        ..addEmptyAnimation(1, 0.3, 0);
+        ..setAnimationByName(1, reaction.animation, false).setMixDuration(0.34)
+        ..addEmptyAnimation(1, 0.36, 0);
     }
     _tapLabelTimer?.cancel();
     if (mounted) setState(() => _lastTappedPart = reaction.label);
@@ -694,9 +787,20 @@ class _ChatScreenState extends State<ChatScreen> {
     if (!widget.controller.voiceEnabled || _isReplying) return;
     await _audioPlayer.stop();
     await _audioPlayer.setVolume(widget.controller.voiceVolume);
-    await _audioPlayer.play(
-      AssetSource(reaction.voiceAsset(_random.nextInt(3) + 1)),
-    );
+    try {
+      await _audioPlayer.play(
+        AssetSource(
+          reaction.localizedVoiceAsset(
+            widget.controller.characterReplyLanguage,
+            _random.nextInt(3) + 1,
+          ),
+        ),
+      );
+    } on Object {
+      await _audioPlayer.play(
+        AssetSource(reaction.voiceAsset(_random.nextInt(3) + 1)),
+      );
+    }
   }
 
   TapReaction? _hitTestReaction(Offset localPosition) {
@@ -749,21 +853,26 @@ class _ChatScreenState extends State<ChatScreen> {
     setState(() {
       _pendingAttachments.clear();
       _isReplying = true;
+      _manualPanelFraction = null;
     });
+    final generation = ++_replyGeneration;
     _scrollToBottom();
 
     if (!widget.controller.aiEnabled) {
       await Future<void>.delayed(const Duration(milliseconds: 450));
-      if (!mounted) return;
+      if (!mounted || generation != _replyGeneration) return;
       final reply = widget.controller.demoReply(text);
       widget.controller.addAssistantMessage(reply);
-      await _playFishTtsIfConfigured(reply);
-      if (mounted) setState(() => _isReplying = false);
+      await _playTtsIfConfigured(reply);
+      if (mounted && generation == _replyGeneration) {
+        setState(() => _isReplying = false);
+      }
       _scrollToBottom();
       return;
     }
 
     final apiKey = await _secretStore.readOpenAiKey();
+    if (!mounted || generation != _replyGeneration) return;
     if (apiKey.isEmpty) {
       _stopSpeakingAnimation();
       widget.controller.addAssistantMessage('请先在设置中填写 OpenAI 兼容接口的 API Key。');
@@ -772,25 +881,32 @@ class _ChatScreenState extends State<ChatScreen> {
     }
 
     widget.controller.beginAssistantStream();
+    StreamIterator<String>? iterator;
     try {
-      await for (final delta in _aiClient.streamChat(
-        baseUrl: widget.controller.openAiBaseUrl,
-        apiKey: apiKey,
-        model: widget.controller.openAiModel,
-        systemPrompt: widget.controller.buildCharacterPrompt(),
-        messages: widget.controller.recentMessages(),
-        reasoningEffort:
-            widget.controller.openAiAdvancedEnabled &&
-                widget.controller.supportsOpenAiAdvancedControls
-            ? widget.controller.openAiReasoningEffort.name
-            : null,
-        outputMultiplier:
-            widget.controller.openAiAdvancedEnabled &&
-                widget.controller.supportsOpenAiAdvancedControls
-            ? widget.controller.openAiOutputMultiplier
-            : null,
-        agentEnabled: widget.controller.agentEnabled,
-      )) {
+      iterator = StreamIterator<String>(
+        _aiClient.streamChat(
+          baseUrl: widget.controller.openAiBaseUrl,
+          apiKey: apiKey,
+          model: widget.controller.openAiModel,
+          systemPrompt: widget.controller.buildCharacterPrompt(),
+          messages: widget.controller.recentMessages(),
+          reasoningEffort:
+              widget.controller.openAiAdvancedEnabled &&
+                  widget.controller.supportsOpenAiAdvancedControls
+              ? widget.controller.openAiReasoningEffort.name
+              : null,
+          outputMultiplier:
+              widget.controller.openAiAdvancedEnabled &&
+                  widget.controller.supportsOpenAiAdvancedControls
+              ? widget.controller.openAiOutputMultiplier
+              : null,
+          agentEnabled: widget.controller.agentEnabled,
+        ),
+      );
+      _replyIterator = iterator;
+      while (await iterator.moveNext()) {
+        if (generation != _replyGeneration) return;
+        final delta = iterator.current;
         if (!widget.controller.fishTtsEnabled &&
             !_isCharacterSpeaking &&
             delta.trim().isNotEmpty) {
@@ -802,20 +918,66 @@ class _ChatScreenState extends State<ChatScreen> {
         }
         _scrollToBottom();
       }
+      if (generation != _replyGeneration) return;
       final reply = widget.controller.messages.last.text;
       widget.controller.finishAssistantStream();
-      await _playFishTtsIfConfigured(reply);
+      await _playTtsIfConfigured(reply);
+      if (generation != _replyGeneration) return;
       if (widget.controller.longTermMemoryEnabled &&
           widget.controller.userMessageCount % 4 == 0) {
         unawaited(_refreshLongTermMemory(apiKey));
       }
     } on Object catch (error) {
+      if (generation != _replyGeneration) return;
       _stopSpeakingAnimation();
       widget.controller.failAssistantStream(error.toString());
     } finally {
-      if (mounted) setState(() => _isReplying = false);
-      _scrollToBottom();
+      if (identical(_replyIterator, iterator)) _replyIterator = null;
+      if (iterator != null) unawaited(iterator.cancel());
+      if (mounted && generation == _replyGeneration) {
+        setState(() => _isReplying = false);
+        _scrollToBottom();
+      }
     }
+  }
+
+  void _cancelReply() {
+    if (!_isReplying) return;
+    _replyGeneration += 1;
+    final iterator = _replyIterator;
+    _replyIterator = null;
+    if (iterator != null) unawaited(iterator.cancel());
+    _cancelSpeechPlayback();
+    _stopSpeakingAnimation();
+    widget.controller.finishAssistantStream();
+    setState(() => _isReplying = false);
+    _scrollToBottom();
+  }
+
+  void _undoLastMessage() {
+    if (_isReplying) _cancelReply();
+    _cancelSpeechPlayback();
+    final withdrawn = widget.controller.undoLastUserTurn();
+    if (withdrawn == null) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('没有可以撤回的用户消息')));
+      return;
+    }
+    unawaited(_clearLastSpeech());
+    final restoredText = withdrawn.text == '请分析我发送的附件。' ? '' : withdrawn.text;
+    _inputController
+      ..text = restoredText
+      ..selection = TextSelection.collapsed(offset: restoredText.length);
+    setState(() {
+      _pendingAttachments
+        ..clear()
+        ..addAll(
+          withdrawn.attachments.where((attachment) => attachment.bytes != null),
+        );
+      _manualPanelFraction = null;
+    });
+    _applyMoodAnimation();
+    _scrollToBottom();
   }
 
   void _applyMoodAnimation() {
@@ -832,7 +994,7 @@ class _ChatScreenState extends State<ChatScreen> {
     _playIdleAnimation(animation);
   }
 
-  Future<void> _playFishTtsIfConfigured(String text) async {
+  Future<void> _playTtsIfConfigured(String text) async {
     if (text.trim().isEmpty) {
       _stopSpeakingAnimation();
       return;
@@ -851,8 +1013,15 @@ class _ChatScreenState extends State<ChatScreen> {
       _stopSpeakingAnimation();
       return;
     }
-    final apiKey = await _secretStore.readFishAudioKey();
-    if (apiKey.isEmpty || widget.controller.fishAudioReferenceId.isEmpty) {
+    final apiKey = await _secretStore.readTtsKey(widget.controller.ttsProvider);
+    final missingProviderSettings = switch (widget.controller.ttsProvider) {
+      TtsProvider.fishAudio => widget.controller.fishAudioReferenceId.isEmpty,
+      TtsProvider.dashScope =>
+        widget.controller.dashScopeTtsBaseUrl.isEmpty ||
+            widget.controller.dashScopeTtsVoice.isEmpty,
+      TtsProvider.generic => widget.controller.genericTtsBaseUrl.isEmpty,
+    };
+    if (apiKey.isEmpty || missingProviderSettings) {
       _startSpeakingAnimation();
       _applyPerformanceFromResponse(text);
       _scheduleSpeechFallback(text);
@@ -865,8 +1034,9 @@ class _ChatScreenState extends State<ChatScreen> {
     }
     final cancellation = Completer<void>();
     _speechCancellation = cancellation;
+    final completedSegments = <_CachedSpeechSegment>[];
     try {
-      Future<_PreparedSpeech> pending = _prepareFishSpeech(
+      Future<_PreparedSpeech> pending = _prepareSpeech(
         segments.first,
         apiKey,
         generation,
@@ -878,7 +1048,7 @@ class _ChatScreenState extends State<ChatScreen> {
           return;
         }
         final next = index + 1 < segments.length
-            ? _prepareFishSpeech(segments[index + 1], apiKey, generation)
+            ? _prepareSpeech(segments[index + 1], apiKey, generation)
             : null;
         final segment = segments[index];
         if (segment.expression case final expression?) {
@@ -893,11 +1063,23 @@ class _ChatScreenState extends State<ChatScreen> {
         final completed = _audioPlayer.onPlayerComplete.first;
         await _audioPlayer.play(DeviceFileSource(prepared.path));
         await Future.any([completed, cancellation.future]);
-        await _deleteTemporarySpeech(prepared.path);
-        if (generation != _speechPlaybackGeneration) return;
+        if (generation != _speechPlaybackGeneration) {
+          await _deleteSpeechSegments(completedSegments);
+          await _deleteTemporarySpeech(prepared.path);
+          return;
+        }
+        completedSegments.add(
+          _CachedSpeechSegment(
+            path: prepared.path,
+            envelope: prepared.envelope,
+            expression: segment.expression,
+            action: segment.action,
+          ),
+        );
         _stopSpeakingAnimation();
         if (next != null) pending = next;
       }
+      await _replaceLastSpeech(completedSegments);
       _stopSpeakingAnimation();
       if (identical(_speechCancellation, cancellation)) {
         _speechCancellation = null;
@@ -918,27 +1100,54 @@ class _ChatScreenState extends State<ChatScreen> {
       _scheduleSpeechFallback(text);
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Fish Audio 语音生成失败，文本回复不受影响')),
+        SnackBar(
+          content: Text(
+            '${widget.controller.ttsProvider.label} 语音生成失败，文本回复不受影响',
+          ),
+        ),
       );
     }
   }
 
-  Future<_PreparedSpeech> _prepareFishSpeech(
+  Future<_PreparedSpeech> _prepareSpeech(
     RyzaPerformanceSegment segment,
     String apiKey,
     int generation,
   ) async {
     // WAV keeps the PCM samples available for deterministic lip sync. The
     // format preference remains useful for the settings-page voice preview.
-    final path = await _fishAudioClient.synthesize(
-      apiKey: apiKey,
-      referenceId: widget.controller.fishAudioReferenceId,
-      model: widget.controller.fishAudioModel,
-      format: 'wav',
-      latency: widget.controller.fishAudioLatency,
-      speed: widget.controller.fishAudioSpeed,
-      text: segment.speechText,
-    );
+    final plainText = segment.speechText
+        .replaceFirst(RegExp(r'^\s*\[[^\]]+\]\s*'), '')
+        .trim();
+    final path = await switch (widget.controller.ttsProvider) {
+      TtsProvider.fishAudio => _fishAudioClient.synthesize(
+        apiKey: apiKey,
+        referenceId: widget.controller.fishAudioReferenceId,
+        model: widget.controller.fishAudioModel,
+        format: 'wav',
+        latency: widget.controller.fishAudioLatency,
+        speed: widget.controller.fishAudioSpeed,
+        text: segment.speechText,
+      ),
+      TtsProvider.dashScope => _dashScopeTtsClient.synthesize(
+        apiKey: apiKey,
+        baseUrl: widget.controller.dashScopeTtsBaseUrl,
+        model: widget.controller.dashScopeTtsModel,
+        voice: widget.controller.dashScopeTtsVoice,
+        language: widget.controller.dashScopeTtsLanguage,
+        instructions: widget.controller.dashScopeTtsInstructions,
+        text: plainText,
+      ),
+      TtsProvider.generic => _genericTtsClient.synthesize(
+        apiKey: apiKey,
+        baseUrl: widget.controller.genericTtsBaseUrl,
+        model: widget.controller.genericTtsModel,
+        voice: widget.controller.genericTtsVoice,
+        format: 'wav',
+        speed: widget.controller.fishAudioSpeed,
+        text: plainText,
+      ),
+    };
     _temporarySpeechPaths.add(path);
     if (generation != _speechPlaybackGeneration) {
       await _deleteTemporarySpeech(path);
@@ -958,6 +1167,72 @@ class _ChatScreenState extends State<ChatScreen> {
       if (await file.exists()) await file.delete();
     } on FileSystemException {
       // The OS may still hold the decoder handle briefly; temp cleanup is best effort.
+    }
+  }
+
+  Future<void> _deleteSpeechSegments(
+    Iterable<_CachedSpeechSegment> segments,
+  ) async {
+    for (final segment in segments) {
+      await _deleteTemporarySpeech(segment.path);
+    }
+  }
+
+  Future<void> _replaceLastSpeech(List<_CachedSpeechSegment> segments) async {
+    final previous = _lastSpeech;
+    _lastSpeech = List<_CachedSpeechSegment>.unmodifiable(segments);
+    for (final segment in segments) {
+      _temporarySpeechPaths.remove(segment.path);
+    }
+    await _deleteSpeechSegments(previous);
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _clearLastSpeech() async {
+    final previous = _lastSpeech;
+    _lastSpeech = const [];
+    await _deleteSpeechSegments(previous);
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _replayLastSpeech() async {
+    if (_lastSpeech.isEmpty || _isReplying) return;
+    final segments = List<_CachedSpeechSegment>.of(_lastSpeech);
+    final generation = ++_speechPlaybackGeneration;
+    final previousCancellation = _speechCancellation;
+    if (previousCancellation != null && !previousCancellation.isCompleted) {
+      previousCancellation.complete();
+    }
+    final cancellation = Completer<void>();
+    _speechCancellation = cancellation;
+    try {
+      for (final segment in segments) {
+        if (generation != _speechPlaybackGeneration) return;
+        if (segment.expression case final expression?) {
+          _applyExpression(expression);
+        }
+        if (segment.action case final action?) {
+          _performSemanticAction(action);
+        }
+        _startSpeakingAnimation(envelope: segment.envelope);
+        await _audioPlayer.stop();
+        await _audioPlayer.setVolume(widget.controller.voiceVolume);
+        final completed = _audioPlayer.onPlayerComplete.first;
+        await _audioPlayer.play(DeviceFileSource(segment.path));
+        await Future.any([completed, cancellation.future]);
+        if (generation != _speechPlaybackGeneration) return;
+        _stopSpeakingAnimation();
+      }
+    } on Object {
+      if (!mounted || generation != _speechPlaybackGeneration) return;
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('上一条语音文件已失效，请重新生成回复')));
+      await _clearLastSpeech();
+    } finally {
+      if (generation == _speechPlaybackGeneration) _stopSpeakingAnimation();
+      if (identical(_speechCancellation, cancellation)) {
+        _speechCancellation = null;
+      }
     }
   }
 
@@ -1020,9 +1295,7 @@ class _ChatScreenState extends State<ChatScreen> {
   void _scrollToBottom() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!_scrollController.hasClients) return;
-      final target = widget.controller.liquidGlassChatUi
-          ? _scrollController.position.minScrollExtent
-          : _scrollController.position.maxScrollExtent;
+      final target = _scrollController.position.minScrollExtent;
       _scrollController.animateTo(
         target,
         duration: const Duration(milliseconds: 260),
@@ -1035,7 +1308,8 @@ class _ChatScreenState extends State<ChatScreen> {
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
-      backgroundColor: const Color(0xFFF8F6F1),
+      backgroundColor: Colors.transparent,
+      barrierColor: Colors.black38,
       constraints: BoxConstraints(
         maxHeight: MediaQuery.sizeOf(context).height * 0.72,
       ),
@@ -1045,6 +1319,95 @@ class _ChatScreenState extends State<ChatScreen> {
       builder: (context) => _ConversationSheet(
         messages: widget.controller.messages,
         isReplying: _isReplying,
+        language: widget.controller.interfaceLanguage,
+        liquidGlass: widget.controller.liquidGlassChatUi,
+      ),
+    );
+  }
+
+  void _showCharacterStatus() {
+    final language = widget.controller.interfaceLanguage;
+    showDialog<void>(
+      context: context,
+      barrierColor: Colors.black38,
+      builder: (dialogContext) => Dialog(
+        backgroundColor: Colors.transparent,
+        surfaceTintColor: Colors.transparent,
+        insetPadding: const EdgeInsets.symmetric(horizontal: 24),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 380),
+          child: GlassSurface(
+            liquidGlass: widget.controller.liquidGlassChatUi,
+            boxShadow: const [
+              BoxShadow(
+                color: Color(0x66000000),
+                blurRadius: 30,
+                offset: Offset(0, 14),
+              ),
+            ],
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(20, 18, 12, 18),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Row(
+                    children: [
+                      const Icon(
+                        Icons.favorite_border_rounded,
+                        color: Colors.white,
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Text(
+                          language.text('角色状态', 'Character status', 'キャラクター状態'),
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 18,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ),
+                      IconButton(
+                        onPressed: () => Navigator.pop(dialogContext),
+                        tooltip: language.text('关闭', 'Close', '閉じる'),
+                        color: Colors.white,
+                        icon: const Icon(Icons.close_rounded),
+                      ),
+                    ],
+                  ),
+                  const Divider(color: Colors.white24),
+                  _CharacterStatusRow(
+                    icon: Icons.mood_outlined,
+                    label: language.text('心情', 'Mood', '気分'),
+                    value: widget.controller.characterMood.label,
+                  ),
+                  _CharacterStatusRow(
+                    icon: Icons.favorite_rounded,
+                    label: language.text('关系点数', 'Bond', '親密度'),
+                    value: '${widget.controller.relationshipPoints}',
+                  ),
+                  _CharacterStatusRow(
+                    icon: Icons.checkroom_outlined,
+                    label: language.text('服装姿态', 'Outfit', '衣装と姿勢'),
+                    value: _appearance.label,
+                  ),
+                  _CharacterStatusRow(
+                    icon: widget.controller.sceneTime.icon,
+                    label: language.text('场景时间', 'Scene time', 'シーン時間'),
+                    value: widget.controller.sceneTime.label,
+                  ),
+                  _CharacterStatusRow(
+                    icon: Icons.psychology_alt_outlined,
+                    label: language.text('长期记忆', 'Memory', '長期記憶'),
+                    value: widget.controller.longTermMemoryEnabled
+                        ? language.text('启用', 'Enabled', '有効')
+                        : language.text('关闭', 'Disabled', '無効'),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
       ),
     );
   }
@@ -1066,8 +1429,14 @@ class _ChatScreenState extends State<ChatScreen> {
             children: [
               ListTile(
                 leading: const Icon(Icons.image_outlined),
-                title: const Text('发送图片'),
-                subtitle: const Text('JPG、PNG、WebP、GIF'),
+                title: Text(
+                  widget.controller.interfaceLanguage.text(
+                    '发送图片',
+                    'Send image',
+                    '画像を送信',
+                  ),
+                ),
+                subtitle: const Text('JPG, PNG, WebP, GIF'),
                 onTap: () {
                   Navigator.pop(sheetContext);
                   _pickAttachments(imagesOnly: true);
@@ -1075,8 +1444,20 @@ class _ChatScreenState extends State<ChatScreen> {
               ),
               ListTile(
                 leading: const Icon(Icons.description_outlined),
-                title: const Text('发送文件'),
-                subtitle: const Text('PDF、Office、文本和表格文件'),
+                title: Text(
+                  widget.controller.interfaceLanguage.text(
+                    '发送文件',
+                    'Send file',
+                    'ファイルを送信',
+                  ),
+                ),
+                subtitle: Text(
+                  widget.controller.interfaceLanguage.text(
+                    'PDF、Office、文本和表格文件',
+                    'PDF, Office, text and spreadsheet files',
+                    'PDF、Office、テキスト、表計算ファイル',
+                  ),
+                ),
                 onTap: () {
                   Navigator.pop(sheetContext);
                   _pickAttachments(imagesOnly: false);
@@ -1160,7 +1541,8 @@ class _ChatScreenState extends State<ChatScreen> {
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
-      backgroundColor: const Color(0xFFF8F6F1),
+      backgroundColor: Colors.transparent,
+      barrierColor: Colors.black38,
       constraints: BoxConstraints(
         maxHeight: MediaQuery.sizeOf(context).height * 0.72,
       ),
@@ -1169,6 +1551,7 @@ class _ChatScreenState extends State<ChatScreen> {
       ),
       builder: (context) => _MotionPickerSheet(
         appearance: _appearance,
+        liquidGlass: widget.controller.liquidGlassChatUi,
         currentIdleAnimation: _currentIdleAnimation,
         onIdleSelected: _playIdleAnimation,
         onOneShotSelected: _playOneShotAnimation,
@@ -1180,11 +1563,13 @@ class _ChatScreenState extends State<ChatScreen> {
   void _showAppearancePicker() {
     showModalBottomSheet<void>(
       context: context,
-      backgroundColor: const Color(0xFFF8F6F1),
+      backgroundColor: Colors.transparent,
+      barrierColor: Colors.black38,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
       ),
       builder: (context) => _AppearancePickerSheet(
+        liquidGlass: widget.controller.liquidGlassChatUi,
         selectedId: _appearance.id,
         onSelected: (appearance) {
           widget.controller.setCharacterAppearance(appearance.id);
@@ -1221,7 +1606,7 @@ class _ChatScreenState extends State<ChatScreen> {
         stableBottomSafeInset;
 
     return Scaffold(
-      resizeToAvoidBottomInset: !usesLiquidGlass,
+      resizeToAvoidBottomInset: false,
       body: LayoutBuilder(
         builder: (context, viewportConstraints) {
           if (_stableBodyHeight == null ||
@@ -1247,19 +1632,20 @@ class _ChatScreenState extends State<ChatScreen> {
                 height: mediaQuery.size.height,
                 child: _SceneBackground(sceneTime: widget.controller.sceneTime),
               ),
-              if (usesLiquidGlass)
-                Positioned(
-                  top: mediaQuery.viewPadding.top,
-                  left: 0,
-                  right: 0,
-                  height: liquidContentHeight,
-                  child: LayoutBuilder(
-                    builder: (context, constraints) =>
-                        _buildGlassChat(constraints, isWide, keyboardInset),
+              Positioned(
+                top: mediaQuery.viewPadding.top,
+                left: 0,
+                right: 0,
+                height: liquidContentHeight,
+                child: LayoutBuilder(
+                  builder: (context, constraints) => _buildGlassChat(
+                    constraints,
+                    isWide,
+                    keyboardInset,
+                    liquidGlass: usesLiquidGlass,
                   ),
-                )
-              else
-                SafeArea(child: _buildClassicChat(isWide)),
+                ),
+              ),
             ],
           );
         },
@@ -1267,64 +1653,20 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
-  Widget _buildClassicChat(bool isWide) {
-    return Column(
-      children: [
-        _TopBar(
-          sceneTime: widget.controller.sceneTime,
-          onSceneChanged: widget.controller.setSceneTime,
-          onMenuPressed: widget.onMenuPressed,
-          onHistoryPressed: _showMessages,
-        ),
-        Expanded(
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 1120),
-            child: isWide
-                ? Row(
-                    children: [
-                      Expanded(flex: 6, child: _buildCharacter()),
-                      Expanded(
-                        flex: 4,
-                        child: _DesktopConversation(
-                          messages: widget.controller.messages,
-                          isReplying: _isReplying,
-                          scrollController: _scrollController,
-                        ),
-                      ),
-                    ],
-                  )
-                : Column(
-                    children: [
-                      Expanded(child: _buildCharacter()),
-                      _LatestReply(message: widget.controller.messages.last),
-                    ],
-                  ),
-          ),
-        ),
-        _Composer(
-          controller: _inputController,
-          enabled: !_isReplying,
-          showMicrophone: widget.controller.showMicrophoneButton,
-          attachments: _pendingAttachments,
-          onAddAttachment: _showAttachmentPicker,
-          onRemoveAttachment: (attachment) {
-            setState(() => _pendingAttachments.remove(attachment));
-          },
-          onSubmitted: (_) => _sendMessage(),
-          onSend: _sendMessage,
-        ),
-      ],
-    );
-  }
-
   Widget _buildGlassChat(
     BoxConstraints constraints,
     bool isWide,
-    double keyboardInset,
-  ) {
-    final panelHeight = (constraints.maxHeight * _glassPanelFraction).clamp(
+    double keyboardInset, {
+    required bool liquidGlass,
+  }) {
+    final automaticFraction = _automaticPanelFraction(
+      constraints.maxWidth,
+      isWide,
+    );
+    final panelFraction = _manualPanelFraction ?? automaticFraction;
+    final panelHeight = (constraints.maxHeight * panelFraction).clamp(
       176.0,
-      constraints.maxHeight * 0.62,
+      constraints.maxHeight * 0.68,
     );
     final panelWidth = isWide ? 540.0 : constraints.maxWidth - 20;
     return Stack(
@@ -1333,9 +1675,12 @@ class _ChatScreenState extends State<ChatScreen> {
         Column(
           children: [
             _TopBar(
+              language: widget.controller.interfaceLanguage,
+              liquidGlass: liquidGlass,
               sceneTime: widget.controller.sceneTime,
               onSceneChanged: widget.controller.setSceneTime,
               onMenuPressed: widget.onMenuPressed,
+              onStatusPressed: _showCharacterStatus,
               onHistoryPressed: _showMessages,
             ),
             Expanded(
@@ -1347,18 +1692,19 @@ class _ChatScreenState extends State<ChatScreen> {
           ],
         ),
         AnimatedPositioned(
-          duration: const Duration(milliseconds: 220),
-          curve: Curves.easeOutCubic,
+          duration: const Duration(milliseconds: 480),
+          curve: Curves.easeOutBack,
           right: isWide ? 18 : 10,
           bottom: 8 + keyboardInset,
           width: panelWidth,
           height: panelHeight,
           child: _LiquidGlassConversation(
+            language: widget.controller.interfaceLanguage,
+            liquidGlass: liquidGlass,
             messages: widget.controller.messages,
             isReplying: _isReplying,
             scrollController: _scrollController,
             inputController: _inputController,
-            enabled: !_isReplying,
             showMicrophone: widget.controller.showMicrophoneButton,
             attachments: _pendingAttachments,
             onAddAttachment: _showAttachmentPicker,
@@ -1367,18 +1713,52 @@ class _ChatScreenState extends State<ChatScreen> {
             },
             onSubmitted: (_) => _sendMessage(),
             onSend: _sendMessage,
+            onCancel: _cancelReply,
+            canUndo: widget.controller.messages.any(
+              (message) => message.isUser,
+            ),
+            canReplay: _lastSpeech.isNotEmpty && !_isReplying,
+            onUndo: _undoLastMessage,
+            onReplay: _replayLastSpeech,
             onDragUpdate: (delta) {
               setState(() {
-                _glassPanelFraction =
-                    (_glassPanelFraction - delta / constraints.maxHeight).clamp(
+                _manualPanelFraction =
+                    (panelFraction - delta / constraints.maxHeight).clamp(
                       0.22,
-                      0.62,
+                      0.68,
                     );
               });
             },
           ),
         ),
       ],
+    );
+  }
+
+  double _automaticPanelFraction(double viewportWidth, bool isWide) {
+    final latest = widget.controller.messages.isEmpty
+        ? null
+        : widget.controller.messages.last;
+    final text = latest == null
+        ? ''
+        : (latest.isUser ? latest.text : _glassMessageText(latest));
+    final segmentCount = latest == null || latest.isUser
+        ? 1
+        : parseAssistantSegments(latest.text)
+              .where(
+                (segment) => displayTextForAssistantSegment(segment).isNotEmpty,
+              )
+              .length;
+    return conversationPanelFractionForText(
+      text: text,
+      viewportWidth: viewportWidth,
+      viewportHeight: _stableBodyHeight ?? 720,
+      isWide: isWide,
+      segmentCount: max(1, segmentCount),
+      hasAttachments: latest?.attachments.isNotEmpty == true,
+      hasImageAttachments:
+          latest?.attachments.any((attachment) => attachment.isImage) == true,
+      isReplying: false,
     );
   }
 
@@ -1409,33 +1789,42 @@ class _ChatScreenState extends State<ChatScreen> {
         ),
         if (_appearance.animated && !_spineReady)
           const Center(child: CircularProgressIndicator.adaptive()),
-        const Positioned(left: 16, bottom: 10, child: _CharacterLabel()),
+        Positioned(
+          left: 16,
+          bottom: 10,
+          child: _CharacterLabel(
+            liquidGlass: widget.controller.liquidGlassChatUi,
+          ),
+        ),
         Positioned(
           right: 16,
           top: 10,
-          child: Column(
-            children: [
-              _CharacterToolButton(
-                tooltip: '动作',
-                icon: Icons.animation_outlined,
-                onPressed: _showMotionPicker,
-              ),
-              const SizedBox(height: 8),
-              _CharacterToolButton(
-                tooltip: '服装',
-                icon: Icons.checkroom_outlined,
-                onPressed: _showAppearancePicker,
-              ),
-            ],
+          child: _CharacterToolCluster(
+            liquidGlass: widget.controller.liquidGlassChatUi,
+            expanded: _characterToolsExpanded,
+            onToggle: () => setState(
+              () => _characterToolsExpanded = !_characterToolsExpanded,
+            ),
+            onMotionPressed: _showMotionPicker,
+            onAppearancePressed: _showAppearancePicker,
           ),
         ),
         if (_lastTappedPart case final part?)
-          Positioned(right: 16, bottom: 10, child: _TapResultLabel(part: part)),
-        if (!_appearance.animated)
-          const Positioned(
+          Positioned(
             right: 16,
             bottom: 10,
-            child: _StaticAppearanceLabel(),
+            child: _TapResultLabel(
+              part: part,
+              liquidGlass: widget.controller.liquidGlassChatUi,
+            ),
+          ),
+        if (!_appearance.animated)
+          Positioned(
+            right: 16,
+            bottom: 10,
+            child: _StaticAppearanceLabel(
+              liquidGlass: widget.controller.liquidGlassChatUi,
+            ),
           ),
       ],
     );
@@ -1511,16 +1900,99 @@ class _SceneSpineLayerState extends State<_SceneSpineLayer> {
 
 class _TopBar extends StatelessWidget {
   const _TopBar({
+    required this.language,
+    required this.liquidGlass,
     required this.sceneTime,
     required this.onSceneChanged,
     required this.onMenuPressed,
+    required this.onStatusPressed,
     required this.onHistoryPressed,
   });
 
+  final AppLanguage language;
+  final bool liquidGlass;
   final SceneTime sceneTime;
   final ValueChanged<SceneTime> onSceneChanged;
   final VoidCallback onMenuPressed;
+  final VoidCallback onStatusPressed;
   final VoidCallback onHistoryPressed;
+
+  Future<void> _showSceneTimeMenu(BuildContext context) async {
+    final selected = await showDialog<SceneTime>(
+      context: context,
+      barrierColor: Colors.black38,
+      builder: (dialogContext) => Dialog(
+        backgroundColor: Colors.transparent,
+        surfaceTintColor: Colors.transparent,
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 320),
+          child: GlassSurface(
+            liquidGlass: liquidGlass,
+            fallbackColor: const Color(0xD9201D1B),
+            boxShadow: const [
+              BoxShadow(
+                color: Color(0x55000000),
+                blurRadius: 28,
+                offset: Offset(0, 12),
+              ),
+            ],
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(10, 12, 10, 10),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(10, 4, 4, 8),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            language.text(
+                              '切换场景时间',
+                              'Change scene time',
+                              'シーンの時間を変更',
+                            ),
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 17,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ),
+                        IconButton(
+                          onPressed: () => Navigator.pop(dialogContext),
+                          tooltip: language.text('关闭', 'Close', '閉じる'),
+                          color: Colors.white,
+                          icon: const Icon(Icons.close_rounded),
+                        ),
+                      ],
+                    ),
+                  ),
+                  for (final value in SceneTime.values)
+                    _GlassPickerTile(
+                      liquidGlass: liquidGlass,
+                      leading: Icon(value.icon, color: Colors.white),
+                      title: Text(
+                        value.label,
+                        style: const TextStyle(color: Colors.white),
+                      ),
+                      trailing: value == sceneTime
+                          ? const Icon(
+                              Icons.check_circle_rounded,
+                              color: Colors.white,
+                            )
+                          : null,
+                      onTap: () => Navigator.pop(dialogContext, value),
+                    ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    if (selected != null) onSceneChanged(selected);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -1529,54 +2001,63 @@ class _TopBar extends StatelessWidget {
       child: Row(
         children: [
           _RoundIcon(
+            liquidGlass: liquidGlass,
             icon: Icons.menu_rounded,
-            tooltip: '菜单',
+            tooltip: language.text('菜单', 'Menu', 'メニュー'),
             onPressed: onMenuPressed,
           ),
           const SizedBox(width: 10),
-          const Expanded(
+          Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  '莱莎',
-                  style: TextStyle(
+                  language.text('莱莎', 'Ryza', 'ライザ'),
+                  style: const TextStyle(
                     color: Colors.white,
                     fontSize: 20,
                     fontWeight: FontWeight.w700,
                   ),
                 ),
                 Text(
-                  '在线 · 本地原型',
-                  style: TextStyle(color: Colors.white70, fontSize: 12),
+                  language.text(
+                    '在线 · 本地原型',
+                    'Online · Local prototype',
+                    'オンライン · ローカル版',
+                  ),
+                  style: const TextStyle(color: Colors.white70, fontSize: 12),
                 ),
               ],
             ),
           ),
-          PopupMenuButton<SceneTime>(
-            tooltip: '切换场景时间',
-            initialValue: sceneTime,
-            onSelected: onSceneChanged,
-            itemBuilder: (context) => SceneTime.values
-                .map(
-                  (value) => PopupMenuItem(
-                    value: value,
-                    child: Row(
-                      children: [
-                        Icon(value.icon, size: 19),
-                        const SizedBox(width: 10),
-                        Text(value.label),
-                      ],
-                    ),
-                  ),
-                )
-                .toList(),
-            child: _StatusPill(icon: sceneTime.icon, label: sceneTime.label),
+          Tooltip(
+            message: language.text('切换场景时间', 'Change scene time', 'シーンの時間を変更'),
+            child: Semantics(
+              button: true,
+              label: language.text('切换场景时间', 'Change scene time', 'シーンの時間を変更'),
+              child: InkWell(
+                borderRadius: BorderRadius.circular(22),
+                onTap: () => _showSceneTimeMenu(context),
+                child: _StatusPill(
+                  liquidGlass: liquidGlass,
+                  icon: sceneTime.icon,
+                  label: sceneTime.label,
+                ),
+              ),
+            ),
           ),
           const SizedBox(width: 8),
           _RoundIcon(
+            liquidGlass: liquidGlass,
+            icon: Icons.favorite_border_rounded,
+            tooltip: language.text('角色状态', 'Character status', 'キャラクター状態'),
+            onPressed: onStatusPressed,
+          ),
+          const SizedBox(width: 8),
+          _RoundIcon(
+            liquidGlass: liquidGlass,
             icon: Icons.forum_outlined,
-            tooltip: '对话记录',
+            tooltip: language.text('对话记录', 'Conversation history', '会話履歴'),
             onPressed: onHistoryPressed,
           ),
         ],
@@ -1586,79 +2067,187 @@ class _TopBar extends StatelessWidget {
 }
 
 class _RoundIcon extends StatelessWidget {
-  const _RoundIcon({required this.icon, required this.tooltip, this.onPressed});
+  const _RoundIcon({
+    required this.liquidGlass,
+    required this.icon,
+    required this.tooltip,
+    this.onPressed,
+  });
 
+  final bool liquidGlass;
   final IconData icon;
   final String tooltip;
   final VoidCallback? onPressed;
 
   @override
   Widget build(BuildContext context) {
-    return IconButton.filledTonal(
-      onPressed: onPressed ?? () {},
+    return GlassIconButton(
+      liquidGlass: liquidGlass,
+      icon: icon,
       tooltip: tooltip,
-      style: IconButton.styleFrom(
-        fixedSize: const Size.square(42),
-        backgroundColor: Colors.black.withValues(alpha: 0.24),
-        foregroundColor: Colors.white,
-      ),
-      icon: Icon(icon, size: 21),
+      onPressed: onPressed,
     );
   }
 }
 
 class _StatusPill extends StatelessWidget {
-  const _StatusPill({required this.icon, required this.label});
+  const _StatusPill({
+    required this.liquidGlass,
+    required this.icon,
+    required this.label,
+  });
 
+  final bool liquidGlass;
   final IconData icon;
   final String label;
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      height: 42,
-      padding: const EdgeInsets.symmetric(horizontal: 12),
-      decoration: BoxDecoration(
-        color: Colors.black.withValues(alpha: 0.24),
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: Colors.white24),
+    return GlassSurface(
+      liquidGlass: liquidGlass,
+      borderRadius: BorderRadius.circular(21),
+      fallbackColor: Colors.black.withValues(alpha: 0.38),
+      child: SizedBox(
+        height: 42,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(icon, color: Colors.white, size: 18),
+              const SizedBox(width: 7),
+              Text(label, style: const TextStyle(color: Colors.white)),
+              const SizedBox(width: 2),
+              const Icon(
+                Icons.arrow_drop_down,
+                color: Colors.white70,
+                size: 18,
+              ),
+            ],
+          ),
+        ),
       ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(icon, color: Colors.white, size: 18),
-          const SizedBox(width: 7),
-          Text(label, style: const TextStyle(color: Colors.white)),
-          const SizedBox(width: 2),
-          const Icon(Icons.arrow_drop_down, color: Colors.white70, size: 18),
-        ],
-      ),
+    );
+  }
+}
+
+class _CharacterToolCluster extends StatelessWidget {
+  const _CharacterToolCluster({
+    required this.liquidGlass,
+    required this.expanded,
+    required this.onToggle,
+    required this.onMotionPressed,
+    required this.onAppearancePressed,
+  });
+
+  final bool liquidGlass;
+  final bool expanded;
+  final VoidCallback onToggle;
+  final VoidCallback onMotionPressed;
+  final VoidCallback onAppearancePressed;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        _CharacterToolButton(
+          liquidGlass: liquidGlass,
+          tooltip: expanded ? '收起角色工具' : '展开角色工具',
+          icon: expanded ? Icons.close_rounded : Icons.auto_fix_high_outlined,
+          onPressed: onToggle,
+        ),
+        AnimatedSize(
+          duration: const Duration(milliseconds: 260),
+          curve: Curves.easeOutBack,
+          alignment: Alignment.topCenter,
+          child: expanded
+              ? Column(
+                  children: [
+                    const SizedBox(height: 8),
+                    _CharacterToolButton(
+                      liquidGlass: liquidGlass,
+                      tooltip: '动作',
+                      icon: Icons.animation_outlined,
+                      onPressed: onMotionPressed,
+                    ),
+                    const SizedBox(height: 8),
+                    _CharacterToolButton(
+                      liquidGlass: liquidGlass,
+                      tooltip: '服装与姿态',
+                      icon: Icons.checkroom_outlined,
+                      onPressed: onAppearancePressed,
+                    ),
+                  ],
+                )
+              : const SizedBox(width: 42),
+        ),
+      ],
     );
   }
 }
 
 class _CharacterToolButton extends StatelessWidget {
   const _CharacterToolButton({
+    required this.liquidGlass,
     required this.tooltip,
     required this.icon,
     required this.onPressed,
   });
 
+  final bool liquidGlass;
   final String tooltip;
   final IconData icon;
   final VoidCallback onPressed;
 
   @override
   Widget build(BuildContext context) {
-    return Material(
-      color: const Color(0xCC1F211F),
-      borderRadius: BorderRadius.circular(6),
-      child: IconButton(
-        onPressed: onPressed,
-        tooltip: tooltip,
-        icon: Icon(icon),
-        color: Colors.white,
-        iconSize: 21,
+    return GlassIconButton(
+      liquidGlass: liquidGlass,
+      icon: icon,
+      tooltip: tooltip,
+      onPressed: onPressed,
+    );
+  }
+}
+
+class _GlassPickerTile extends StatelessWidget {
+  const _GlassPickerTile({
+    required this.liquidGlass,
+    required this.title,
+    required this.onTap,
+    this.leading,
+    this.subtitle,
+    this.trailing,
+    this.dense = false,
+    this.minVerticalPadding,
+  });
+
+  final bool liquidGlass;
+  final Widget title;
+  final Widget? leading;
+  final Widget? subtitle;
+  final Widget? trailing;
+  final bool dense;
+  final double? minVerticalPadding;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 3),
+      child: GlassSurface(
+        liquidGlass: liquidGlass,
+        borderRadius: BorderRadius.circular(10),
+        fallbackColor: Colors.white.withValues(alpha: 0.08),
+        child: ListTile(
+          dense: dense,
+          minVerticalPadding: minVerticalPadding,
+          leading: leading,
+          title: title,
+          subtitle: subtitle,
+          trailing: trailing,
+          onTap: onTap,
+        ),
       ),
     );
   }
@@ -1667,6 +2256,7 @@ class _CharacterToolButton extends StatelessWidget {
 class _MotionPickerSheet extends StatelessWidget {
   const _MotionPickerSheet({
     required this.appearance,
+    required this.liquidGlass,
     required this.currentIdleAnimation,
     required this.onIdleSelected,
     required this.onOneShotSelected,
@@ -1674,6 +2264,7 @@ class _MotionPickerSheet extends StatelessWidget {
   });
 
   final CharacterAppearance appearance;
+  final bool liquidGlass;
   final String? currentIdleAnimation;
   final ValueChanged<String> onIdleSelected;
   final ValueChanged<String> onOneShotSelected;
@@ -1683,109 +2274,156 @@ class _MotionPickerSheet extends StatelessWidget {
   Widget build(BuildContext context) {
     return SafeArea(
       top: false,
-      child: Column(
-        children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(20, 18, 12, 10),
-            child: Row(
-              children: [
-                const Expanded(
-                  child: Text(
-                    '角色动作',
-                    style: TextStyle(fontSize: 19, fontWeight: FontWeight.w700),
+      child: GlassSurface(
+        liquidGlass: liquidGlass,
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(18)),
+        fallbackColor: const Color(0xE8201D1B),
+        child: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 18, 12, 10),
+              child: Row(
+                children: [
+                  const Expanded(
+                    child: Text(
+                      '角色动作',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 19,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
                   ),
-                ),
-                IconButton(
-                  onPressed: () => Navigator.pop(context),
-                  tooltip: '关闭',
-                  icon: const Icon(Icons.close),
-                ),
-              ],
+                  IconButton(
+                    onPressed: () => Navigator.pop(context),
+                    tooltip: '关闭',
+                    color: Colors.white,
+                    icon: const Icon(Icons.close),
+                  ),
+                ],
+              ),
             ),
-          ),
-          Expanded(
-            child: ListView(
-              padding: const EdgeInsets.fromLTRB(12, 0, 12, 18),
-              children: [
-                _MotionSectionLabel(
-                  title: '闲置姿势',
-                  count: appearance.idleAnimations.length,
-                ),
-                for (final animation in appearance.idleAnimations)
-                  ListTile(
-                    dense: true,
-                    leading: const Icon(Icons.loop),
-                    title: Text(motionDisplayName(animation)),
-                    subtitle: Text(animation),
-                    trailing: animation == currentIdleAnimation
-                        ? const Icon(Icons.check, color: Color(0xFF2D796A))
-                        : const Icon(Icons.play_arrow),
-                    onTap: () {
-                      onIdleSelected(animation);
-                      Navigator.pop(context);
-                    },
+            Expanded(
+              child: ListView(
+                padding: const EdgeInsets.fromLTRB(12, 0, 12, 18),
+                children: [
+                  _MotionSectionLabel(
+                    title: '闲置姿势',
+                    count: appearance.idleAnimations.length,
                   ),
-                const _MotionSectionLabel(title: '一次性动作', count: 12),
-                for (final animation in characterOneShotAnimations)
-                  ListTile(
-                    dense: true,
-                    leading: const Icon(Icons.motion_photos_on_outlined),
-                    title: Text(motionDisplayName(animation)),
-                    subtitle: Text(animation),
-                    trailing: const Icon(Icons.play_arrow),
-                    onTap: () {
-                      onOneShotSelected(animation);
-                      Navigator.pop(context);
-                    },
-                  ),
-                FutureBuilder<List<CharacterMotionGroup>>(
-                  future: loadCharacterMotionGroups(appearance),
-                  builder: (context, snapshot) {
-                    if (snapshot.hasError) {
-                      return const ListTile(
-                        leading: Icon(Icons.error_outline),
-                        title: Text('叠加动作配置读取失败'),
-                      );
-                    }
-                    final groups = snapshot.data;
-                    if (groups == null) {
-                      return const Padding(
-                        padding: EdgeInsets.all(24),
-                        child: Center(
-                          child: CircularProgressIndicator.adaptive(),
-                        ),
-                      );
-                    }
-                    return Column(
-                      children: [
-                        _MotionSectionLabel(
-                          title: '组合动作',
-                          count: groups.length,
-                        ),
-                        for (final group in groups)
-                          ListTile(
-                            dense: true,
-                            leading: const Icon(Icons.layers_outlined),
-                            title: Text(
-                              group.label.isEmpty ? group.id : group.label,
-                            ),
-                            subtitle: Text(
-                              '${group.occupancy} · ${group.animation1}',
-                            ),
-                            trailing: const Icon(Icons.play_arrow),
-                            onTap: () {
-                              onMotionGroupSelected(group);
-                              Navigator.pop(context);
-                            },
+                  for (final animation in appearance.idleAnimations)
+                    _GlassPickerTile(
+                      liquidGlass: liquidGlass,
+                      dense: true,
+                      leading: const Icon(Icons.loop, color: Colors.white70),
+                      title: Text(
+                        motionDisplayName(animation),
+                        style: const TextStyle(color: Colors.white),
+                      ),
+                      subtitle: Text(
+                        animation,
+                        style: const TextStyle(color: Colors.white60),
+                      ),
+                      trailing: animation == currentIdleAnimation
+                          ? const Icon(Icons.check, color: Colors.white)
+                          : const Icon(Icons.play_arrow, color: Colors.white70),
+                      onTap: () {
+                        onIdleSelected(animation);
+                        Navigator.pop(context);
+                      },
+                    ),
+                  const _MotionSectionLabel(title: '一次性动作', count: 12),
+                  for (final animation in characterOneShotAnimations)
+                    _GlassPickerTile(
+                      liquidGlass: liquidGlass,
+                      dense: true,
+                      leading: const Icon(
+                        Icons.motion_photos_on_outlined,
+                        color: Colors.white70,
+                      ),
+                      title: Text(
+                        motionDisplayName(animation),
+                        style: const TextStyle(color: Colors.white),
+                      ),
+                      subtitle: Text(
+                        animation,
+                        style: const TextStyle(color: Colors.white60),
+                      ),
+                      trailing: const Icon(
+                        Icons.play_arrow,
+                        color: Colors.white70,
+                      ),
+                      onTap: () {
+                        onOneShotSelected(animation);
+                        Navigator.pop(context);
+                      },
+                    ),
+                  FutureBuilder<List<CharacterMotionGroup>>(
+                    future: loadCharacterMotionGroups(appearance),
+                    builder: (context, snapshot) {
+                      if (snapshot.hasError) {
+                        return _GlassPickerTile(
+                          liquidGlass: liquidGlass,
+                          leading: const Icon(
+                            Icons.error_outline,
+                            color: Colors.white70,
                           ),
-                      ],
-                    );
-                  },
-                ),
-              ],
+                          title: const Text(
+                            '叠加动作配置读取失败',
+                            style: TextStyle(color: Colors.white),
+                          ),
+                          onTap: null,
+                        );
+                      }
+                      final groups = snapshot.data;
+                      if (groups == null) {
+                        return const Padding(
+                          padding: EdgeInsets.all(24),
+                          child: Center(
+                            child: CircularProgressIndicator.adaptive(),
+                          ),
+                        );
+                      }
+                      return Column(
+                        children: [
+                          _MotionSectionLabel(
+                            title: '组合动作',
+                            count: groups.length,
+                          ),
+                          for (final group in groups)
+                            _GlassPickerTile(
+                              liquidGlass: liquidGlass,
+                              dense: true,
+                              leading: const Icon(
+                                Icons.layers_outlined,
+                                color: Colors.white70,
+                              ),
+                              title: Text(
+                                group.label.isEmpty ? group.id : group.label,
+                                style: const TextStyle(color: Colors.white),
+                              ),
+                              subtitle: Text(
+                                '${group.occupancy} · ${group.animation1}',
+                                style: const TextStyle(color: Colors.white60),
+                              ),
+                              trailing: const Icon(
+                                Icons.play_arrow,
+                                color: Colors.white70,
+                              ),
+                              onTap: () {
+                                onMotionGroupSelected(group);
+                                Navigator.pop(context);
+                              },
+                            ),
+                        ],
+                      );
+                    },
+                  ),
+                ],
+              ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -1814,10 +2452,12 @@ class _MotionSectionLabel extends StatelessWidget {
 
 class _AppearancePickerSheet extends StatelessWidget {
   const _AppearancePickerSheet({
+    required this.liquidGlass,
     required this.selectedId,
     required this.onSelected,
   });
 
+  final bool liquidGlass;
   final String selectedId;
   final ValueChanged<CharacterAppearance> onSelected;
 
@@ -1825,64 +2465,77 @@ class _AppearancePickerSheet extends StatelessWidget {
   Widget build(BuildContext context) {
     return SafeArea(
       top: false,
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(12, 18, 12, 18),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 12),
-              child: Row(
-                children: [
-                  const Expanded(
-                    child: Text(
-                      '服装与姿态',
-                      style: TextStyle(
-                        fontSize: 19,
-                        fontWeight: FontWeight.w700,
+      child: GlassSurface(
+        liquidGlass: liquidGlass,
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(18)),
+        fallbackColor: const Color(0xE8201D1B),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(12, 18, 12, 18),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                child: Row(
+                  children: [
+                    const Expanded(
+                      child: Text(
+                        '服装与姿态',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 19,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ),
+                    IconButton(
+                      onPressed: () => Navigator.pop(context),
+                      tooltip: '关闭',
+                      color: Colors.white,
+                      icon: const Icon(Icons.close),
+                    ),
+                  ],
+                ),
+              ),
+              for (final appearance in characterAppearances)
+                _GlassPickerTile(
+                  liquidGlass: liquidGlass,
+                  minVerticalPadding: 8,
+                  leading: ClipRRect(
+                    borderRadius: BorderRadius.circular(4),
+                    child: ColoredBox(
+                      color: const Color(0xFFE4E0D8),
+                      child: SizedBox.square(
+                        dimension: 54,
+                        child: Image.asset(
+                          appearance.previewAsset,
+                          fit: BoxFit.cover,
+                          alignment: Alignment.topCenter,
+                        ),
                       ),
                     ),
                   ),
-                  IconButton(
-                    onPressed: () => Navigator.pop(context),
-                    tooltip: '关闭',
-                    icon: const Icon(Icons.close),
+                  title: Text(
+                    appearance.label,
+                    style: const TextStyle(color: Colors.white),
                   ),
-                ],
-              ),
-            ),
-            for (final appearance in characterAppearances)
-              ListTile(
-                minVerticalPadding: 8,
-                leading: ClipRRect(
-                  borderRadius: BorderRadius.circular(4),
-                  child: ColoredBox(
-                    color: const Color(0xFFE4E0D8),
-                    child: SizedBox.square(
-                      dimension: 54,
-                      child: Image.asset(
-                        appearance.previewAsset,
-                        fit: BoxFit.cover,
-                        alignment: Alignment.topCenter,
-                      ),
-                    ),
+                  subtitle: Text(
+                    appearance.animated ? '完整 Spine 动画资源' : '原包静态预览资源',
+                    style: const TextStyle(color: Colors.white60),
                   ),
+                  trailing: appearance.id == selectedId
+                      ? const Icon(Icons.check_circle, color: Colors.white)
+                      : Icon(
+                          appearance.animated
+                              ? Icons.animation_outlined
+                              : Icons.image_outlined,
+                          color: Colors.white70,
+                        ),
+                  onTap: () => onSelected(appearance),
                 ),
-                title: Text(appearance.label),
-                subtitle: Text(
-                  appearance.animated ? '完整 Spine 动画资源' : '原包静态预览资源',
-                ),
-                trailing: appearance.id == selectedId
-                    ? const Icon(Icons.check_circle, color: Color(0xFF2D796A))
-                    : Icon(
-                        appearance.animated
-                            ? Icons.animation_outlined
-                            : Icons.image_outlined,
-                      ),
-                onTap: () => onSelected(appearance),
-              ),
-          ],
+            ],
+          ),
         ),
       ),
     );
@@ -1890,22 +2543,63 @@ class _AppearancePickerSheet extends StatelessWidget {
 }
 
 class _CharacterLabel extends StatelessWidget {
-  const _CharacterLabel();
+  const _CharacterLabel({required this.liquidGlass});
+
+  final bool liquidGlass;
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 7),
-      decoration: BoxDecoration(
-        color: const Color(0xCC1F211F),
-        borderRadius: BorderRadius.circular(6),
+    return GlassSurface(
+      liquidGlass: liquidGlass,
+      borderRadius: BorderRadius.circular(16),
+      child: const Padding(
+        padding: EdgeInsets.symmetric(horizontal: 11, vertical: 7),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.touch_app_outlined, color: Colors.white70, size: 16),
+            SizedBox(width: 6),
+            Text('点击互动', style: TextStyle(color: Colors.white, fontSize: 12)),
+          ],
+        ),
       ),
-      child: const Row(
-        mainAxisSize: MainAxisSize.min,
+    );
+  }
+}
+
+class _CharacterStatusRow extends StatelessWidget {
+  const _CharacterStatusRow({
+    required this.icon,
+    required this.label,
+    required this.value,
+  });
+
+  final IconData icon;
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      child: Row(
         children: [
-          Icon(Icons.touch_app_outlined, color: Colors.white70, size: 16),
-          SizedBox(width: 6),
-          Text('点击互动', style: TextStyle(color: Colors.white, fontSize: 12)),
+          Icon(icon, color: Colors.white70, size: 21),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(label, style: const TextStyle(color: Colors.white70)),
+          ),
+          const SizedBox(width: 12),
+          Flexible(
+            child: Text(
+              value,
+              textAlign: TextAlign.end,
+              style: const TextStyle(
+                color: Colors.white,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
         ],
       ),
     );
@@ -1913,44 +2607,47 @@ class _CharacterLabel extends StatelessWidget {
 }
 
 class _StaticAppearanceLabel extends StatelessWidget {
-  const _StaticAppearanceLabel();
+  const _StaticAppearanceLabel({required this.liquidGlass});
+
+  final bool liquidGlass;
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
-      decoration: BoxDecoration(
-        color: const Color(0xCC1F211F),
-        borderRadius: BorderRadius.circular(6),
-      ),
-      child: const Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(Icons.image_outlined, color: Colors.white70, size: 16),
-          SizedBox(width: 6),
-          Text('静态服装', style: TextStyle(color: Colors.white, fontSize: 12)),
-        ],
+    return GlassSurface(
+      liquidGlass: liquidGlass,
+      borderRadius: BorderRadius.circular(16),
+      child: const Padding(
+        padding: EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.image_outlined, color: Colors.white70, size: 16),
+            SizedBox(width: 6),
+            Text('静态服装', style: TextStyle(color: Colors.white, fontSize: 12)),
+          ],
+        ),
       ),
     );
   }
 }
 
 class _TapResultLabel extends StatelessWidget {
-  const _TapResultLabel({required this.part});
+  const _TapResultLabel({required this.part, required this.liquidGlass});
 
   final String part;
+  final bool liquidGlass;
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 7),
-      decoration: BoxDecoration(
-        color: const Color(0xDD2D796A),
-        borderRadius: BorderRadius.circular(6),
-      ),
-      child: Text(
-        '触发：$part',
-        style: const TextStyle(color: Colors.white, fontSize: 12),
+    return GlassSurface(
+      liquidGlass: liquidGlass,
+      borderRadius: BorderRadius.circular(16),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 7),
+        child: Text(
+          '触发：$part',
+          style: const TextStyle(color: Colors.white, fontSize: 12),
+        ),
       ),
     );
   }
@@ -1958,31 +2655,43 @@ class _TapResultLabel extends StatelessWidget {
 
 class _LiquidGlassConversation extends StatelessWidget {
   const _LiquidGlassConversation({
+    required this.language,
+    required this.liquidGlass,
     required this.messages,
     required this.isReplying,
     required this.scrollController,
     required this.inputController,
-    required this.enabled,
     required this.showMicrophone,
     required this.attachments,
     required this.onAddAttachment,
     required this.onRemoveAttachment,
     required this.onSubmitted,
     required this.onSend,
+    required this.onCancel,
+    required this.canUndo,
+    required this.canReplay,
+    required this.onUndo,
+    required this.onReplay,
     required this.onDragUpdate,
   });
 
+  final AppLanguage language;
+  final bool liquidGlass;
   final List<ChatMessage> messages;
   final bool isReplying;
   final ScrollController scrollController;
   final TextEditingController inputController;
-  final bool enabled;
   final bool showMicrophone;
   final List<ChatAttachment> attachments;
   final VoidCallback onAddAttachment;
   final ValueChanged<ChatAttachment> onRemoveAttachment;
   final ValueChanged<String> onSubmitted;
   final VoidCallback onSend;
+  final VoidCallback onCancel;
+  final bool canUndo;
+  final bool canReplay;
+  final VoidCallback onUndo;
+  final VoidCallback onReplay;
   final ValueChanged<double> onDragUpdate;
 
   @override
@@ -1993,12 +2702,13 @@ class _LiquidGlassConversation extends StatelessWidget {
         Positioned.fill(
           top: 18,
           child: _LiquidGlassSurface(
+            liquidGlass: liquidGlass,
             child: Column(
               children: [
                 Expanded(
                   child: _GlassMessageList(
+                    language: language,
                     messages: messages,
-                    isReplying: isReplying,
                     controller: scrollController,
                   ),
                 ),
@@ -2007,17 +2717,50 @@ class _LiquidGlassConversation extends StatelessWidget {
                   color: Colors.white.withValues(alpha: 0.2),
                 ),
                 _GlassComposer(
+                  language: language,
                   controller: inputController,
-                  enabled: enabled,
+                  isReplying: isReplying,
                   showMicrophone: showMicrophone,
                   attachments: attachments,
                   onAddAttachment: onAddAttachment,
                   onRemoveAttachment: onRemoveAttachment,
                   onSubmitted: onSubmitted,
                   onSend: onSend,
+                  onCancel: onCancel,
                 ),
               ],
             ),
+          ),
+        ),
+        Positioned(
+          left: 12,
+          top: 0,
+          child: Row(
+            children: [
+              GlassIconButton(
+                liquidGlass: liquidGlass,
+                icon: Icons.undo_rounded,
+                tooltip: language.text(
+                  '撤回上一条消息',
+                  'Undo last message',
+                  '直前のメッセージを取り消す',
+                ),
+                onPressed: canUndo ? onUndo : null,
+                size: 36,
+              ),
+              const SizedBox(width: 7),
+              GlassIconButton(
+                liquidGlass: liquidGlass,
+                icon: Icons.replay_rounded,
+                tooltip: language.text(
+                  '重播上一条语音',
+                  'Replay last voice',
+                  '直前の音声を再生',
+                ),
+                onPressed: canReplay ? onReplay : null,
+                size: 36,
+              ),
+            ],
           ),
         ),
         Positioned(
@@ -2028,7 +2771,7 @@ class _LiquidGlassConversation extends StatelessWidget {
             child: GestureDetector(
               behavior: HitTestBehavior.opaque,
               onVerticalDragUpdate: (details) => onDragUpdate(details.delta.dy),
-              child: const _GlassDragHandle(),
+              child: _GlassDragHandle(liquidGlass: liquidGlass),
             ),
           ),
         ),
@@ -2038,77 +2781,47 @@ class _LiquidGlassConversation extends StatelessWidget {
 }
 
 class _LiquidGlassSurface extends StatelessWidget {
-  const _LiquidGlassSurface({required this.child});
+  const _LiquidGlassSurface({required this.child, required this.liquidGlass});
 
   final Widget child;
+  final bool liquidGlass;
 
   @override
   Widget build(BuildContext context) {
-    const radius = BorderRadius.all(Radius.circular(18));
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        borderRadius: radius,
-        boxShadow: const [
-          BoxShadow(
-            color: Color(0x52000000),
-            blurRadius: 24,
-            offset: Offset(0, 10),
-          ),
-        ],
-      ),
-      child: ClipRRect(
-        borderRadius: radius,
-        child: BackdropFilter(
-          filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
-          child: DecoratedBox(
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                colors: [
-                  Colors.white.withValues(alpha: 0.24),
-                  const Color(0xFF3B2F2A).withValues(alpha: 0.46),
-                  const Color(0xFF171514).withValues(alpha: 0.54),
-                ],
-              ),
-              borderRadius: radius,
-              border: Border.all(
-                color: Colors.white.withValues(alpha: 0.34),
-                width: 1,
-              ),
-            ),
-            child: child,
-          ),
+    return GlassSurface(
+      liquidGlass: liquidGlass,
+      fallbackColor: const Color(0xFF201D1B).withValues(alpha: 0.72),
+      boxShadow: const [
+        BoxShadow(
+          color: Color(0x52000000),
+          blurRadius: 24,
+          offset: Offset(0, 10),
         ),
-      ),
+      ],
+      child: child,
     );
   }
 }
 
 class _GlassDragHandle extends StatelessWidget {
-  const _GlassDragHandle();
+  const _GlassDragHandle({required this.liquidGlass});
+
+  final bool liquidGlass;
 
   @override
   Widget build(BuildContext context) {
-    return ClipOval(
-      child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 14, sigmaY: 14),
-        child: Container(
-          width: 44,
-          height: 44,
-          decoration: BoxDecoration(
-            shape: BoxShape.circle,
-            color: Colors.white.withValues(alpha: 0.72),
-            border: Border.all(color: Colors.white.withValues(alpha: 0.86)),
-            boxShadow: const [
-              BoxShadow(color: Color(0x33000000), blurRadius: 10),
-            ],
-          ),
-          child: const Icon(
-            Icons.unfold_more_rounded,
-            size: 23,
-            color: Color(0xFF4A2F28),
-          ),
+    return GlassSurface(
+      liquidGlass: liquidGlass,
+      tone: GlassTone.light,
+      borderRadius: BorderRadius.circular(22),
+      fallbackColor: Colors.white.withValues(alpha: 0.82),
+      boxShadow: const [BoxShadow(color: Color(0x33000000), blurRadius: 10)],
+      child: const SizedBox.square(
+        dimension: 44,
+        child: Icon(
+          Icons.unfold_more_rounded,
+          size: 23,
+          color: Color(0xFF4A2F28),
         ),
       ),
     );
@@ -2117,13 +2830,13 @@ class _GlassDragHandle extends StatelessWidget {
 
 class _GlassMessageList extends StatelessWidget {
   const _GlassMessageList({
+    required this.language,
     required this.messages,
-    required this.isReplying,
     required this.controller,
   });
 
+  final AppLanguage language;
   final List<ChatMessage> messages;
-  final bool isReplying;
   final ScrollController controller;
 
   @override
@@ -2135,88 +2848,79 @@ class _GlassMessageList extends StatelessWidget {
       controller: controller,
       reverse: true,
       padding: const EdgeInsets.fromLTRB(14, 32, 14, 8),
-      itemCount: visibleMessages.length + (isReplying ? 1 : 0),
+      itemCount: visibleMessages.length,
       separatorBuilder: (_, _) =>
           Divider(height: 1, color: Colors.white.withValues(alpha: 0.2)),
       itemBuilder: (context, index) {
-        if (isReplying && index == 0) {
-          return const Padding(
-            padding: EdgeInsets.symmetric(vertical: 12),
-            child: Row(
-              children: [
-                SizedBox(
-                  width: 18,
-                  height: 18,
-                  child: CircularProgressIndicator(
-                    strokeWidth: 2,
-                    color: Colors.white,
-                  ),
-                ),
-                SizedBox(width: 10),
-                Text('莱莎正在回复…', style: TextStyle(color: Colors.white70)),
-              ],
-            ),
-          );
-        }
-        final replyOffset = isReplying ? 1 : 0;
-        final messageIndex = visibleMessages.length - 1 - (index - replyOffset);
+        final messageIndex = visibleMessages.length - 1 - index;
         final message = visibleMessages[messageIndex];
-        return Padding(
-          padding: const EdgeInsets.symmetric(vertical: 10),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
+        final avatar = Container(
+          width: 28,
+          height: 28,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: Colors.white.withValues(alpha: 0.16),
+            border: Border.all(color: Colors.white.withValues(alpha: 0.24)),
+          ),
+          child: Icon(
+            message.isUser
+                ? Icons.person_outline_rounded
+                : Icons.auto_awesome_rounded,
+            size: 16,
+            color: Colors.white,
+          ),
+        );
+        final body = Expanded(
+          child: Column(
+            crossAxisAlignment: message.isUser
+                ? CrossAxisAlignment.end
+                : CrossAxisAlignment.start,
             children: [
-              Container(
-                width: 28,
-                height: 28,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: Colors.white.withValues(alpha: 0.16),
-                  border: Border.all(
-                    color: Colors.white.withValues(alpha: 0.24),
-                  ),
-                ),
-                child: Icon(
-                  message.isUser
-                      ? Icons.person_outline_rounded
-                      : Icons.auto_awesome_rounded,
-                  size: 16,
-                  color: Colors.white,
+              Text(
+                message.isUser
+                    ? language.text('你', 'You', 'あなた')
+                    : language.text('莱莎', 'Ryza', 'ライザ'),
+                textAlign: message.isUser ? TextAlign.right : TextAlign.left,
+                style: const TextStyle(
+                  color: Colors.white70,
+                  fontSize: 11,
+                  fontWeight: FontWeight.w600,
                 ),
               ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      message.isUser ? '你' : '莱莎',
-                      style: const TextStyle(
-                        color: Colors.white70,
-                        fontSize: 11,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                    const SizedBox(height: 2),
-                    Text(
-                      _glassMessageText(message),
+              const SizedBox(height: 2),
+              message.isUser
+                  ? Text(
+                      message.text,
+                      textAlign: TextAlign.right,
                       style: const TextStyle(
                         color: Colors.white,
                         fontSize: 14,
                         height: 1.35,
                       ),
-                    ),
-                    if (message.attachments.isNotEmpty) ...[
-                      const SizedBox(height: 7),
-                      _SentAttachmentLabels(
-                        attachments: message.attachments,
-                        glass: true,
-                      ),
-                    ],
-                  ],
+                    )
+                  : _AssistantSegmentBody(response: message.text, glass: true),
+              if (message.attachments.isNotEmpty) ...[
+                const SizedBox(height: 7),
+                Align(
+                  alignment: message.isUser
+                      ? Alignment.centerRight
+                      : Alignment.centerLeft,
+                  child: _SentAttachmentLabels(
+                    attachments: message.attachments,
+                    glass: true,
+                  ),
                 ),
-              ),
+              ],
             ],
+          ),
+        );
+        return Padding(
+          padding: const EdgeInsets.symmetric(vertical: 10),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: message.isUser
+                ? [body, const SizedBox(width: 10), avatar]
+                : [avatar, const SizedBox(width: 10), body],
           ),
         );
       },
@@ -2227,8 +2931,57 @@ class _GlassMessageList extends StatelessWidget {
 String _glassMessageText(ChatMessage message) {
   if (message.isUser) return message.text;
   return displayTextForAssistantResponse(message.text)
-      .replaceAll(RegExp(r'^\s*(旁白|莱莎)\s*[：:]\s*', multiLine: true), '')
+      .replaceAll(RegExp(r'^\s*(旁白|莱莎|译文)\s*[：:]\s*', multiLine: true), '')
       .trim();
+}
+
+class _AssistantSegmentBody extends StatelessWidget {
+  const _AssistantSegmentBody({required this.response, required this.glass});
+
+  final String response;
+  final bool glass;
+
+  @override
+  Widget build(BuildContext context) {
+    final segments = parseAssistantSegments(response)
+        .where((segment) => displayTextForAssistantSegment(segment).isNotEmpty)
+        .toList(growable: false);
+    if (segments.isEmpty) {
+      return Text(
+        response.trim(),
+        style: TextStyle(
+          color: glass ? Colors.white : Theme.of(context).colorScheme.onSurface,
+          height: 1.4,
+        ),
+      );
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        for (var index = 0; index < segments.length; index++) ...[
+          if (index > 0)
+            Divider(
+              height: 17,
+              thickness: 1,
+              color: glass
+                  ? Colors.white.withValues(alpha: 0.22)
+                  : Colors.black.withValues(alpha: 0.13),
+            ),
+          Text(
+            '${segments[index].speaker == ChatSpeaker.translation ? '译文：' : ''}'
+            '${displayTextForAssistantSegment(segments[index])}',
+            style: TextStyle(
+              color: glass
+                  ? Colors.white
+                  : Theme.of(context).colorScheme.onSurface,
+              fontSize: 14,
+              height: 1.4,
+            ),
+          ),
+        ],
+      ],
+    );
+  }
 }
 
 class _PendingAttachmentBar extends StatelessWidget {
@@ -2245,7 +2998,7 @@ class _PendingAttachmentBar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return SizedBox(
-      height: 38,
+      height: 62,
       child: ListView.separated(
         scrollDirection: Axis.horizontal,
         padding: const EdgeInsets.only(bottom: 6),
@@ -2253,28 +3006,46 @@ class _PendingAttachmentBar extends StatelessWidget {
         separatorBuilder: (_, _) => const SizedBox(width: 6),
         itemBuilder: (context, index) {
           final attachment = attachments[index];
-          return InputChip(
-            avatar: Icon(
-              attachment.isImage
-                  ? Icons.image_outlined
-                  : Icons.description_outlined,
-              size: 17,
-              color: glass ? Colors.white : const Color(0xFF2D796A),
+          final foreground = glass ? Colors.white : const Color(0xFF262521);
+          return Container(
+            width: attachment.isImage ? 150 : 190,
+            decoration: BoxDecoration(
+              color: glass
+                  ? Colors.white.withValues(alpha: 0.13)
+                  : const Color(0xFFE7E4DD),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(
+                color: glass ? Colors.white24 : Colors.black12,
+              ),
             ),
-            label: Text(
-              '${attachment.name} · ${_attachmentSizeLabel(attachment.size)}',
-              overflow: TextOverflow.ellipsis,
+            child: Row(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.all(4),
+                  child: _AttachmentThumbnail(
+                    attachment: attachment,
+                    size: 46,
+                    foreground: foreground,
+                  ),
+                ),
+                const SizedBox(width: 4),
+                Expanded(
+                  child: Text(
+                    '${attachment.name}\n${_attachmentSizeLabel(attachment.size)}',
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(color: foreground, fontSize: 10.5),
+                  ),
+                ),
+                IconButton(
+                  onPressed: () => onRemove(attachment),
+                  tooltip: '移除',
+                  visualDensity: VisualDensity.compact,
+                  color: glass ? Colors.white70 : Colors.black54,
+                  icon: const Icon(Icons.close_rounded, size: 18),
+                ),
+              ],
             ),
-            labelStyle: TextStyle(
-              color: glass ? Colors.white : const Color(0xFF262521),
-              fontSize: 11,
-            ),
-            backgroundColor: glass
-                ? Colors.white.withValues(alpha: 0.13)
-                : const Color(0xFFE7E4DD),
-            side: BorderSide(color: glass ? Colors.white24 : Colors.black12),
-            deleteIconColor: glass ? Colors.white70 : Colors.black54,
-            onDeleted: () => onRemove(attachment),
           );
         },
       ),
@@ -2303,65 +3074,161 @@ class _SentAttachmentLabels extends StatelessWidget {
       runSpacing: 5,
       children: [
         for (final attachment in attachments)
-          Container(
-            constraints: const BoxConstraints(maxWidth: 240),
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
-            decoration: BoxDecoration(
-              color: glass
-                  ? Colors.white.withValues(alpha: 0.12)
-                  : Colors.black.withValues(alpha: 0.06),
-              borderRadius: BorderRadius.circular(6),
-              border: Border.all(
-                color: glass ? Colors.white24 : Colors.black12,
+          if (attachment.isImage && attachment.bytes != null)
+            Container(
+              constraints: const BoxConstraints(maxWidth: 180),
+              decoration: BoxDecoration(
+                color: glass
+                    ? Colors.white.withValues(alpha: 0.12)
+                    : Colors.black.withValues(alpha: 0.06),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(
+                  color: glass ? Colors.white24 : Colors.black12,
+                ),
+              ),
+              clipBehavior: Clip.antiAlias,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  _AttachmentThumbnail(
+                    attachment: attachment,
+                    width: 178,
+                    height: 96,
+                    foreground: foreground,
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 8,
+                      vertical: 5,
+                    ),
+                    child: Text(
+                      attachment.name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(color: foreground, fontSize: 11),
+                    ),
+                  ),
+                ],
+              ),
+            )
+          else
+            Container(
+              constraints: const BoxConstraints(maxWidth: 240),
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+              decoration: BoxDecoration(
+                color: glass
+                    ? Colors.white.withValues(alpha: 0.12)
+                    : Colors.black.withValues(alpha: 0.06),
+                borderRadius: BorderRadius.circular(6),
+                border: Border.all(
+                  color: glass ? Colors.white24 : Colors.black12,
+                ),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.description_outlined, size: 15, color: foreground),
+                  const SizedBox(width: 5),
+                  Flexible(
+                    child: Text(
+                      attachment.name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(color: foreground, fontSize: 11),
+                    ),
+                  ),
+                ],
               ),
             ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(
-                  attachment.isImage
-                      ? Icons.image_outlined
-                      : Icons.description_outlined,
-                  size: 15,
-                  color: foreground,
-                ),
-                const SizedBox(width: 5),
-                Flexible(
-                  child: Text(
-                    attachment.name,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(color: foreground, fontSize: 11),
-                  ),
-                ),
-              ],
-            ),
-          ),
       ],
+    );
+  }
+}
+
+class _AttachmentThumbnail extends StatelessWidget {
+  const _AttachmentThumbnail({
+    required this.attachment,
+    required this.foreground,
+    this.size,
+    this.width,
+    this.height,
+  });
+
+  final ChatAttachment attachment;
+  final Color foreground;
+  final double? size;
+  final double? width;
+  final double? height;
+
+  @override
+  Widget build(BuildContext context) {
+    final previewWidth = width ?? size ?? 46;
+    final previewHeight = height ?? size ?? 46;
+    final bytes = attachment.bytes;
+    if (attachment.isImage && bytes != null) {
+      return ClipRRect(
+        borderRadius: BorderRadius.circular(7),
+        child: Image.memory(
+          bytes,
+          width: previewWidth,
+          height: previewHeight,
+          fit: BoxFit.cover,
+          cacheWidth: (previewWidth * 2).round(),
+          gaplessPlayback: true,
+          errorBuilder: (_, _, _) => _attachmentFallback(
+            previewWidth,
+            previewHeight,
+            Icons.broken_image_outlined,
+          ),
+        ),
+      );
+    }
+    return _attachmentFallback(
+      previewWidth,
+      previewHeight,
+      attachment.isImage ? Icons.image_outlined : Icons.description_outlined,
+    );
+  }
+
+  Widget _attachmentFallback(double width, double height, IconData icon) {
+    return Container(
+      width: width,
+      height: height,
+      decoration: BoxDecoration(
+        color: foreground.withValues(alpha: 0.10),
+        borderRadius: BorderRadius.circular(7),
+      ),
+      alignment: Alignment.center,
+      child: Icon(icon, color: foreground, size: 22),
     );
   }
 }
 
 class _GlassComposer extends StatelessWidget {
   const _GlassComposer({
+    required this.language,
     required this.controller,
-    required this.enabled,
+    required this.isReplying,
     required this.showMicrophone,
     required this.attachments,
     required this.onAddAttachment,
     required this.onRemoveAttachment,
     required this.onSubmitted,
     required this.onSend,
+    required this.onCancel,
   });
 
+  final AppLanguage language;
   final TextEditingController controller;
-  final bool enabled;
+  final bool isReplying;
   final bool showMicrophone;
   final List<ChatAttachment> attachments;
   final VoidCallback onAddAttachment;
   final ValueChanged<ChatAttachment> onRemoveAttachment;
   final ValueChanged<String> onSubmitted;
   final VoidCallback onSend;
+  final VoidCallback onCancel;
 
   @override
   Widget build(BuildContext context) {
@@ -2382,7 +3249,11 @@ class _GlassComposer extends StatelessWidget {
               if (showMicrophone) ...[
                 IconButton(
                   onPressed: () {},
-                  tooltip: '语音输入（待接入）',
+                  tooltip: language.text(
+                    '语音输入（待接入）',
+                    'Voice input (coming later)',
+                    '音声入力（未実装）',
+                  ),
                   color: Colors.white,
                   icon: const Icon(Icons.mic_none_rounded),
                 ),
@@ -2404,20 +3275,37 @@ class _GlassComposer extends StatelessWidget {
                   ),
                   child: TextField(
                     controller: controller,
-                    enabled: enabled,
+                    readOnly: isReplying,
                     minLines: 1,
                     maxLines: 3,
+                    textAlignVertical: TextAlignVertical.center,
                     textInputAction: TextInputAction.send,
-                    onSubmitted: onSubmitted,
+                    onSubmitted: isReplying ? null : onSubmitted,
                     style: const TextStyle(color: Colors.white),
                     cursorColor: Colors.white,
                     decoration: InputDecoration(
-                      hintText: enabled ? '和莱莎说点什么…' : '莱莎正在回复…',
+                      isDense: true,
+                      contentPadding: const EdgeInsets.symmetric(vertical: 13),
+                      hintText: !isReplying
+                          ? language.text(
+                              '和莱莎说点什么…',
+                              'Say something to Ryza…',
+                              'ライザに話しかける…',
+                            )
+                          : language.text(
+                              '莱莎正在回复…',
+                              'Ryza is replying…',
+                              'ライザが返信中…',
+                            ),
                       hintStyle: const TextStyle(color: Colors.white60),
                       border: InputBorder.none,
                       suffixIcon: IconButton(
-                        onPressed: enabled ? onAddAttachment : null,
-                        tooltip: '添加图片或文件',
+                        onPressed: !isReplying ? onAddAttachment : null,
+                        tooltip: language.text(
+                          '添加图片或文件',
+                          'Add image or file',
+                          '画像またはファイルを追加',
+                        ),
                         color: Colors.white,
                         icon: const Icon(Icons.add_rounded, size: 30),
                       ),
@@ -2427,16 +3315,30 @@ class _GlassComposer extends StatelessWidget {
               ),
               const SizedBox(width: 8),
               IconButton.filled(
-                onPressed: enabled ? onSend : null,
-                tooltip: '发送',
+                onPressed: isReplying ? onCancel : onSend,
+                tooltip: isReplying
+                    ? language.text('停止回复', 'Stop response', '返信を停止')
+                    : language.text('发送', 'Send', '送信'),
                 style: IconButton.styleFrom(
                   fixedSize: const Size.square(46),
                   backgroundColor: const Color(0xFFF65C2D),
                   foregroundColor: Colors.white,
-                  disabledBackgroundColor: Colors.white24,
-                  disabledForegroundColor: Colors.white54,
                 ),
-                icon: const Icon(Icons.arrow_upward_rounded),
+                icon: isReplying
+                    ? Stack(
+                        alignment: Alignment.center,
+                        children: [
+                          const SizedBox.square(
+                            dimension: 27,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: Colors.white70,
+                            ),
+                          ),
+                          const Icon(Icons.close_rounded, size: 19),
+                        ],
+                      )
+                    : const Icon(Icons.arrow_upward_rounded),
               ),
             ],
           ),
@@ -2446,197 +3348,18 @@ class _GlassComposer extends StatelessWidget {
   }
 }
 
-class _LatestReply extends StatelessWidget {
-  const _LatestReply({required this.message});
-
-  final ChatMessage message;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: double.infinity,
-      constraints: const BoxConstraints(minHeight: 74, maxHeight: 112),
-      margin: const EdgeInsets.fromLTRB(12, 0, 12, 10),
-      padding: const EdgeInsets.fromLTRB(14, 11, 14, 12),
-      decoration: BoxDecoration(
-        color: const Color(0xEEFBF9F4),
-        borderRadius: BorderRadius.circular(8),
-        border: const Border(
-          left: BorderSide(color: Color(0xFF2D796A), width: 4),
-        ),
-        boxShadow: const [
-          BoxShadow(
-            color: Color(0x29000000),
-            blurRadius: 12,
-            offset: Offset(0, 4),
-          ),
-        ],
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Text(
-            message.isUser ? '你' : '莱莎',
-            style: const TextStyle(
-              color: Color(0xFF2D796A),
-              fontSize: 12,
-              fontWeight: FontWeight.w700,
-            ),
-          ),
-          const SizedBox(height: 4),
-          Flexible(
-            child: Text(
-              message.isUser
-                  ? message.text
-                  : displayTextForAssistantResponse(message.text),
-              maxLines: 3,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(fontSize: 15, height: 1.35),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _Composer extends StatelessWidget {
-  const _Composer({
-    required this.controller,
-    required this.enabled,
-    required this.showMicrophone,
-    required this.attachments,
-    required this.onAddAttachment,
-    required this.onRemoveAttachment,
-    required this.onSubmitted,
-    required this.onSend,
-  });
-
-  final TextEditingController controller;
-  final bool enabled;
-  final bool showMicrophone;
-  final List<ChatAttachment> attachments;
-  final VoidCallback onAddAttachment;
-  final ValueChanged<ChatAttachment> onRemoveAttachment;
-  final ValueChanged<String> onSubmitted;
-  final VoidCallback onSend;
-
-  @override
-  Widget build(BuildContext context) {
-    return Material(
-      color: const Color(0xFFF8F6F1),
-      elevation: 12,
-      child: SafeArea(
-        top: false,
-        child: Center(
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 1120),
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(12, 7, 12, 10),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  if (attachments.isNotEmpty)
-                    _PendingAttachmentBar(
-                      attachments: attachments,
-                      onRemove: onRemoveAttachment,
-                      glass: false,
-                    ),
-                  Row(
-                    crossAxisAlignment: CrossAxisAlignment.end,
-                    children: [
-                      if (showMicrophone) ...[
-                        IconButton(
-                          onPressed: () {},
-                          tooltip: '语音输入（待接入）',
-                          icon: const Icon(Icons.mic_none_rounded),
-                        ),
-                        const SizedBox(width: 4),
-                      ],
-                      Expanded(
-                        child: Container(
-                          constraints: const BoxConstraints(
-                            minHeight: 46,
-                            maxHeight: 108,
-                          ),
-                          padding: const EdgeInsets.only(left: 14),
-                          decoration: BoxDecoration(
-                            color: const Color(0xFFECEAE5),
-                            borderRadius: BorderRadius.circular(8),
-                          ),
-                          child: TextField(
-                            controller: controller,
-                            enabled: enabled,
-                            minLines: 1,
-                            maxLines: 4,
-                            textInputAction: TextInputAction.send,
-                            onSubmitted: onSubmitted,
-                            decoration: InputDecoration(
-                              hintText: enabled ? '和莱莎说点什么…' : '莱莎正在回复…',
-                              suffixIcon: IconButton(
-                                onPressed: enabled ? onAddAttachment : null,
-                                tooltip: '添加图片或文件',
-                                icon: const Icon(Icons.add_rounded, size: 30),
-                              ),
-                            ),
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      IconButton.filled(
-                        onPressed: enabled ? onSend : null,
-                        tooltip: '发送',
-                        style: IconButton.styleFrom(
-                          fixedSize: const Size.square(46),
-                        ),
-                        icon: const Icon(Icons.arrow_upward_rounded),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _DesktopConversation extends StatelessWidget {
-  const _DesktopConversation({
+class _ConversationSheet extends StatefulWidget {
+  const _ConversationSheet({
     required this.messages,
     required this.isReplying,
-    required this.scrollController,
+    required this.language,
+    required this.liquidGlass,
   });
 
   final List<ChatMessage> messages;
   final bool isReplying;
-  final ScrollController scrollController;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      margin: const EdgeInsets.fromLTRB(8, 18, 18, 18),
-      decoration: BoxDecoration(
-        color: const Color(0xE6F8F6F1),
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: _MessageList(
-        messages: messages,
-        isReplying: isReplying,
-        controller: scrollController,
-      ),
-    );
-  }
-}
-
-class _ConversationSheet extends StatefulWidget {
-  const _ConversationSheet({required this.messages, required this.isReplying});
-
-  final List<ChatMessage> messages;
-  final bool isReplying;
+  final AppLanguage language;
+  final bool liquidGlass;
 
   @override
   State<_ConversationSheet> createState() => _ConversationSheetState();
@@ -2661,65 +3384,89 @@ class _ConversationSheetState extends State<_ConversationSheet> {
   Widget build(BuildContext context) {
     return SafeArea(
       top: false,
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          const SizedBox(height: 10),
-          Container(
-            width: 36,
-            height: 4,
-            decoration: BoxDecoration(
-              color: Colors.black26,
-              borderRadius: BorderRadius.circular(2),
+      child: GlassSurface(
+        liquidGlass: widget.liquidGlass,
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(18)),
+        fallbackColor: const Color(0xE8201D1B),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SizedBox(height: 10),
+            Container(
+              width: 36,
+              height: 4,
+              decoration: BoxDecoration(
+                color: Colors.white38,
+                borderRadius: BorderRadius.circular(2),
+              ),
             ),
-          ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(18, 14, 8, 8),
-            child: Row(
-              children: [
-                const Expanded(
-                  child: Text(
-                    '对话记录',
-                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(18, 14, 8, 8),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      widget.language.text(
+                        '对话记录',
+                        'Conversation history',
+                        '会話履歴',
+                      ),
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 18,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
                   ),
-                ),
-                IconButton(
-                  onPressed: () => Navigator.pop(context),
-                  tooltip: '关闭',
-                  icon: const Icon(Icons.close),
-                ),
-              ],
-            ),
-          ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(18, 0, 12, 8),
-            child: Row(
-              children: [
-                const Expanded(
-                  child: Text(
-                    '显示原始输出',
-                    style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+                  IconButton(
+                    onPressed: () => Navigator.pop(context),
+                    tooltip: widget.language.text('关闭', 'Close', '閉じる'),
+                    color: Colors.white,
+                    icon: const Icon(Icons.close),
                   ),
-                ),
-                Switch.adaptive(
-                  value: _showRawOutput,
-                  onChanged: (value) {
-                    setState(() => _showRawOutput = value);
-                  },
-                ),
-              ],
+                ],
+              ),
             ),
-          ),
-          Flexible(
-            child: _MessageList(
-              messages: widget.messages,
-              isReplying: widget.isReplying,
-              controller: _controller,
-              reverse: true,
-              showRawOutput: _showRawOutput,
+            Padding(
+              padding: const EdgeInsets.fromLTRB(18, 0, 12, 8),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      widget.language.text(
+                        '显示原始输出',
+                        'Show raw output',
+                        '生の出力を表示',
+                      ),
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 14,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                  Switch.adaptive(
+                    value: _showRawOutput,
+                    onChanged: (value) {
+                      setState(() => _showRawOutput = value);
+                    },
+                    activeTrackColor: Colors.white38,
+                  ),
+                ],
+              ),
             ),
-          ),
-        ],
+            Flexible(
+              child: _MessageList(
+                messages: widget.messages,
+                isReplying: widget.isReplying,
+                controller: _controller,
+                reverse: true,
+                showRawOutput: _showRawOutput,
+                glass: true,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -2732,6 +3479,7 @@ class _MessageList extends StatelessWidget {
     this.controller,
     this.reverse = false,
     this.showRawOutput = false,
+    this.glass = false,
   });
 
   final List<ChatMessage> messages;
@@ -2739,6 +3487,7 @@ class _MessageList extends StatelessWidget {
   final ScrollController? controller;
   final bool reverse;
   final bool showRawOutput;
+  final bool glass;
 
   @override
   Widget build(BuildContext context) {
@@ -2751,17 +3500,7 @@ class _MessageList extends StatelessWidget {
         final isReplyIndicator =
             isReplying && (reverse ? index == 0 : index == messages.length);
         if (isReplyIndicator) {
-          return const Align(
-            alignment: Alignment.centerLeft,
-            child: Padding(
-              padding: EdgeInsets.symmetric(vertical: 8),
-              child: SizedBox(
-                width: 22,
-                height: 22,
-                child: CircularProgressIndicator(strokeWidth: 2),
-              ),
-            ),
-          );
+          return const SizedBox.shrink();
         }
         final messageIndex = reverse
             ? messages.length - 1 - (index - (isReplying ? 1 : 0))
@@ -2777,33 +3516,35 @@ class _MessageList extends StatelessWidget {
             padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 10),
             decoration: BoxDecoration(
               color: message.isUser
-                  ? const Color(0xFF2D796A)
-                  : const Color(0xFFE7E4DD),
+                  ? (glass
+                        ? Colors.white.withValues(alpha: 0.20)
+                        : const Color(0xFF2D796A))
+                  : (glass
+                        ? Colors.black.withValues(alpha: 0.18)
+                        : const Color(0xFFE7E4DD)),
               borderRadius: BorderRadius.circular(8),
             ),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               mainAxisSize: MainAxisSize.min,
               children: [
-                Text(
-                  message.isUser
-                      ? message.text
-                      : conversationTextForAssistantResponse(
-                          message.text,
-                          showRawOutput: showRawOutput,
-                        ),
-                  style: TextStyle(
-                    color: message.isUser
-                        ? Colors.white
-                        : const Color(0xFF262521),
-                    height: 1.4,
-                  ),
-                ),
+                if (message.isUser || showRawOutput)
+                  Text(
+                    message.text,
+                    style: TextStyle(
+                      color: message.isUser
+                          ? Colors.white
+                          : (glass ? Colors.white : const Color(0xFF262521)),
+                      height: 1.4,
+                    ),
+                  )
+                else
+                  _AssistantSegmentBody(response: message.text, glass: glass),
                 if (message.attachments.isNotEmpty) ...[
                   const SizedBox(height: 7),
                   _SentAttachmentLabels(
                     attachments: message.attachments,
-                    glass: message.isUser,
+                    glass: glass || message.isUser,
                   ),
                 ],
               ],

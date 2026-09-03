@@ -21,11 +21,36 @@ class SecretStore {
   Future<String> readFishAudioKey() async =>
       await _storage.read(key: 'fish_audio_api_key') ?? '';
 
+  Future<String> readDashScopeKey() async =>
+      await _storage.read(key: 'dashscope_api_key') ?? '';
+
+  Future<String> readGenericTtsKey() async =>
+      await _storage.read(key: 'generic_tts_api_key') ?? '';
+
   Future<void> writeOpenAiKey(String value) =>
       _writeOrDelete('openai_api_key', value);
 
   Future<void> writeFishAudioKey(String value) =>
       _writeOrDelete('fish_audio_api_key', value);
+
+  Future<void> writeDashScopeKey(String value) =>
+      _writeOrDelete('dashscope_api_key', value);
+
+  Future<void> writeGenericTtsKey(String value) =>
+      _writeOrDelete('generic_tts_api_key', value);
+
+  Future<String> readTtsKey(TtsProvider provider) => switch (provider) {
+    TtsProvider.fishAudio => readFishAudioKey(),
+    TtsProvider.dashScope => readDashScopeKey(),
+    TtsProvider.generic => readGenericTtsKey(),
+  };
+
+  Future<void> writeTtsKey(TtsProvider provider, String value) =>
+      switch (provider) {
+        TtsProvider.fishAudio => writeFishAudioKey(value),
+        TtsProvider.dashScope => writeDashScopeKey(value),
+        TtsProvider.generic => writeGenericTtsKey(value),
+      };
 
   Future<void> _writeOrDelete(String key, String value) {
     final trimmed = value.trim();
@@ -536,6 +561,170 @@ class FishAudioClient {
     }
     return response.bodyBytes;
   }
+}
+
+class DashScopeTtsClient {
+  DashScopeTtsClient({http.Client? client}) : _client = client ?? http.Client();
+
+  static const endpoint =
+      'https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation';
+  final http.Client _client;
+
+  Future<String> synthesize({
+    required String apiKey,
+    required String text,
+    required String model,
+    required String voice,
+    String baseUrl = endpoint,
+    String language = 'Chinese',
+    String instructions = '',
+  }) async {
+    final bytes = await synthesizeBytes(
+      apiKey: apiKey,
+      text: text,
+      model: model,
+      voice: voice,
+      baseUrl: baseUrl,
+      language: language,
+      instructions: instructions,
+    );
+    return _writeTemporaryAudio(bytes, 'dashscope_tts', 'wav');
+  }
+
+  Future<Uint8List> synthesizeBytes({
+    required String apiKey,
+    required String text,
+    required String model,
+    required String voice,
+    String baseUrl = endpoint,
+    String language = 'Chinese',
+    String instructions = '',
+  }) async {
+    final response = await _client.post(
+      Uri.parse(baseUrl.trim().isEmpty ? endpoint : baseUrl.trim()),
+      headers: {
+        'Authorization': 'Bearer $apiKey',
+        'Content-Type': 'application/json',
+      },
+      body: jsonEncode({
+        'model': model,
+        'input': {
+          'text': text,
+          'voice': voice,
+          'language_type': language,
+          if (instructions.trim().isNotEmpty) ...{
+            'instructions': instructions.trim(),
+            'optimize_instructions': true,
+          },
+        },
+      }),
+    );
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw AiServiceException(
+        '百炼 Qwen-TTS 请求失败 (${response.statusCode})${_responseMessage(response.body)}',
+      );
+    }
+    final decoded = jsonDecode(response.body) as Map<String, dynamic>;
+    final output = decoded['output'] as Map<String, dynamic>?;
+    final audio = output?['audio'] as Map<String, dynamic>?;
+    final url = audio?['url'] as String? ?? output?['url'] as String?;
+    if (url == null || url.isEmpty) {
+      throw const AiServiceException('百炼 Qwen-TTS 响应中没有音频 URL');
+    }
+    final audioResponse = await _client.get(Uri.parse(url));
+    if (audioResponse.statusCode < 200 || audioResponse.statusCode >= 300) {
+      throw AiServiceException('百炼音频下载失败 (${audioResponse.statusCode})');
+    }
+    return audioResponse.bodyBytes;
+  }
+}
+
+class GenericTtsClient {
+  GenericTtsClient({http.Client? client}) : _client = client ?? http.Client();
+
+  final http.Client _client;
+
+  Future<String> synthesize({
+    required String baseUrl,
+    required String apiKey,
+    required String text,
+    required String model,
+    required String voice,
+    String format = 'wav',
+    double speed = 1.0,
+  }) async {
+    final bytes = await synthesizeBytes(
+      baseUrl: baseUrl,
+      apiKey: apiKey,
+      text: text,
+      model: model,
+      voice: voice,
+      format: format,
+      speed: speed,
+    );
+    return _writeTemporaryAudio(bytes, 'generic_tts', format);
+  }
+
+  Future<Uint8List> synthesizeBytes({
+    required String baseUrl,
+    required String apiKey,
+    required String text,
+    required String model,
+    required String voice,
+    String format = 'wav',
+    double speed = 1.0,
+  }) async {
+    final normalized = baseUrl.trim().replaceFirst(RegExp(r'/+$'), '');
+    final endpoint = normalized.endsWith('/audio/speech')
+        ? normalized
+        : '$normalized/audio/speech';
+    final response = await _client.post(
+      Uri.parse(endpoint),
+      headers: {
+        'Authorization': 'Bearer $apiKey',
+        'Content-Type': 'application/json',
+      },
+      body: jsonEncode({
+        'model': model,
+        'input': text,
+        'voice': voice,
+        'response_format': format,
+        'speed': speed.clamp(0.5, 2.0),
+      }),
+    );
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw AiServiceException(
+        '通用 TTS 请求失败 (${response.statusCode})${_responseMessage(response.body)}',
+      );
+    }
+    return response.bodyBytes;
+  }
+}
+
+String _responseMessage(String body) {
+  try {
+    final decoded = jsonDecode(body) as Map<String, dynamic>;
+    final error = decoded['error'];
+    final message =
+        decoded['message'] ??
+        (error is Map<String, dynamic> ? error['message'] : error);
+    return message is String && message.isNotEmpty ? '：$message' : '';
+  } on Object {
+    return '';
+  }
+}
+
+Future<String> _writeTemporaryAudio(
+  Uint8List bytes,
+  String prefix,
+  String extension,
+) async {
+  final directory = await getTemporaryDirectory();
+  final file = File(
+    '${directory.path}${Platform.pathSeparator}${prefix}_${DateTime.now().millisecondsSinceEpoch}.$extension',
+  );
+  await file.writeAsBytes(bytes, flush: true);
+  return file.path;
 }
 
 class AiServiceException implements Exception {

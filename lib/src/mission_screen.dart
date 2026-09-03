@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'app_controller.dart';
+import 'app_localization.dart';
 
 class MissionScreen extends StatelessWidget {
   const MissionScreen({
@@ -14,6 +15,7 @@ class MissionScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final language = controller.interfaceLanguage;
     final completed = AppController.missions
         .where(controller.isMissionComplete)
         .length;
@@ -22,10 +24,10 @@ class MissionScreen extends StatelessWidget {
       appBar: AppBar(
         leading: IconButton(
           onPressed: onMenuPressed,
-          tooltip: '菜单',
+          tooltip: language.text('菜单', 'Menu', 'メニュー'),
           icon: const Icon(Icons.menu),
         ),
-        title: const Text('欢迎任务'),
+        title: Text(language.text('欢迎任务', 'Welcome missions', 'ウェルカムミッション')),
         actions: [
           Padding(
             padding: const EdgeInsets.only(right: 16),
@@ -70,7 +72,11 @@ class MissionScreen extends StatelessWidget {
                       mainAxisAlignment: MainAxisAlignment.end,
                       children: [
                         Text(
-                          '$completed / ${AppController.missions.length} 已完成',
+                          language.text(
+                            '$completed / ${AppController.missions.length} 已完成',
+                            '$completed / ${AppController.missions.length} complete',
+                            '$completed / ${AppController.missions.length} 完了',
+                          ),
                           style: const TextStyle(
                             color: Colors.white,
                             fontSize: 22,
@@ -121,7 +127,7 @@ class _MissionTile extends StatelessWidget {
     final claimed = controller.claimedMissionIds.contains(mission.id);
 
     return Material(
-      color: Colors.white,
+      color: Theme.of(context).colorScheme.surfaceContainer,
       borderRadius: BorderRadius.circular(8),
       child: Padding(
         padding: const EdgeInsets.all(14),
@@ -149,18 +155,31 @@ class _MissionTile extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    mission.title,
+                    _missionTitle(mission.id, controller.interfaceLanguage),
                     style: const TextStyle(fontWeight: FontWeight.w700),
                   ),
                   const SizedBox(height: 2),
                   Text(
-                    mission.description,
-                    style: const TextStyle(color: Colors.black54, fontSize: 13),
+                    _missionDescription(
+                      mission.id,
+                      controller.interfaceLanguage,
+                    ),
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                      fontSize: 13,
+                    ),
                   ),
                   const SizedBox(height: 7),
                   Text(
-                    '$progress / ${mission.target}  ·  奖励 ${mission.reward} 星',
-                    style: const TextStyle(fontSize: 12, color: Colors.black54),
+                    controller.interfaceLanguage.text(
+                      '$progress / ${mission.target}  ·  奖励 ${mission.reward} 星',
+                      '$progress / ${mission.target}  ·  ${mission.reward} stars',
+                      '$progress / ${mission.target}  ·  ${mission.reward}スター',
+                    ),
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
                   ),
                 ],
               ),
@@ -174,11 +193,21 @@ class _MissionTile extends StatelessWidget {
                     ? () {
                         controller.claimMission(mission);
                         ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(content: Text('获得 ${mission.reward} 星')),
+                          SnackBar(
+                            content: Text(
+                              controller.interfaceLanguage.text(
+                                '获得 ${mission.reward} 星',
+                                'Earned ${mission.reward} stars',
+                                '${mission.reward}スターを獲得',
+                              ),
+                            ),
+                          ),
                         );
                       }
                     : null,
-                child: const Text('领取'),
+                child: Text(
+                  controller.interfaceLanguage.text('领取', 'Claim', '受け取る'),
+                ),
               ),
           ],
         ),
@@ -186,3 +215,37 @@ class _MissionTile extends StatelessWidget {
     );
   }
 }
+
+String _missionTitle(String id, AppLanguage language) => switch (id) {
+  'touch_character' => language.text('打个招呼', 'Say hello', 'あいさつする'),
+  'first_chat' => language.text('开始聊天', 'Start chatting', '会話を始める'),
+  'open_map' => language.text('查看世界', 'View the world', '世界を見る'),
+  'travel' => language.text('选择目的地', 'Choose a destination', '目的地を選ぶ'),
+  'scene_time' => language.text('改变时间', 'Change the time', '時間を変える'),
+  _ => id,
+};
+
+String _missionDescription(String id, AppLanguage language) => switch (id) {
+  'touch_character' => language.text(
+    '点击莱莎触发一次互动',
+    'Tap Ryza once',
+    'ライザをタップして交流する',
+  ),
+  'first_chat' => language.text(
+    '向莱莎发送第一条消息',
+    'Send Ryza your first message',
+    'ライザに最初のメッセージを送る',
+  ),
+  'open_map' => language.text('打开世界地图', 'Open the world map', 'ワールドマップを開く'),
+  'travel' => language.text(
+    '在地图中选择一个地点',
+    'Choose a location on the map',
+    'マップで場所を選ぶ',
+  ),
+  'scene_time' => language.text(
+    '手动切换一次场景时间',
+    'Change the scene time once',
+    'シーンの時間を変更する',
+  ),
+  _ => id,
+};

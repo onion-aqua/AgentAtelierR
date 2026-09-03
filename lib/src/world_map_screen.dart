@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'app_controller.dart';
+import 'app_localization.dart';
 
 class WorldArea {
   const WorldArea({required this.id, required this.name, required this.fields});
@@ -112,20 +113,29 @@ class _WorldMapScreenState extends State<WorldMapScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final language = widget.controller.interfaceLanguage;
     return Scaffold(
       appBar: AppBar(
         leading: IconButton(
           onPressed: widget.onMenuPressed,
-          tooltip: '菜单',
+          tooltip: language.text('菜单', 'Menu', 'メニュー'),
           icon: const Icon(Icons.menu),
         ),
-        title: const Text('世界地图'),
+        title: Text(language.text('世界地图', 'World map', 'ワールドマップ')),
       ),
       body: FutureBuilder<WorldMapData>(
         future: _data,
         builder: (context, snapshot) {
           if (snapshot.hasError) {
-            return const Center(child: Text('地图数据读取失败'));
+            return Center(
+              child: Text(
+                language.text(
+                  '地图数据读取失败',
+                  'Unable to load map data',
+                  'マップデータを読み込めません',
+                ),
+              ),
+            );
           }
           if (!snapshot.hasData) {
             return const Center(child: CircularProgressIndicator.adaptive());
@@ -166,7 +176,13 @@ class _WorldMapScreenState extends State<WorldMapScreen> {
                 final area = data.areas[index];
                 return ChoiceChip(
                   selected: area.id == selectedArea.id,
-                  label: Text('区域 ${index + 1}'),
+                  label: Text(
+                    widget.controller.interfaceLanguage.text(
+                      '区域 ${index + 1}',
+                      'Area ${index + 1}',
+                      'エリア ${index + 1}',
+                    ),
+                  ),
                   onSelected: (_) {
                     final firstStage = area.fields.first.stages.first;
                     widget.controller.selectLocation(
@@ -218,7 +234,12 @@ class _WorldMapScreenState extends State<WorldMapScreen> {
                     ),
                     const SizedBox(height: 4),
                     Text(
-                      selectedStage?.name ?? '选择一个地点',
+                      selectedStage?.name ??
+                          widget.controller.interfaceLanguage.text(
+                            '选择一个地点',
+                            'Choose a location',
+                            '場所を選択',
+                          ),
                       style: const TextStyle(color: Colors.white70),
                     ),
                   ],
@@ -233,9 +254,13 @@ class _WorldMapScreenState extends State<WorldMapScreen> {
               padding: const EdgeInsets.fromLTRB(16, 14, 16, 8),
               child: Row(
                 children: [
-                  const Text(
-                    '可能遇见',
-                    style: TextStyle(fontWeight: FontWeight.w700),
+                  Text(
+                    widget.controller.interfaceLanguage.text(
+                      '可能遇见',
+                      'You may meet',
+                      '出会えるかも',
+                    ),
+                    style: const TextStyle(fontWeight: FontWeight.w700),
                   ),
                   const SizedBox(width: 12),
                   Expanded(
@@ -276,6 +301,7 @@ class _WorldMapScreenState extends State<WorldMapScreen> {
                 field: field,
                 expanded: expanded,
                 selectedStageId: widget.controller.selectedStageId,
+                language: widget.controller.interfaceLanguage,
                 onToggle: () => setState(
                   () => _expandedFieldId = expanded ? null : field.id,
                 ),
@@ -285,7 +311,15 @@ class _WorldMapScreenState extends State<WorldMapScreen> {
                     stageId: stage.id,
                   );
                   ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(content: Text('目的地已设为：${stage.name}')),
+                    SnackBar(
+                      content: Text(
+                        widget.controller.interfaceLanguage.text(
+                          '目的地已设为：${stage.name}',
+                          'Destination set: ${stage.name}',
+                          '目的地を設定：${stage.name}',
+                        ),
+                      ),
+                    ),
                   );
                 },
               );
@@ -314,6 +348,7 @@ class _FieldSection extends StatelessWidget {
     required this.field,
     required this.expanded,
     required this.selectedStageId,
+    required this.language,
     required this.onToggle,
     required this.onStageSelected,
   });
@@ -321,6 +356,7 @@ class _FieldSection extends StatelessWidget {
   final WorldField field;
   final bool expanded;
   final String selectedStageId;
+  final AppLanguage language;
   final VoidCallback onToggle;
   final ValueChanged<WorldStage> onStageSelected;
 
@@ -335,7 +371,13 @@ class _FieldSection extends StatelessWidget {
             field.name,
             style: const TextStyle(fontWeight: FontWeight.w600),
           ),
-          subtitle: Text('${field.stages.length} 个地点'),
+          subtitle: Text(
+            language.text(
+              '${field.stages.length} 个地点',
+              '${field.stages.length} locations',
+              '${field.stages.length}か所',
+            ),
+          ),
           trailing: Icon(expanded ? Icons.expand_less : Icons.expand_more),
           onTap: onToggle,
         ),

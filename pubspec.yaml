@@ -16,7 +16,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 0.3.9+12
+version: 0.5.0+14
 
 environment:
   sdk: ^3.13.2
@@ -34,8 +34,7 @@ dependencies:
   # The following adds the Cupertino Icons font to your application.
   # Use with the CupertinoIcons class for iOS style icons.
   cupertino_icons: ^1.0.8
-  # Official runtime dependency. Spine assets still require an appropriate
-  # Spine Editor/runtime license; no third-party skeletons are bundled here.
+  # Public builds use the official runtime. Proprietary skeletons are not bundled.
   spine_flutter: 4.2.36
   audioplayers: ^6.8.1
   shared_preferences: ^2.5.5
@@ -81,6 +80,8 @@ flutter:
     - assets/audio/soundscape/
     - assets/audio/se/
     - assets/audio/tap_voice/jp/normal/
+    - assets/audio/tap_voice/zh-tw/normal/
+    - assets/audio/tap_voice/en/normal/
     - assets/scenes/stage_00_000_00_mor/
     - assets/scenes/stage_00_000_00_mor/spine/
     - assets/scenes/stage_00_000_00_aft/

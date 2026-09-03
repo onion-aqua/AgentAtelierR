@@ -4,9 +4,17 @@ import 'package:alarm/alarm.dart';
 import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
 
-class AlarmScreen extends StatefulWidget {
-  const AlarmScreen({super.key, required this.onMenuPressed});
+import 'app_controller.dart';
+import 'app_localization.dart';
 
+class AlarmScreen extends StatefulWidget {
+  const AlarmScreen({
+    super.key,
+    required this.controller,
+    required this.onMenuPressed,
+  });
+
+  final AppController controller;
   final VoidCallback onMenuPressed;
 
   @override
@@ -37,12 +45,22 @@ class _AlarmScreenState extends State<AlarmScreen> {
   }
 
   Future<void> _addAlarm() async {
+    final language = widget.controller.interfaceLanguage;
     await Permission.notification.request();
     final exactAlarmStatus = await Permission.scheduleExactAlarm.request();
     if (!exactAlarmStatus.isGranted && !exactAlarmStatus.isLimited) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context)
-          .showSnackBar(const SnackBar(content: Text('需要“闹钟和提醒”权限才能准时响铃')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            language.text(
+              '需要“闹钟和提醒”权限才能准时响铃',
+              'Alarm permission is required to ring on time',
+              '正確な時刻に鳴らすにはアラーム権限が必要です',
+            ),
+          ),
+        ),
+      );
       return;
     }
 
@@ -51,7 +69,7 @@ class _AlarmScreenState extends State<AlarmScreen> {
     final selected = await showTimePicker(
       context: context,
       initialTime: TimeOfDay.fromDateTime(now.add(const Duration(minutes: 1))),
-      helpText: '选择响铃时间',
+      helpText: language.text('选择响铃时间', 'Choose alarm time', 'アラーム時刻を選択'),
     );
     if (selected == null) return;
     var dateTime = DateTime(
@@ -77,11 +95,15 @@ class _AlarmScreenState extends State<AlarmScreen> {
         fadeDuration: const Duration(seconds: 4),
       ),
       androidSnoozeDuration: const Duration(minutes: 5),
-      notificationSettings: const NotificationSettings(
-        title: '莱莎来叫你了',
-        body: '约定的时间到了，快醒醒吧。',
-        stopButton: '停止',
-        androidSnoozeButton: '稍后提醒',
+      notificationSettings: NotificationSettings(
+        title: language.text('莱莎来叫你了', 'Ryza is waking you up', 'ライザが起こしに来ました'),
+        body: language.text(
+          '约定的时间到了，快醒醒吧。',
+          'It is time. Wake up!',
+          '約束の時間です。起きてください！',
+        ),
+        stopButton: language.text('停止', 'Stop', '停止'),
+        androidSnoozeButton: language.text('稍后提醒', 'Snooze', 'スヌーズ'),
         androidStopAlarmOnDismiss: false,
       ),
     );
@@ -99,22 +121,23 @@ class _AlarmScreenState extends State<AlarmScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final language = widget.controller.interfaceLanguage;
     return Scaffold(
       appBar: AppBar(
         leading: IconButton(
           onPressed: widget.onMenuPressed,
-          tooltip: '菜单',
+          tooltip: language.text('菜单', 'Menu', 'メニュー'),
           icon: const Icon(Icons.menu),
         ),
-        title: const Text('语音闹钟'),
+        title: Text(language.text('语音闹钟', 'Voice alarms', 'ボイスアラーム')),
       ),
       floatingActionButton: FloatingActionButton(
         onPressed: _addAlarm,
-        tooltip: '添加闹钟',
+        tooltip: language.text('添加闹钟', 'Add alarm', 'アラームを追加'),
         child: const Icon(Icons.add_alarm_outlined),
       ),
       body: _alarms.isEmpty
-          ? const Center(
+          ? Center(
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
@@ -124,9 +147,18 @@ class _AlarmScreenState extends State<AlarmScreen> {
                     color: Colors.black38,
                   ),
                   SizedBox(height: 12),
-                  Text('还没有闹钟', style: TextStyle(fontSize: 18)),
-                  SizedBox(height: 5),
-                  Text('添加后可在锁屏状态响铃', style: TextStyle(color: Colors.black54)),
+                  Text(
+                    language.text('还没有闹钟', 'No alarms yet', 'アラームはありません'),
+                    style: const TextStyle(fontSize: 18),
+                  ),
+                  const SizedBox(height: 5),
+                  Text(
+                    language.text(
+                      '添加后可在锁屏状态响铃',
+                      'Alarms can ring while the screen is locked',
+                      'ロック画面でもアラームを鳴らせます',
+                    ),
+                  ),
                 ],
               ),
             )
@@ -139,7 +171,7 @@ class _AlarmScreenState extends State<AlarmScreen> {
                 final time = TimeOfDay.fromDateTime(alarm.dateTime)
                     .format(context);
                 return Material(
-                  color: Colors.white,
+                  color: Theme.of(context).colorScheme.surfaceContainer,
                   borderRadius: BorderRadius.circular(8),
                   child: ListTile(
                     contentPadding: const EdgeInsets.fromLTRB(16, 8, 8, 8),
@@ -151,10 +183,10 @@ class _AlarmScreenState extends State<AlarmScreen> {
                         fontWeight: FontWeight.w600,
                       ),
                     ),
-                    subtitle: Text(_dateLabel(alarm.dateTime)),
+                    subtitle: Text(_dateLabel(alarm.dateTime, language)),
                     trailing: IconButton(
                       onPressed: () => _deleteAlarm(alarm),
-                      tooltip: '删除闹钟',
+                      tooltip: language.text('删除闹钟', 'Delete alarm', 'アラームを削除'),
                       icon: const Icon(Icons.delete_outline),
                     ),
                   ),
@@ -164,6 +196,9 @@ class _AlarmScreenState extends State<AlarmScreen> {
     );
   }
 
-  String _dateLabel(DateTime value) =>
-      '${value.month}月${value.day}日 · 循环语音 · 振动';
+  String _dateLabel(DateTime value, AppLanguage language) => language.text(
+    '${value.month}月${value.day}日 · 循环语音 · 振动',
+    '${value.month}/${value.day} · Looping voice · Vibrate',
+    '${value.month}月${value.day}日 · 音声ループ · バイブレーション',
+  );
 }

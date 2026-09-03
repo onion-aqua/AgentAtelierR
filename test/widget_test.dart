@@ -8,12 +8,15 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:ryza_chat_mvp/src/ai_services.dart';
 import 'package:ryza_chat_mvp/src/app_controller.dart';
+import 'package:ryza_chat_mvp/src/app_localization.dart';
 import 'package:ryza_chat_mvp/src/audio_envelope.dart';
 import 'package:ryza_chat_mvp/src/character_appearance.dart';
 import 'package:ryza_chat_mvp/src/character_camera.dart';
 import 'package:ryza_chat_mvp/src/character_expression.dart';
 import 'package:ryza_chat_mvp/src/character_performance.dart';
+import 'package:ryza_chat_mvp/src/chat_screen.dart';
 import 'package:ryza_chat_mvp/src/chat_segments.dart';
+import 'package:ryza_chat_mvp/src/settings_screen.dart';
 import 'package:ryza_chat_mvp/src/tap_reaction.dart';
 import 'package:ryza_chat_mvp/src/world_map_screen.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -296,6 +299,31 @@ void main() {
     },
   );
 
+  test(
+    'translated reply is displayed but excluded from TTS and performance',
+    () {
+      const response = '''旁白：The workshop is quiet.
+莱莎：[happy][face:happy][action:wave] Welcome back!
+译文：欢迎回来！''';
+
+      final segments = parseAssistantSegments(response);
+      final speech = ttsTextForAssistantResponse(
+        response,
+        fallbackMood: CharacterMood.neutral,
+      );
+      final performance = performanceSegmentsForAssistantResponse(
+        response,
+        fallbackMood: CharacterMood.neutral,
+      );
+
+      expect(segments.last.speaker, ChatSpeaker.translation);
+      expect(displayTextForAssistantResponse(response), contains('译文：欢迎回来！'));
+      expect(speech, contains('Welcome back!'));
+      expect(speech, isNot(contains('欢迎回来')));
+      expect(performance, hasLength(1));
+    },
+  );
+
   test('missing Fish emotion cue receives mood fallback', () {
     final speech = ttsTextForAssistantResponse(
       '莱莎：交给我吧！',
@@ -467,6 +495,125 @@ void main() {
     expect(bytes, [1, 2, 3]);
   });
 
+  test('DashScope Qwen-TTS request follows official multimodal API', () async {
+    final client = MockClient((request) async {
+      if (request.method == 'GET') {
+        expect(request.url.toString(), 'https://audio.example/test.wav');
+        return http.Response.bytes([4, 5, 6], 200);
+      }
+      expect(request.url.toString(), DashScopeTtsClient.endpoint);
+      expect(request.headers['authorization'], 'Bearer dashscope-test-key');
+      final body = jsonDecode(request.body) as Map<String, dynamic>;
+      expect(body['model'], 'qwen3-tts-instruct-flash');
+      final input = body['input'] as Map<String, dynamic>;
+      expect(input['text'], '今天去采集素材吧！');
+      expect(input['voice'], 'Cherry');
+      expect(input['language_type'], 'Chinese');
+      expect(input['instructions'], contains('活泼'));
+      expect(input['optimize_instructions'], isTrue);
+      return http.Response(
+        jsonEncode({
+          'output': {
+            'audio': {'url': 'https://audio.example/test.wav'},
+          },
+        }),
+        200,
+      );
+    });
+
+    final bytes = await DashScopeTtsClient(client: client).synthesizeBytes(
+      apiKey: 'dashscope-test-key',
+      text: '今天去采集素材吧！',
+      model: 'qwen3-tts-instruct-flash',
+      voice: 'Cherry',
+      instructions: '活泼、明亮、语速稍快',
+    );
+
+    expect(bytes, [4, 5, 6]);
+  });
+
+  test('generic TTS uses the OpenAI audio speech contract', () async {
+    final client = MockClient((request) async {
+      expect(request.url.toString(), 'https://tts.example/v1/audio/speech');
+      expect(request.headers['authorization'], 'Bearer generic-test-key');
+      final body = jsonDecode(request.body) as Map<String, dynamic>;
+      expect(body['model'], 'custom-tts');
+      expect(body['input'], '测试通用语音。');
+      expect(body['voice'], 'speaker-a');
+      expect(body['response_format'], 'wav');
+      expect(body['speed'], 1.2);
+      return http.Response.bytes([7, 8, 9], 200);
+    });
+
+    final bytes = await GenericTtsClient(client: client).synthesizeBytes(
+      baseUrl: 'https://tts.example/v1/',
+      apiKey: 'generic-test-key',
+      text: '测试通用语音。',
+      model: 'custom-tts',
+      voice: 'speaker-a',
+      speed: 1.2,
+    );
+
+    expect(bytes, [7, 8, 9]);
+  });
+
+  test('conversation panel grows with the latest message', () {
+    final short = conversationPanelFractionForText(
+      text: '好呀！',
+      viewportWidth: 400,
+      viewportHeight: 800,
+      isWide: false,
+    );
+    final long = conversationPanelFractionForText(
+      text: List.filled(20, '这是一段需要让对话框自动拉长的回复。').join(),
+      viewportWidth: 400,
+      viewportHeight: 800,
+      isWide: false,
+    );
+
+    expect(long, greaterThan(short));
+    expect(long, lessThanOrEqualTo(0.68));
+  });
+
+  test('conversation panel includes assistant segment separators', () {
+    final singleSegment = conversationPanelFractionForText(
+      text: '相同长度的正文。',
+      viewportWidth: 400,
+      viewportHeight: 800,
+      isWide: false,
+    );
+    final threeSegments = conversationPanelFractionForText(
+      text: '相同长度的正文。',
+      viewportWidth: 400,
+      viewportHeight: 800,
+      isWide: false,
+      segmentCount: 3,
+    );
+
+    expect(threeSegments, greaterThan(singleSegment));
+    expect(threeSegments - singleSegment, closeTo(34 / 800, 0.001));
+  });
+
+  test('image attachments reserve thumbnail height in conversation panel', () {
+    final fileAttachment = conversationPanelFractionForText(
+      text: '请查看附件。',
+      viewportWidth: 400,
+      viewportHeight: 800,
+      isWide: false,
+      hasAttachments: true,
+    );
+    final imageAttachment = conversationPanelFractionForText(
+      text: '请查看图片。',
+      viewportWidth: 400,
+      viewportHeight: 800,
+      isWide: false,
+      hasAttachments: true,
+      hasImageAttachments: true,
+    );
+
+    expect(imageAttachment, greaterThan(fileAttachment));
+  });
+
   test(
     'Fish Audio defaults to s2-pro and prompt requires speaker contract',
     () async {
@@ -476,12 +623,64 @@ void main() {
       expect(controller.fishAudioModel, 's2-pro');
       expect(
         controller.buildCharacterPrompt(),
-        contains('每个非空行只能以“旁白：”或“莱莎：”开头'),
+        contains('每个非空行只能以“旁白：”、“莱莎：”或“译文：”开头'),
       );
       expect(controller.buildCharacterPrompt(), contains('Fish Audio S2'));
       expect(controller.buildCharacterPrompt(), contains('[face:crying]'));
       expect(controller.buildCharacterPrompt(), contains('[action:comfort]'));
       expect(controller.buildCharacterPrompt(), contains('绝对不要输出原始动画名'));
+    },
+  );
+
+  test('TTS provider and preview text persist locally', () async {
+    SharedPreferences.setMockInitialValues({});
+    final controller = await AppController.load();
+    controller.setTtsProvider(TtsProvider.generic);
+    controller.setTtsPreviewText('这是一段自定义试音文字。');
+    await Future<void>.delayed(Duration.zero);
+
+    final restored = await AppController.load();
+    expect(restored.ttsProvider, TtsProvider.generic);
+    expect(restored.ttsPreviewText, '这是一段自定义试音文字。');
+  });
+
+  test(
+    'theme and language preferences persist, export, and enter prompt',
+    () async {
+      SharedPreferences.setMockInitialValues({});
+      final controller = await AppController.load();
+      controller.setThemePreference(AppThemePreference.dark);
+      controller.configureLanguages(
+        interface: AppLanguage.japanese,
+        narrator: AppLanguage.english,
+        characterReply: AppLanguage.japanese,
+        translation: TranslationLanguage.chinese,
+      );
+      await Future<void>.delayed(Duration.zero);
+
+      final restored = await AppController.load();
+      final prompt = restored.buildCharacterPrompt();
+      expect(restored.themePreference, AppThemePreference.dark);
+      expect(restored.interfaceLanguage, AppLanguage.japanese);
+      expect(restored.narratorLanguage, AppLanguage.english);
+      expect(restored.characterReplyLanguage, AppLanguage.japanese);
+      expect(restored.translationLanguage, TranslationLanguage.chinese);
+      expect(prompt, contains('台词必须使用 Japanese'));
+      expect(prompt, contains('旁白正文必须使用 English'));
+      expect(prompt, contains('每条“莱莎：”台词后紧跟一条“译文：”'));
+      expect(prompt, contains('"narratorBodyLanguage":"English"'));
+      expect(prompt, contains('"ryzaSpeechLanguage":"Japanese"'));
+      expect(
+        prompt,
+        contains('"translationLanguage":"Chinese (Simplified Chinese)"'),
+      );
+      final demoReply = restored.demoReply('Hello');
+      expect(demoReply, contains('旁白：(Ryza puts down'));
+      expect(demoReply, contains('莱莎：[curious][face:happy]'));
+      expect(demoReply, contains('「Hello」って聞こえたよ'));
+      expect(demoReply, contains('译文：我听到了'));
+      expect(restored.exportData()['themePreference'], 'dark');
+      expect(restored.exportData()['interfaceLanguage'], 'japanese');
     },
   );
 
@@ -519,6 +718,115 @@ void main() {
       expect(exported['boundaries'], contains('宝贝'));
     },
   );
+
+  testWidgets('user profile dialog saves without disposal assertions', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues({});
+    final controller = await AppController.load();
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SettingsScreen(controller: controller, onMenuPressed: () {}),
+      ),
+    );
+
+    final profileTile = find.text('称呼与自画像');
+    await tester.scrollUntilVisible(
+      profileTile,
+      320,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.tap(profileTile);
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField).first, '队长');
+    await tester.tap(find.text('熟悉伙伴'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('冒险搭档').last);
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(FilledButton, '保存'));
+    await tester.pumpAndSettle();
+
+    expect(tester.takeException(), isNull);
+    expect(controller.userAddress, '队长');
+    expect(
+      controller.userRelationshipRole,
+      UserRelationshipRole.adventureCompanion,
+    );
+  });
+
+  test('long-term memory can be edited and cleared locally', () async {
+    SharedPreferences.setMockInitialValues({});
+    final controller = await AppController.load();
+
+    controller.configureLongTermMemory(enabled: true, summary: '喜欢一起采集素材。');
+    await Future<void>.delayed(Duration.zero);
+    var restored = await AppController.load();
+    expect(restored.memorySummary, '喜欢一起采集素材。');
+
+    restored.configureLongTermMemory(enabled: false, summary: '   ');
+    await Future<void>.delayed(Duration.zero);
+    restored = await AppController.load();
+    expect(restored.longTermMemoryEnabled, isFalse);
+    expect(restored.memorySummary, isEmpty);
+  });
+
+  test('undo removes the latest user turn and its assistant reply', () async {
+    SharedPreferences.setMockInitialValues({});
+    final controller = await AppController.load();
+    controller.addUserMessage('今天一起炼金吧');
+    controller.addAssistantMessage('好呀，交给我吧！');
+    controller.addUserMessage('我有点累');
+    controller.addAssistantMessage('那就先休息一下。');
+
+    final withdrawn = controller.undoLastUserTurn();
+
+    expect(withdrawn?.text, '我有点累');
+    expect(
+      controller.messages.any((message) => message.text == '我有点累'),
+      isFalse,
+    );
+    expect(
+      controller.messages.any((message) => message.text == '那就先休息一下。'),
+      isFalse,
+    );
+    expect(controller.messages.last.text, '好呀，交给我吧！');
+    expect(controller.userMessageCount, 1);
+    expect(controller.relationshipPoints, 1);
+    expect(controller.characterMood, CharacterMood.excited);
+  });
+
+  testWidgets('long-term memory dialog edits the current summary', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues({'memory_summary': '原来的记忆'});
+    final controller = await AppController.load();
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SettingsScreen(controller: controller, onMenuPressed: () {}),
+      ),
+    );
+
+    final scrollable = find.byType(Scrollable).first;
+    for (var attempt = 0; attempt < 6; attempt += 1) {
+      if (find.text('长期记忆').evaluate().isNotEmpty) break;
+      await tester.drag(scrollable, const Offset(0, -480));
+      await tester.pumpAndSettle();
+    }
+    final memoryTile = find.text('长期记忆');
+    expect(memoryTile, findsOneWidget);
+    await tester.ensureVisible(memoryTile);
+    await tester.pumpAndSettle();
+    await tester.tap(memoryTile);
+    await tester.pumpAndSettle();
+    final editor = find.byType(TextField).last;
+    expect(tester.widget<TextField>(editor).controller?.text, '原来的记忆');
+    await tester.enterText(editor, '记得用户喜欢一起采集矿石。');
+    await tester.tap(find.widgetWithText(FilledButton, '保存'));
+    await tester.pumpAndSettle();
+
+    expect(tester.takeException(), isNull);
+    expect(controller.memorySummary, '记得用户喜欢一起采集矿石。');
+  });
 
   test('legacy Fish model preference migrates once to s2-pro', () async {
     SharedPreferences.setMockInitialValues({
@@ -607,6 +915,18 @@ void main() {
     );
     expect(rightArm.animation, 'motion_touch_A_006_active');
     expect(head.map((reaction) => reaction.number), [5, 6]);
+    expect(
+      leftArm.localizedVoiceAsset(AppLanguage.chinese, 9),
+      'audio/tap_voice/zh-tw/normal/zh-tw_normal_motion_touch_A_001_03.m4a',
+    );
+    expect(
+      leftArm.localizedVoiceAsset(AppLanguage.english, 1),
+      'audio/tap_voice/en/normal/en_normal_motion_touch_A_001_01.m4a',
+    );
+    expect(
+      leftArm.localizedVoiceAsset(AppLanguage.japanese, 5),
+      'audio/tap_voice/jp/normal/jp_normal_motion_touch_A_001_03.m4a',
+    );
   });
 
   test('polygon hit testing distinguishes inside and outside points', () {
@@ -736,14 +1056,8 @@ void main() {
 
     expect(groups, hasLength(1));
     expect(groups.single.animation2, isNotNull);
-    expect(
-      groups.single.weightFor(CharacterExpression.happy),
-      1.0,
-    );
-    expect(
-      groups.single.weightFor(CharacterExpression.tease),
-      0.5,
-    );
+    expect(groups.single.weightFor(CharacterExpression.happy), 1.0);
+    expect(groups.single.weightFor(CharacterExpression.tease), 0.5);
   });
 
   test('ambient motion prefers groups weighted for the current emotion', () {

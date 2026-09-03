@@ -118,7 +118,15 @@ assets/audio/soundscape/ambient_night.m4a
 assets/audio/soundscape/bgm_opening.m4a
 ```
 
-点击语音目录为 `assets/audio/tap_voice/jp/normal/`。代码会查找 `jp_normal_motion_touch_A_001_01.m4a` 到 `A_007_03.m4a`：组号 `001..007`，每组尾号 `01..03`，共 21 个文件。可以改用自制语音，并同步更新 `lib/src/tap_reaction.dart`。
+点击语音按回复语言放在以下目录：
+
+```text
+assets/audio/tap_voice/jp/normal/
+assets/audio/tap_voice/zh-tw/normal/
+assets/audio/tap_voice/en/normal/
+```
+
+日语映射会查找 `jp_normal_motion_touch_A_001_01.m4a` 到 `A_007_03.m4a`：组号 `001..007`，每组尾号 `01..03`，共 21 个文件。中文和英文使用对应语言前缀；实际文件名以 `lib/src/tap_reaction.dart` 的集中映射为准。可以改用自制或已获授权的语音，并同步更新该映射。
 
 TTS 生成内容也必须获得声音权利人的授权，不能未经同意模仿特定演员或角色声音。
 
@@ -141,7 +149,7 @@ OpenAI 兼容接口和 Fish Audio Key 通过应用设置页填写，由平台安
 
 用户称呼、自画像、关系定位、互动偏好和边界说明只保存在本地偏好设置与用户主动导出的备份中。它们会以数据 JSON 注入系统提示词，并被明确标记为不能覆盖角色、安全和输出格式规则。导出文件可能包含私人描述，用户应自行妥善保管，不要提交到 Git 或公开 Issue。
 
-### 5.1 版本 0.3.9 的代码能力
+### 5.1 版本 0.5.0 的代码能力
 
 本仓库当前代码包含以下接口，但角色表现效果仍取决于用户提供的合法且兼容的资源：
 
@@ -151,6 +159,9 @@ OpenAI 兼容接口和 Fish Audio Key 通过应用设置页填写，由平台安
 - 双指缩放与纵向镜头调整，默认角色近景为 `1.25x`；
 - 图片和文档附件、液态玻璃聊天 UI、Agent 与 GPT 高级参数；
 - 用户称呼、自画像、关系定位、互动偏好和边界的本地持久化、导入导出与提示词注入。
+- Fish Audio、DashScope Qwen-TTS 和 OpenAI 风格通用 TTS 接口及试音文本设置；
+- 中文、英文、日文的界面、旁白、回复和翻译语言设置；
+- 不累加骨骼局部坐标的说话与呼吸动作，避免角色随运行时间产生整体漂移。
 
 这些功能不附带任何角色模型、动作 JSON、表情差分、图片或音频。动作名和轨道必须针对你自己的 Spine 文件重新校验。
 
