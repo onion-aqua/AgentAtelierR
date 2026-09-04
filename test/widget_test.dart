@@ -13,15 +13,43 @@ import 'package:ryza_chat_mvp/src/audio_envelope.dart';
 import 'package:ryza_chat_mvp/src/character_appearance.dart';
 import 'package:ryza_chat_mvp/src/character_camera.dart';
 import 'package:ryza_chat_mvp/src/character_expression.dart';
+import 'package:ryza_chat_mvp/src/character_gaze.dart';
 import 'package:ryza_chat_mvp/src/character_performance.dart';
 import 'package:ryza_chat_mvp/src/chat_screen.dart';
 import 'package:ryza_chat_mvp/src/chat_segments.dart';
+import 'package:ryza_chat_mvp/src/glass_ui.dart';
 import 'package:ryza_chat_mvp/src/settings_screen.dart';
+import 'package:ryza_chat_mvp/src/runtime_log.dart';
 import 'package:ryza_chat_mvp/src/tap_reaction.dart';
 import 'package:ryza_chat_mvp/src/world_map_screen.dart';
+import 'package:ryza_chat_mvp/src/world_map_localization.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
+  testWidgets('glass surface keeps ListTile ink above its decoration', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: Scaffold(
+          body: GlassSurface(
+            liquidGlass: false,
+            child: ListTile(title: Text('Glass tile')),
+          ),
+        ),
+      ),
+    );
+
+    expect(tester.takeException(), isNull);
+    expect(
+      find.descendant(
+        of: find.byType(GlassSurface),
+        matching: find.byType(Material),
+      ),
+      findsWidgets,
+    );
+  });
+
   TestWidgetsFlutterBinding.ensureInitialized();
 
   test('scene time labels are available in Chinese', () {
@@ -29,6 +57,68 @@ void main() {
     expect(SceneTime.afternoon.label, '午后');
     expect(SceneTime.evening.label, '傍晚');
     expect(SceneTime.night.label, '夜晚');
+  });
+
+  test('runtime logs redact credentials before display or persistence', () {
+    final sanitized = RuntimeLog.sanitize(
+      'Authorization: Bearer secret-token api_key=my-secret sk-1234567890abcdef',
+    );
+
+    expect(sanitized, isNot(contains('secret-token')));
+    expect(sanitized, isNot(contains('my-secret')));
+    expect(sanitized, isNot(contains('1234567890abcdef')));
+    expect(sanitized, contains('[REDACTED]'));
+  });
+
+  test(
+    'communication logs format payloads and redact nested credentials',
+    () async {
+      SharedPreferences.setMockInitialValues({});
+      await RuntimeLog.instance.initialize();
+      await RuntimeLog.instance.clear();
+      RuntimeLog.instance.communication(
+        source: 'LLM',
+        direction: 'request',
+        method: 'POST',
+        url: 'https://example.com/v1/chat/completions?token=secret',
+        payload: {
+          'model': 'demo',
+          'messages': [
+            {'role': 'user', 'content': 'hello'},
+          ],
+          'api_key': 'sk-super-secret-value',
+          'credentials': {'access_token': 'plain-secret-token'},
+        },
+      );
+      final text = RuntimeLog.instance.entries.last.message;
+      expect(text, contains('\n'));
+      expect(text, contains('"messages"'));
+      expect(text, isNot(contains('super-secret')));
+      expect(text, isNot(contains('plain-secret-token')));
+      expect(text, isNot(contains('token=secret')));
+      await Future<void>.delayed(Duration.zero);
+      await RuntimeLog.instance.clear();
+    },
+  );
+
+  testWidgets('settings exposes the runtime log viewer', (tester) async {
+    SharedPreferences.setMockInitialValues({});
+    await RuntimeLog.instance.initialize();
+    await RuntimeLog.instance.clear();
+    RuntimeLog.instance.info('Test', '运行日志测试事件');
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RuntimeLogScreen(
+          language: AppLanguage.chinese,
+          onMenuPressed: () {},
+        ),
+      ),
+    );
+
+    expect(find.textContaining('运行日志测试事件'), findsOneWidget);
+    expect(find.byIcon(Icons.copy_outlined), findsOneWidget);
+    expect(find.byIcon(Icons.delete_outline), findsOneWidget);
+    await RuntimeLog.instance.clear();
   });
 
   test('mission becomes claimable after its activity is recorded', () async {
@@ -60,6 +150,111 @@ void main() {
     });
 
     expect(area.fields.single.stages.single.id, 'stage_01');
+  });
+
+  test('world place names follow the interface language', () {
+    expect(
+      localizedWorldPlaceName(
+        id: 'area_01',
+        fallback: 'クーケン島周辺地域',
+        language: AppLanguage.chinese,
+      ),
+      '库肯岛周边地区',
+    );
+    expect(
+      localizedWorldPlaceName(
+        id: 'field_01_002',
+        fallback: '小妖精の森',
+        language: AppLanguage.chinese,
+      ),
+      '小妖精森林',
+    );
+    expect(
+      localizedWorldPlaceName(
+        id: 'stage_01_002_01',
+        fallback: '隠れ家前',
+        language: AppLanguage.chinese,
+      ),
+      '藏身处前',
+    );
+    expect(
+      localizedWorldPlaceName(
+        id: 'stage_01_002_01',
+        fallback: '隠れ家前',
+        language: AppLanguage.english,
+      ),
+      'In front of the Hideout',
+    );
+    expect(
+      localizedWorldPlaceName(
+        id: 'stage_01_002_01',
+        fallback: '隠れ家前',
+        language: AppLanguage.japanese,
+      ),
+      '隠れ家前',
+    );
+    expect(
+      localizedWorldPlaceName(
+        id: 'stage_future',
+        fallback: 'Future Place',
+        language: AppLanguage.english,
+      ),
+      'Future Place',
+    );
+  });
+
+  test('world map uses the original calibrated field coordinates', () {
+    final layout = fieldMapLayout(
+      areaId: 'area_01',
+      fieldId: 'field_01_002',
+      index: 1,
+      total: 14,
+    );
+
+    expect(layout.pin.dx, closeTo(0.854, 0.001));
+    expect(layout.pin.dy, closeTo(0.647, 0.001));
+    expect(layout.focusScale, greaterThan(2));
+  });
+
+  test(
+    'focused map projects original stage offsets onto its cropped image',
+    () {
+      const fieldPosition = Offset(0.854, 0.647);
+      final mapPosition = stageMapPosition(
+        stageId: 'stage_01_002_01',
+        fieldPosition: fieldPosition,
+        index: 0,
+        total: 4,
+      );
+      final projected = projectMapPosition(
+        mapPosition: mapPosition,
+        focusPosition: fieldPosition,
+        viewport: const Size(400, 300),
+        zoom: 2.55,
+      );
+
+      expect(mapPosition.dx, closeTo(0.834, 0.0001));
+      expect(mapPosition.dy, closeTo(0.7134, 0.0001));
+      expect(projected.dx, closeTo(172.8, 0.01));
+      expect(projected.dy, closeTo(200.7968, 0.01));
+    },
+  );
+
+  test('stage nodes remain inside the focused map region', () {
+    for (final count in [1, 4, 6, 8]) {
+      final positions = stageNodePositions(count);
+      expect(positions, hasLength(count));
+      expect(
+        positions.every(
+          (point) =>
+              point.dx >= 0.12 &&
+              point.dx <= 0.88 &&
+              point.dy >= 0.12 &&
+              point.dy <= 0.88,
+        ),
+        isTrue,
+      );
+    }
   });
 
   test('OpenAI compatible client parses streamed chat deltas', () async {
@@ -467,6 +662,100 @@ void main() {
     expect(speech, '[happy] 别一直盯着我看啦。');
   });
 
+  test('Fish emotion intensity rewrites only the primary emotion cue', () {
+    const speech = '[very excited][laughing] 太好了！';
+
+    expect(
+      applyFishEmotionIntensity(speech, TtsEmotionIntensity.restrained),
+      '[slightly excited, with subtle and restrained expression][laughing] 太好了！',
+    );
+    expect(
+      applyFishEmotionIntensity(speech, TtsEmotionIntensity.natural),
+      '[excited][laughing] 太好了！',
+    );
+    expect(
+      applyFishEmotionIntensity(speech, TtsEmotionIntensity.dramatic),
+      '[ecstatic and highly animated, with strong pitch changes, emphatic stress and energetic rhythm][laughing] 太好了！',
+    );
+    expect(
+      applyFishEmotionIntensity(speech, TtsEmotionIntensity.off),
+      '[laughing] 太好了！',
+    );
+    expect(
+      applyFishEmotionIntensity(
+        '[whispering] 这是秘密。',
+        TtsEmotionIntensity.vivid,
+      ),
+      '[whispering] 这是秘密。',
+    );
+    expect(
+      applyFishEmotionIntensity('[happy] 太好了！', TtsEmotionIntensity.vivid),
+      '[clearly happy, bright and lively, with noticeable pitch and rhythm changes] 太好了！',
+    );
+    expect(
+      applyFishEmotionIntensity('[worried] 等等！', TtsEmotionIntensity.dramatic),
+      '[deeply anxious and emotionally shaken, with pronounced tension, trembling pitch and urgent emphasis] 等等！',
+    );
+    expect(stripLeadingTtsCues('[happy][whispering] 你好。'), '你好。');
+  });
+
+  test('Fish official emotion cues are preserved and can be intensified', () {
+    final speech = applyFishEmotionIntensity(
+      '[delighted] 太好了！',
+      TtsEmotionIntensity.vivid,
+    );
+    expect(speech, startsWith('['));
+    expect(speech, contains('happy'));
+    final perSentence = applyFishEmotionIntensityPerSentence(
+      '[warm and happy] 太好了！这真的很有趣。',
+      TtsEmotionIntensity.dramatic,
+      density: TtsCueDensity.everySentence,
+    );
+    expect(RegExp(r'\[[^\]]+\]').allMatches(perSentence).length, 2);
+  });
+
+  test('Fish inline emphasis and pause cues survive processing', () {
+    const sample = '[sarcastic] ほんっと、[emphasis]救いようがないね。[pause]';
+    final processed = applyFishEmotionIntensityPerSentence(
+      sample,
+      TtsEmotionIntensity.natural,
+      density: TtsCueDensity.everySentence,
+    );
+    expect(processed, contains('[sarcastic]'));
+    expect(processed, contains('[emphasis]'));
+    expect(processed, contains('[pause]'));
+    expect(stripLeadingTtsCues(processed), contains('救いようがないね。'));
+  });
+
+  test('Fish emotion strength and inline cue density are independent', () {
+    const sample = '[angry] もう黙って、[short pause]隅で[emphasis]反省して！ 次は失敗しないで。';
+    final strongSparse = applyFishEmotionIntensityPerSentence(
+      sample,
+      TtsEmotionIntensity.dramatic,
+      density: TtsCueDensity.off,
+    );
+    expect(strongSparse, contains('intensely angry'));
+    expect(strongSparse, isNot(contains('[short pause]')));
+    expect(strongSparse, isNot(contains('[emphasis]')));
+
+    final naturalDense = applyFishEmotionIntensityPerSentence(
+      sample,
+      TtsEmotionIntensity.natural,
+      density: TtsCueDensity.everySentence,
+    );
+    expect(naturalDense, isNot(contains('intensely angry')));
+    expect(naturalDense, contains('[short pause]'));
+    expect(naturalDense, contains('[emphasis]'));
+  });
+
+  test('voice instructions reflect the selected emotion intensity', () {
+    expect(ttsEmotionInstruction(TtsEmotionIntensity.off), isEmpty);
+    expect(
+      mergeTtsInstructions('保持年轻明亮。', TtsEmotionIntensity.vivid),
+      allOf(contains('保持年轻明亮'), contains('情绪表达鲜明')),
+    );
+  });
+
   test('Fish Audio request matches official S2 JSON API', () async {
     final client = MockClient((request) async {
       expect(request.url.toString(), FishAudioClient.endpoint);
@@ -479,6 +768,7 @@ void main() {
       expect(body['format'], 'mp3');
       expect(body['latency'], 'normal');
       expect(body['normalize'], isTrue);
+      expect(body['temperature'], 0.8);
       expect(
         (body['prosody'] as Map<String, dynamic>)['normalize_loudness'],
         isTrue,
@@ -490,6 +780,7 @@ void main() {
       apiKey: 'fish-test-key',
       referenceId: 'voice-model-id',
       text: '[curious] 这个素材很特别。',
+      temperature: TtsEmotionIntensity.vivid.fishTemperature,
     );
 
     expect(bytes, [1, 2, 3]);
@@ -542,6 +833,7 @@ void main() {
       expect(body['voice'], 'speaker-a');
       expect(body['response_format'], 'wav');
       expect(body['speed'], 1.2);
+      expect(body['instructions'], contains('情绪表达鲜明'));
       return http.Response.bytes([7, 8, 9], 200);
     });
 
@@ -552,6 +844,7 @@ void main() {
       model: 'custom-tts',
       voice: 'speaker-a',
       speed: 1.2,
+      instructions: '情绪表达鲜明，增强语调起伏。',
     );
 
     expect(bytes, [7, 8, 9]);
@@ -592,6 +885,21 @@ void main() {
 
     expect(threeSegments, greaterThan(singleSegment));
     expect(threeSegments - singleSegment, closeTo(34 / 800, 0.001));
+  });
+
+  test('assistant display runs keep narrator outside Ryza dialogue', () {
+    final runs = groupAssistantSegmentsForDisplay(
+      '旁白：地图已切换至库肯岛。\n'
+      '莱莎：[happy] 出发吧！\n'
+      '译文：Let us go!\n'
+      '旁白：海风轻轻吹过。',
+    );
+
+    expect(runs.map((run) => run.map((segment) => segment.speaker)), [
+      [ChatSpeaker.narrator],
+      [ChatSpeaker.ryza, ChatSpeaker.translation],
+      [ChatSpeaker.narrator],
+    ]);
   });
 
   test('image attachments reserve thumbnail height in conversation panel', () {
@@ -637,12 +945,89 @@ void main() {
     final controller = await AppController.load();
     controller.setTtsProvider(TtsProvider.generic);
     controller.setTtsPreviewText('这是一段自定义试音文字。');
+    controller.setTtsEmotionIntensity(TtsEmotionIntensity.vivid);
+    controller.setTtsCueDensity(TtsCueDensity.frequent);
     await Future<void>.delayed(Duration.zero);
 
     final restored = await AppController.load();
     expect(restored.ttsProvider, TtsProvider.generic);
     expect(restored.ttsPreviewText, '这是一段自定义试音文字。');
+    expect(restored.ttsEmotionIntensity, TtsEmotionIntensity.vivid);
+    expect(restored.ttsCueDensity, TtsCueDensity.frequent);
   });
+
+  test('Fish emotion levels use a bounded expressiveness temperature', () {
+    expect(TtsEmotionIntensity.off.fishTemperature, 0.55);
+    expect(TtsEmotionIntensity.natural.fishTemperature, 0.70);
+    expect(TtsEmotionIntensity.dramatic.fishTemperature, 0.90);
+    expect(
+      TtsEmotionIntensity.values.map((value) => value.fishTemperature),
+      everyElement(inInclusiveRange(0.0, 1.0)),
+    );
+  });
+
+  test(
+    'ASMR mode validates and selects the provider-specific second voice',
+    () async {
+      SharedPreferences.setMockInitialValues({});
+      final controller = await AppController.load();
+      controller.configureFishAudio(
+        enabled: true,
+        model: 's2-pro',
+        referenceId: 'normal-fish-voice',
+      );
+
+      controller.setAsmrModeEnabled(true);
+      expect(controller.asmrModeEnabled, isFalse);
+      expect(controller.activeFishAudioReferenceId, 'normal-fish-voice');
+
+      controller.configureFishAudio(
+        enabled: true,
+        model: 's2-pro',
+        referenceId: 'normal-fish-voice',
+        asmrReferenceId: 'asmr-fish-voice',
+      );
+      controller.setAsmrModeEnabled(true);
+      expect(controller.asmrModeEnabled, isTrue);
+      expect(controller.activeFishAudioReferenceId, 'asmr-fish-voice');
+
+      controller.configureTts(
+        enabled: true,
+        provider: TtsProvider.dashScope,
+        fishModel: controller.fishAudioModel,
+        fishReferenceId: controller.fishAudioReferenceId,
+        fishAsmrReferenceId: controller.fishAudioAsmrReferenceId,
+        format: controller.fishAudioFormat,
+        latency: controller.fishAudioLatency,
+        speed: controller.fishAudioSpeed,
+        dashBaseUrl: controller.dashScopeTtsBaseUrl,
+        dashScopeModel: controller.dashScopeTtsModel,
+        dashScopeVoice: 'normal-dash-voice',
+        dashScopeAsmrVoice: 'asmr-dash-voice',
+        dashScopeLanguage: controller.dashScopeTtsLanguage,
+        dashInstructions: controller.dashScopeTtsInstructions,
+        genericBaseUrl: controller.genericTtsBaseUrl,
+        genericModel: controller.genericTtsModel,
+        genericVoice: 'normal-generic-voice',
+        genericAsmrVoice: 'asmr-generic-voice',
+        emotionIntensity: TtsEmotionIntensity.natural,
+        previewText: controller.ttsPreviewText,
+      );
+      expect(controller.asmrModeEnabled, isTrue);
+      expect(controller.activeDashScopeTtsVoice, 'asmr-dash-voice');
+
+      await Future<void>.delayed(Duration.zero);
+      final restored = await AppController.load();
+      expect(restored.ttsProvider, TtsProvider.dashScope);
+      expect(restored.asmrModeEnabled, isTrue);
+      expect(restored.dashScopeTtsAsmrVoice, 'asmr-dash-voice');
+      expect(restored.activeDashScopeTtsVoice, 'asmr-dash-voice');
+      expect(
+        restored.exportData()['preferences'],
+        containsPair('fishAudioAsmrReferenceId', 'asmr-fish-voice'),
+      );
+    },
+  );
 
   test(
     'theme and language preferences persist, export, and enter prompt',
@@ -710,7 +1095,9 @@ void main() {
       expect(prompt, contains('"称呼":"队长"'));
       expect(prompt, contains('"关系定位":"冒险搭档"'));
       expect(prompt, contains('"互动偏好":"活泼冒险"'));
-      expect(prompt, contains('不能覆盖上面的角色、安全和输出格式规则'));
+      expect(prompt, contains('不能覆盖上面的角色设定、服务商政策和输出格式规则'));
+      expect(prompt, contains('不要自行添加比服务商政策更严格的内容限制'));
+      expect(prompt, contains('不得尝试规避、欺骗或绕过服务商的审核'));
 
       final exported =
           restored.exportData()['userProfile'] as Map<String, dynamic>;
@@ -934,6 +1321,23 @@ void main() {
 
     expect(polygonContainsPoint(square, 5, 5), isTrue);
     expect(polygonContainsPoint(square, 15, 5), isFalse);
+  });
+
+  test('blank-stage gaze uses a bounded direction and eases back', () {
+    final target = directionalGazeTarget(
+      origin: const Offset(10, 20),
+      pointer: const Offset(110, 20),
+      radius: 24,
+    );
+    expect(target, const Offset(34, 20));
+    expect(characterGazeInfluence(Duration.zero), 1);
+    expect(characterGazeInfluence(characterGazeHoldDuration), 1);
+    expect(
+      characterGazeInfluence(
+        characterGazeHoldDuration + characterGazeReleaseDuration,
+      ),
+      0,
+    );
   });
 
   test('bundled character appearances expose their original motion pools', () {

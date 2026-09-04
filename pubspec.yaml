@@ -78,6 +78,8 @@ flutter:
     - assets/audio/
     - assets/audio/alarm/
     - assets/audio/soundscape/
+    - assets/audio/ambient/
+    - assets/audio/bgm/
     - assets/audio/se/
     - assets/audio/tap_voice/jp/normal/
     - assets/audio/tap_voice/zh-tw/normal/
@@ -90,6 +92,7 @@ flutter:
     - assets/scenes/stage_00_000_00_eve/spine/
     - assets/scenes/stage_00_000_00_ngt/
     - assets/scenes/stage_00_000_00_ngt/spine/
+    - assets/scenes_runtime/
     - assets/world_map/
     - assets/world_map/areas/
     - assets/welcome_mission/

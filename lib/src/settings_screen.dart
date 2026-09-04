@@ -1,13 +1,15 @@
 import 'dart:convert';
-import 'dart:typed_data';
 
 import 'package:audioplayers/audioplayers.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import 'ai_services.dart';
 import 'app_controller.dart';
 import 'app_localization.dart';
+import 'chat_segments.dart';
+import 'runtime_log.dart';
 
 String _activeTtsModel(AppController controller) =>
     switch (controller.ttsProvider) {
@@ -570,20 +572,24 @@ class SettingsScreen extends StatelessWidget {
             ),
           ),
           actions: [
-            TextButton(
-              onPressed: () async {
-                await const SecretStore().writeOpenAiKey('');
-                if (context.mounted) Navigator.pop(context, false);
-              },
-              child: const Text('清除 Key'),
-            ),
-            TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: const Text('取消'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.pop(context, true),
-              child: const Text('保存'),
+            _DialogActionRow(
+              children: [
+                TextButton(
+                  onPressed: () async {
+                    await const SecretStore().writeOpenAiKey('');
+                    if (context.mounted) Navigator.pop(context, false);
+                  },
+                  child: const Text('清除 Key'),
+                ),
+                TextButton(
+                  onPressed: () => Navigator.pop(context, false),
+                  child: const Text('取消'),
+                ),
+                FilledButton(
+                  onPressed: () => Navigator.pop(context, true),
+                  child: const Text('保存'),
+                ),
+              ],
             ),
           ],
         ),
@@ -662,13 +668,17 @@ class SettingsScreen extends StatelessWidget {
             ],
           ),
           actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: const Text('取消'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.pop(context, true),
-              child: const Text('保存'),
+            _DialogActionRow(
+              children: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context, false),
+                  child: const Text('取消'),
+                ),
+                FilledButton(
+                  onPressed: () => Navigator.pop(context, true),
+                  child: const Text('保存'),
+                ),
+              ],
             ),
           ],
         ),
@@ -731,6 +741,9 @@ class SettingsScreen extends StatelessWidget {
     final referenceId = TextEditingController(
       text: controller.fishAudioReferenceId,
     );
+    final asmrReferenceId = TextEditingController(
+      text: controller.fishAudioAsmrReferenceId,
+    );
     final apiKey = TextEditingController();
     final previewText = TextEditingController(text: controller.ttsPreviewText);
     final player = AudioPlayer();
@@ -742,6 +755,8 @@ class SettingsScreen extends StatelessWidget {
     var format = controller.fishAudioFormat;
     var latency = controller.fishAudioLatency;
     var speed = controller.fishAudioSpeed;
+    var emotionIntensity = controller.ttsEmotionIntensity;
+    var cueDensity = controller.ttsCueDensity;
     var isTesting = false;
     String? testError;
     final result = await showDialog<bool>(
@@ -771,6 +786,16 @@ class SettingsScreen extends StatelessWidget {
                           setDialogState(() => enabled = value),
                       title: const Text('AI 回复后自动播放'),
                       subtitle: const Text('只合成“莱莎：”台词，旁白不会发声'),
+                    ),
+                    _TtsEmotionSlider(
+                      value: emotionIntensity,
+                      onChanged: (value) =>
+                          setDialogState(() => emotionIntensity = value),
+                    ),
+                    _TtsCueDensitySlider(
+                      value: cueDensity,
+                      onChanged: (value) =>
+                          setDialogState(() => cueDensity = value),
                     ),
                     const InputDecorator(
                       decoration: InputDecoration(
@@ -816,6 +841,15 @@ class SettingsScreen extends StatelessWidget {
                       decoration: const InputDecoration(
                         labelText: 'Voice model ID / reference_id',
                         helperText: 'Fish Audio 声音库或自建声音模型的 ID',
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: asmrReferenceId,
+                      decoration: const InputDecoration(
+                        labelText: 'ASMR 模式 Voice model ID',
+                        helperText: '可选；仅在主页开启 ASMR 模式时使用并校验',
                         border: OutlineInputBorder(),
                       ),
                     ),
@@ -917,41 +951,14 @@ class SettingsScreen extends StatelessWidget {
                       ),
                     ),
                     const SizedBox(height: 12),
-                    TextField(
+                    _TtsPreviewEditor(
                       controller: previewText,
-                      minLines: 2,
-                      maxLines: 4,
-                      maxLength: 300,
-                      decoration: const InputDecoration(
-                        labelText: '试音文字',
-                        border: OutlineInputBorder(),
-                      ),
-                    ),
-                    if (testError != null) ...[
-                      const SizedBox(height: 8),
-                      Text(
-                        testError!,
-                        style: TextStyle(
-                          color: Theme.of(context).colorScheme.error,
-                        ),
-                      ),
-                    ],
-                  ],
-                ),
-              ),
-            ),
-            actions: [
-              TextButton(
-                onPressed: () async {
-                  await const SecretStore().writeFishAudioKey('');
-                  if (context.mounted) Navigator.pop(context, false);
-                },
-                child: const Text('清除 Key'),
-              ),
-              TextButton.icon(
-                onPressed: isTesting
-                    ? null
-                    : () async {
+                      testing: isTesting,
+                      onClearKey: () async {
+                        await const SecretStore().writeFishAudioKey('');
+                        if (context.mounted) Navigator.pop(context, false);
+                      },
+                      onTest: () async {
                         final key = apiKey.text.trim().isNotEmpty
                             ? apiKey.text.trim()
                             : await const SecretStore().readFishAudioKey();
@@ -969,16 +976,25 @@ class SettingsScreen extends StatelessWidget {
                           final path = await FishAudioClient().synthesize(
                             apiKey: key,
                             referenceId: referenceId.text.trim(),
-                            text: previewText.text.trim(),
+                            text: applyFishEmotionIntensityPerSentence(
+                              ensureFishEmotionCue(
+                                previewText.text.trim(),
+                                CharacterMood.happy,
+                              ),
+                              emotionIntensity,
+                              density: cueDensity,
+                            ),
                             model: model,
                             format: format,
                             latency: latency,
                             speed: speed,
+                            temperature: emotionIntensity.fishTemperature,
                           );
                           await player.stop();
                           await player.setVolume(controller.voiceVolume);
                           await player.play(DeviceFileSource(path));
                         } on Object catch (error) {
+                          RuntimeLog.instance.error('Fish Audio 试音', error);
                           if (context.mounted) {
                             setDialogState(() => testError = error.toString());
                           }
@@ -988,23 +1004,23 @@ class SettingsScreen extends StatelessWidget {
                           }
                         }
                       },
-                icon: isTesting
-                    ? const SizedBox.square(
-                        dimension: 16,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : const Icon(Icons.play_arrow),
-                label: const Text('试音'),
+                      onCancel: () => Navigator.pop(context, false),
+                      onSave: () => Navigator.pop(context, true),
+                    ),
+                    if (testError != null) ...[
+                      const SizedBox(height: 8),
+                      Text(
+                        testError!,
+                        style: TextStyle(
+                          color: Theme.of(context).colorScheme.error,
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
               ),
-              TextButton(
-                onPressed: () => Navigator.pop(context, false),
-                child: const Text('取消'),
-              ),
-              FilledButton(
-                onPressed: () => Navigator.pop(context, true),
-                child: const Text('保存'),
-              ),
-            ],
+            ),
+            actions: const [],
           );
         },
       ),
@@ -1017,10 +1033,13 @@ class SettingsScreen extends StatelessWidget {
       enabled: enabled,
       model: model,
       referenceId: referenceId.text,
+      asmrReferenceId: asmrReferenceId.text,
       format: format,
       latency: latency,
       speed: speed,
+      emotionIntensity: emotionIntensity,
     );
+    controller.setTtsCueDensity(cueDensity);
     if (apiKey.text.trim().isNotEmpty) {
       await const SecretStore().writeFishAudioKey(apiKey.text);
     }
@@ -1030,6 +1049,9 @@ class SettingsScreen extends StatelessWidget {
     final baseUrl = TextEditingController(text: controller.dashScopeTtsBaseUrl);
     final model = TextEditingController(text: controller.dashScopeTtsModel);
     final voice = TextEditingController(text: controller.dashScopeTtsVoice);
+    final asmrVoice = TextEditingController(
+      text: controller.dashScopeTtsAsmrVoice,
+    );
     final instructions = TextEditingController(
       text: controller.dashScopeTtsInstructions,
     );
@@ -1038,6 +1060,8 @@ class SettingsScreen extends StatelessWidget {
     final player = AudioPlayer();
     var enabled = controller.fishTtsEnabled;
     var language = controller.dashScopeTtsLanguage;
+    var emotionIntensity = controller.ttsEmotionIntensity;
+    var cueDensity = controller.ttsCueDensity;
     var testing = false;
     String? error;
     final saved = await showDialog<bool>(
@@ -1056,6 +1080,16 @@ class SettingsScreen extends StatelessWidget {
                     value: enabled,
                     onChanged: (value) => setDialogState(() => enabled = value),
                     title: const Text('AI 回复后自动播放'),
+                  ),
+                  _TtsEmotionSlider(
+                    value: emotionIntensity,
+                    onChanged: (value) =>
+                        setDialogState(() => emotionIntensity = value),
+                  ),
+                  _TtsCueDensitySlider(
+                    value: cueDensity,
+                    onChanged: (value) =>
+                        setDialogState(() => cueDensity = value),
                   ),
                   TextField(
                     controller: baseUrl,
@@ -1080,6 +1114,15 @@ class SettingsScreen extends StatelessWidget {
                     decoration: const InputDecoration(
                       labelText: '系统音色 / Voice ID',
                       hintText: 'Cherry',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: asmrVoice,
+                    decoration: const InputDecoration(
+                      labelText: 'ASMR 模式 Voice ID',
+                      helperText: '可选；仅在主页开启 ASMR 模式时使用并校验',
                       border: OutlineInputBorder(),
                     ),
                   ),
@@ -1147,39 +1190,14 @@ class SettingsScreen extends StatelessWidget {
                     ),
                   ),
                   const SizedBox(height: 12),
-                  TextField(
+                  _TtsPreviewEditor(
                     controller: preview,
-                    minLines: 2,
-                    maxLines: 4,
-                    maxLength: 300,
-                    decoration: const InputDecoration(
-                      labelText: '试音文字',
-                      border: OutlineInputBorder(),
-                    ),
-                  ),
-                  if (error != null)
-                    Text(
-                      error!,
-                      style: TextStyle(
-                        color: Theme.of(context).colorScheme.error,
-                      ),
-                    ),
-                ],
-              ),
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () async {
-                await const SecretStore().writeDashScopeKey('');
-                if (context.mounted) Navigator.pop(context, false);
-              },
-              child: const Text('清除 Key'),
-            ),
-            TextButton.icon(
-              onPressed: testing
-                  ? null
-                  : () async {
+                    testing: testing,
+                    onClearKey: () async {
+                      await const SecretStore().writeDashScopeKey('');
+                      if (context.mounted) Navigator.pop(context, false);
+                    },
+                    onTest: () async {
                       final apiKey = key.text.trim().isNotEmpty
                           ? key.text.trim()
                           : await const SecretStore().readDashScopeKey();
@@ -1199,10 +1217,19 @@ class SettingsScreen extends StatelessWidget {
                           model: model.text.trim(),
                           voice: voice.text.trim(),
                           language: language,
-                          instructions: instructions.text,
+                          instructions:
+                              model.text.trim().toLowerCase().contains(
+                                'instruct',
+                              )
+                              ? mergeTtsInstructions(
+                                  instructions.text,
+                                  emotionIntensity,
+                                )
+                              : instructions.text,
                         );
                         await player.play(DeviceFileSource(path));
                       } on Object catch (value) {
+                        RuntimeLog.instance.error('Qwen-TTS 试音', value);
                         if (context.mounted) {
                           setDialogState(() => error = value.toString());
                         }
@@ -1212,23 +1239,21 @@ class SettingsScreen extends StatelessWidget {
                         }
                       }
                     },
-              icon: testing
-                  ? const SizedBox.square(
-                      dimension: 16,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : const Icon(Icons.play_arrow),
-              label: const Text('试音'),
+                    onCancel: () => Navigator.pop(context, false),
+                    onSave: () => Navigator.pop(context, true),
+                  ),
+                  if (error != null)
+                    Text(
+                      error!,
+                      style: TextStyle(
+                        color: Theme.of(context).colorScheme.error,
+                      ),
+                    ),
+                ],
+              ),
             ),
-            TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: const Text('取消'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.pop(context, true),
-              child: const Text('保存'),
-            ),
-          ],
+          ),
+          actions: const [],
         ),
       ),
     );
@@ -1239,19 +1264,24 @@ class SettingsScreen extends StatelessWidget {
       provider: TtsProvider.dashScope,
       fishModel: controller.fishAudioModel,
       fishReferenceId: controller.fishAudioReferenceId,
+      fishAsmrReferenceId: controller.fishAudioAsmrReferenceId,
       format: controller.fishAudioFormat,
       latency: controller.fishAudioLatency,
       speed: controller.fishAudioSpeed,
       dashBaseUrl: baseUrl.text,
       dashScopeModel: model.text,
       dashScopeVoice: voice.text,
+      dashScopeAsmrVoice: asmrVoice.text,
       dashScopeLanguage: language,
       dashInstructions: instructions.text,
       genericBaseUrl: controller.genericTtsBaseUrl,
       genericModel: controller.genericTtsModel,
       genericVoice: controller.genericTtsVoice,
+      genericAsmrVoice: controller.genericTtsAsmrVoice,
+      emotionIntensity: emotionIntensity,
       previewText: preview.text,
     );
+    controller.setTtsCueDensity(cueDensity);
     if (key.text.trim().isNotEmpty) {
       await const SecretStore().writeDashScopeKey(key.text);
     }
@@ -1261,6 +1291,9 @@ class SettingsScreen extends StatelessWidget {
     final baseUrl = TextEditingController(text: controller.genericTtsBaseUrl);
     final model = TextEditingController(text: controller.genericTtsModel);
     final voice = TextEditingController(text: controller.genericTtsVoice);
+    final asmrVoice = TextEditingController(
+      text: controller.genericTtsAsmrVoice,
+    );
     final preview = TextEditingController(text: controller.ttsPreviewText);
     final key = TextEditingController();
     final player = AudioPlayer();
@@ -1269,6 +1302,8 @@ class SettingsScreen extends StatelessWidget {
         ? 'mp3'
         : controller.fishAudioFormat;
     var speed = controller.fishAudioSpeed;
+    var emotionIntensity = controller.ttsEmotionIntensity;
+    var cueDensity = controller.ttsCueDensity;
     var testing = false;
     String? error;
     final saved = await showDialog<bool>(
@@ -1287,6 +1322,16 @@ class SettingsScreen extends StatelessWidget {
                     value: enabled,
                     onChanged: (value) => setDialogState(() => enabled = value),
                     title: const Text('AI 回复后自动播放'),
+                  ),
+                  _TtsEmotionSlider(
+                    value: emotionIntensity,
+                    onChanged: (value) =>
+                        setDialogState(() => emotionIntensity = value),
+                  ),
+                  _TtsCueDensitySlider(
+                    value: cueDensity,
+                    onChanged: (value) =>
+                        setDialogState(() => cueDensity = value),
                   ),
                   TextField(
                     controller: baseUrl,
@@ -1307,7 +1352,16 @@ class SettingsScreen extends StatelessWidget {
                   TextField(
                     controller: voice,
                     decoration: const InputDecoration(
-                      labelText: '音色',
+                      labelText: 'Voice ID / 音色',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: asmrVoice,
+                    decoration: const InputDecoration(
+                      labelText: 'ASMR 模式 Voice ID',
+                      helperText: '可选；仅在主页开启 ASMR 模式时使用并校验',
                       border: OutlineInputBorder(),
                     ),
                   ),
@@ -1356,39 +1410,14 @@ class SettingsScreen extends StatelessWidget {
                     ),
                   ),
                   const SizedBox(height: 12),
-                  TextField(
+                  _TtsPreviewEditor(
                     controller: preview,
-                    minLines: 2,
-                    maxLines: 4,
-                    maxLength: 300,
-                    decoration: const InputDecoration(
-                      labelText: '试音文字',
-                      border: OutlineInputBorder(),
-                    ),
-                  ),
-                  if (error != null)
-                    Text(
-                      error!,
-                      style: TextStyle(
-                        color: Theme.of(context).colorScheme.error,
-                      ),
-                    ),
-                ],
-              ),
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () async {
-                await const SecretStore().writeGenericTtsKey('');
-                if (context.mounted) Navigator.pop(context, false);
-              },
-              child: const Text('清除 Key'),
-            ),
-            TextButton.icon(
-              onPressed: testing
-                  ? null
-                  : () async {
+                    testing: testing,
+                    onClearKey: () async {
+                      await const SecretStore().writeGenericTtsKey('');
+                      if (context.mounted) Navigator.pop(context, false);
+                    },
+                    onTest: () async {
                       final apiKey = key.text.trim().isNotEmpty
                           ? key.text.trim()
                           : await const SecretStore().readGenericTtsKey();
@@ -1409,9 +1438,16 @@ class SettingsScreen extends StatelessWidget {
                           voice: voice.text.trim(),
                           format: format,
                           speed: speed,
+                          instructions:
+                              model.text.trim().toLowerCase().contains(
+                                'gpt-4o-mini-tts',
+                              )
+                              ? ttsEmotionInstruction(emotionIntensity)
+                              : '',
                         );
                         await player.play(DeviceFileSource(path));
                       } on Object catch (value) {
+                        RuntimeLog.instance.error('通用 TTS 试音', value);
                         if (context.mounted) {
                           setDialogState(() => error = value.toString());
                         }
@@ -1421,23 +1457,21 @@ class SettingsScreen extends StatelessWidget {
                         }
                       }
                     },
-              icon: testing
-                  ? const SizedBox.square(
-                      dimension: 16,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : const Icon(Icons.play_arrow),
-              label: const Text('试音'),
+                    onCancel: () => Navigator.pop(context, false),
+                    onSave: () => Navigator.pop(context, true),
+                  ),
+                  if (error != null)
+                    Text(
+                      error!,
+                      style: TextStyle(
+                        color: Theme.of(context).colorScheme.error,
+                      ),
+                    ),
+                ],
+              ),
             ),
-            TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: const Text('取消'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.pop(context, true),
-              child: const Text('保存'),
-            ),
-          ],
+          ),
+          actions: const [],
         ),
       ),
     );
@@ -1448,19 +1482,24 @@ class SettingsScreen extends StatelessWidget {
       provider: TtsProvider.generic,
       fishModel: controller.fishAudioModel,
       fishReferenceId: controller.fishAudioReferenceId,
+      fishAsmrReferenceId: controller.fishAudioAsmrReferenceId,
       format: format,
       latency: controller.fishAudioLatency,
       speed: speed,
       dashBaseUrl: controller.dashScopeTtsBaseUrl,
       dashScopeModel: controller.dashScopeTtsModel,
       dashScopeVoice: controller.dashScopeTtsVoice,
+      dashScopeAsmrVoice: controller.dashScopeTtsAsmrVoice,
       dashScopeLanguage: controller.dashScopeTtsLanguage,
       dashInstructions: controller.dashScopeTtsInstructions,
       genericBaseUrl: baseUrl.text,
       genericModel: model.text,
       genericVoice: voice.text,
+      genericAsmrVoice: asmrVoice.text,
+      emotionIntensity: emotionIntensity,
       previewText: preview.text,
     );
+    controller.setTtsCueDensity(cueDensity);
     if (key.text.trim().isNotEmpty) {
       await const SecretStore().writeGenericTtsKey(key.text);
     }
@@ -1497,6 +1536,7 @@ class SettingsScreen extends StatelessWidget {
       ScaffoldMessenger.of(context)
           .showSnackBar(const SnackBar(content: Text('本地数据已恢复，API Key 保持不变')));
     } on Object catch (error) {
+      RuntimeLog.instance.error('Data import', error);
       if (!context.mounted) return;
       ScaffoldMessenger.of(context)
           .showSnackBar(SnackBar(content: Text('导入失败：$error')));
@@ -1970,6 +2010,304 @@ class _UserProfileDialogState extends State<_UserProfileDialog> {
           child: const Text('保存'),
         ),
       ],
+    );
+  }
+}
+
+class RuntimeLogScreen extends StatelessWidget {
+  const RuntimeLogScreen({
+    super.key,
+    required this.language,
+    required this.onMenuPressed,
+  });
+
+  final AppLanguage language;
+  final VoidCallback onMenuPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Theme.of(context).scaffoldBackgroundColor,
+      appBar: AppBar(
+        leading: IconButton(
+          onPressed: onMenuPressed,
+          tooltip: language.text('菜单', 'Menu', 'メニュー'),
+          icon: const Icon(Icons.menu_rounded),
+        ),
+        title: Text(language.text('运行日志', 'Runtime logs', '実行ログ')),
+        actions: [
+          AnimatedBuilder(
+            animation: RuntimeLog.instance,
+            builder: (context, _) => IconButton(
+              onPressed: RuntimeLog.instance.entries.isEmpty
+                  ? null
+                  : () => RuntimeLog.instance.clear(),
+              tooltip: language.text('清空日志', 'Clear logs', 'ログを消去'),
+              icon: const Icon(Icons.delete_outline),
+            ),
+          ),
+          AnimatedBuilder(
+            animation: RuntimeLog.instance,
+            builder: (context, _) => IconButton(
+              onPressed: RuntimeLog.instance.entries.isEmpty
+                  ? null
+                  : () async {
+                      await Clipboard.setData(
+                        ClipboardData(text: RuntimeLog.instance.formattedText),
+                      );
+                    },
+              tooltip: language.text('复制日志', 'Copy logs', 'ログをコピー'),
+              icon: const Icon(Icons.copy_outlined),
+            ),
+          ),
+        ],
+      ),
+      body: AnimatedBuilder(
+        animation: RuntimeLog.instance,
+        builder: (context, _) {
+          final entries = RuntimeLog.instance.entries.reversed.toList();
+          return Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '记录 LLM/TTS 的结构化请求与响应；API Key、令牌和授权信息会自动脱敏，音频二进制不会记录。',
+                  style: TextStyle(
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    fontSize: 13,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Expanded(
+                  child: entries.isEmpty
+                      ? const Center(child: Text('暂无运行日志'))
+                      : DecoratedBox(
+                          decoration: BoxDecoration(
+                            color: Theme.of(context)
+                                .colorScheme
+                                .surfaceContainerHighest,
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: ListView.separated(
+                            padding: const EdgeInsets.all(16),
+                            itemCount: entries.length,
+                            separatorBuilder: (_, _) =>
+                                const Divider(height: 22),
+                            itemBuilder: (context, index) => SelectableText(
+                              entries[index].formatted,
+                              style: const TextStyle(
+                                fontFamily: 'monospace',
+                                fontSize: 12,
+                                height: 1.5,
+                              ),
+                            ),
+                          ),
+                        ),
+                ),
+              ],
+            ),
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _TtsPreviewEditor extends StatelessWidget {
+  const _TtsPreviewEditor({
+    required this.controller,
+    required this.testing,
+    required this.onClearKey,
+    required this.onTest,
+    required this.onCancel,
+    required this.onSave,
+  });
+
+  final TextEditingController controller;
+  final bool testing;
+  final VoidCallback onClearKey;
+  final VoidCallback onTest;
+  final VoidCallback onCancel;
+  final VoidCallback onSave;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return Material(
+      color: Colors.transparent,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(4),
+        side: BorderSide(color: colors.outline),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          TextField(
+            controller: controller,
+            minLines: 2,
+            maxLines: 4,
+            maxLength: 300,
+            decoration: const InputDecoration(
+              labelText: '试音文字',
+              border: InputBorder.none,
+              contentPadding: EdgeInsets.fromLTRB(12, 12, 12, 4),
+            ),
+          ),
+          Divider(height: 1, color: colors.outlineVariant),
+          SizedBox(
+            height: 48,
+            child: Row(
+              children: [
+                Expanded(
+                  child: IconButton(
+                    onPressed: onClearKey,
+                    tooltip: '清除 Key',
+                    icon: const Icon(Icons.key_off_outlined),
+                  ),
+                ),
+                Expanded(
+                  child: IconButton(
+                    onPressed: testing ? null : onTest,
+                    tooltip: '试听',
+                    icon: testing
+                        ? const SizedBox.square(
+                            dimension: 18,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.play_arrow_rounded),
+                  ),
+                ),
+                Expanded(
+                  child: IconButton(
+                    onPressed: onCancel,
+                    tooltip: '取消',
+                    icon: const Icon(Icons.close_rounded),
+                  ),
+                ),
+                Expanded(
+                  child: IconButton.filled(
+                    onPressed: onSave,
+                    tooltip: '保存',
+                    icon: const Icon(Icons.check_rounded),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _DialogActionRow extends StatelessWidget {
+  const _DialogActionRow({required this.children});
+
+  final List<Widget> children;
+
+  @override
+  Widget build(BuildContext context) {
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        mainAxisAlignment: MainAxisAlignment.end,
+        children: [
+          for (var index = 0; index < children.length; index++) ...[
+            if (index > 0) const SizedBox(width: 4),
+            children[index],
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _TtsEmotionSlider extends StatelessWidget {
+  const _TtsEmotionSlider({required this.value, required this.onChanged});
+
+  final TtsEmotionIntensity value;
+  final ValueChanged<TtsEmotionIntensity> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Expanded(child: Text('感情程度')),
+              Text(
+                value.label,
+                style: TextStyle(
+                  color: Theme.of(context).colorScheme.primary,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ],
+          ),
+          Slider(
+            value: value.index.toDouble(),
+            min: 0,
+            max: (TtsEmotionIntensity.values.length - 1).toDouble(),
+            divisions: TtsEmotionIntensity.values.length - 1,
+            label: value.label,
+            onChanged: (rawValue) =>
+                onChanged(TtsEmotionIntensity.values[rawValue.round()]),
+          ),
+          const Text(
+            '试听立即使用当前档位；点击保存后应用于正式对话。Fish 会按情绪展开音调、重音和节奏指令，并辅助调整生成参数。',
+            style: TextStyle(fontSize: 12),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _TtsCueDensitySlider extends StatelessWidget {
+  const _TtsCueDensitySlider({required this.value, required this.onChanged});
+
+  final TtsCueDensity value;
+  final ValueChanged<TtsCueDensity> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Expanded(child: Text('句内情绪演出密度')),
+              Text(
+                value.label,
+                style: TextStyle(
+                  color: Theme.of(context).colorScheme.primary,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ],
+          ),
+          Slider(
+            value: value.index.toDouble(),
+            min: 0,
+            max: (TtsCueDensity.values.length - 1).toDouble(),
+            divisions: TtsCueDensity.values.length - 1,
+            label: value.label,
+            onChanged: (raw) => onChanged(TtsCueDensity.values[raw.round()]),
+          ),
+          const Text(
+            '控制主情绪标签的重复频率，以及 [emphasis]、[pause] 等句内标签数量；不改变情感强度和 temperature。',
+            style: TextStyle(fontSize: 12),
+          ),
+        ],
+      ),
     );
   }
 }

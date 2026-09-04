@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
 
 import 'app_controller.dart';
+import 'runtime_log.dart';
 import 'app_localization.dart';
 
 class AlarmScreen extends StatefulWidget {
@@ -49,6 +50,7 @@ class _AlarmScreenState extends State<AlarmScreen> {
     await Permission.notification.request();
     final exactAlarmStatus = await Permission.scheduleExactAlarm.request();
     if (!exactAlarmStatus.isGranted && !exactAlarmStatus.isLimited) {
+      RuntimeLog.instance.warning('Alarm', '精确闹钟权限未授予');
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -108,6 +110,14 @@ class _AlarmScreenState extends State<AlarmScreen> {
       ),
     );
     final success = await Alarm.set(alarmSettings: settings);
+    if (success) {
+      RuntimeLog.instance.info(
+        'Alarm',
+        '闹钟设置成功，时间=${dateTime.toIso8601String()}',
+      );
+    } else {
+      RuntimeLog.instance.warning('Alarm', 'Alarm.set 返回失败');
+    }
     await _refresh();
     if (!mounted) return;
     ScaffoldMessenger.of(context)
@@ -116,6 +126,7 @@ class _AlarmScreenState extends State<AlarmScreen> {
 
   Future<void> _deleteAlarm(AlarmSettings settings) async {
     await Alarm.stop(settings.id);
+    RuntimeLog.instance.info('Alarm', '闹钟已删除，id=${settings.id}');
     await _refresh();
   }
 

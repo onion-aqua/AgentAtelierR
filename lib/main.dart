@@ -1,3 +1,5 @@
+import 'dart:ui';
+
 import 'package:alarm/alarm.dart';
 import 'package:flutter/material.dart';
 import 'package:spine_flutter/spine_flutter.dart' hide Color;
@@ -5,13 +7,33 @@ import 'package:spine_flutter/spine_flutter.dart' hide Color;
 import 'src/app_controller.dart';
 import 'src/app_localization.dart';
 import 'src/app_shell.dart';
+import 'src/runtime_log.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await initSpineFlutter(enableMemoryDebugging: false);
-  await Alarm.init();
-  final controller = await AppController.load();
-  runApp(RyzaChatApp(controller: controller));
+  await RuntimeLog.instance.initialize();
+  FlutterError.onError = (details) {
+    RuntimeLog.instance.error(
+      'Flutter',
+      details.exception,
+      details.stack ?? StackTrace.current,
+    );
+    FlutterError.presentError(details);
+  };
+  PlatformDispatcher.instance.onError = (error, stackTrace) {
+    RuntimeLog.instance.error('Platform', error, stackTrace);
+    return false;
+  };
+  RuntimeLog.instance.info('App', '应用启动，版本 0.5.0+14');
+  try {
+    await initSpineFlutter(enableMemoryDebugging: false);
+    await Alarm.init();
+    final controller = await AppController.load();
+    runApp(RyzaChatApp(controller: controller));
+  } on Object catch (error, stackTrace) {
+    RuntimeLog.instance.error('Startup', error, stackTrace);
+    rethrow;
+  }
 }
 
 class RyzaChatApp extends StatelessWidget {

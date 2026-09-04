@@ -10,7 +10,7 @@ import 'settings_screen.dart';
 import 'soundscape_controller.dart';
 import 'world_map_screen.dart';
 
-enum AppDestination { chat, worldMap, missions, alarms, settings }
+enum AppDestination { chat, worldMap, missions, alarms, settings, runtimeLogs }
 
 extension AppDestinationData on AppDestination {
   String label(AppLanguage language) => switch (this) {
@@ -23,6 +23,7 @@ extension AppDestinationData on AppDestination {
     ),
     AppDestination.alarms => language.text('语音闹钟', 'Voice alarms', 'ボイスアラーム'),
     AppDestination.settings => language.text('设置', 'Settings', '設定'),
+    AppDestination.runtimeLogs => language.text('运行日志', 'Runtime logs', '実行ログ'),
   };
 
   IconData get icon => switch (this) {
@@ -31,6 +32,7 @@ extension AppDestinationData on AppDestination {
     AppDestination.missions => Icons.task_alt_outlined,
     AppDestination.alarms => Icons.alarm_outlined,
     AppDestination.settings => Icons.settings_outlined,
+    AppDestination.runtimeLogs => Icons.bug_report_outlined,
   };
 }
 
@@ -70,7 +72,10 @@ class _AppShellState extends State<AppShell> {
       animation: widget.controller,
       builder: (context, _) {
         WidgetsBinding.instance.addPostFrameCallback((_) {
-          _soundscape.sync(widget.controller);
+          _soundscape.sync(
+            widget.controller,
+            worldMapVisible: _destination == AppDestination.worldMap,
+          );
         });
         return Scaffold(
           key: _scaffoldKey,
@@ -91,6 +96,7 @@ class _AppShellState extends State<AppShell> {
               WorldMapScreen(
                 controller: widget.controller,
                 onMenuPressed: _openMenu,
+                onClose: () => _selectDestination(AppDestination.chat),
               ),
               MissionScreen(
                 controller: widget.controller,
@@ -102,6 +108,10 @@ class _AppShellState extends State<AppShell> {
               ),
               SettingsScreen(
                 controller: widget.controller,
+                onMenuPressed: _openMenu,
+              ),
+              RuntimeLogScreen(
+                language: widget.controller.interfaceLanguage,
                 onMenuPressed: _openMenu,
               ),
             ],

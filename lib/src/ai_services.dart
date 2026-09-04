@@ -9,6 +9,7 @@ import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 
 import 'app_controller.dart';
+import 'runtime_log.dart';
 
 class SecretStore {
   const SecretStore();
@@ -209,6 +210,7 @@ class OpenAiCompatibleClient {
     required String apiKey,
     required Map<String, dynamic> body,
   }) async* {
+    final started = DateTime.now();
     final request = http.Request('POST', _endpoint(baseUrl, 'chat/completions'))
       ..headers.addAll({
         'Authorization': 'Bearer $apiKey',
@@ -218,6 +220,25 @@ class OpenAiCompatibleClient {
       ..body = jsonEncode(body);
 
     final response = await _client.send(request);
+    RuntimeLog.instance.communication(
+      source: 'LLM',
+      direction: 'request',
+      method: 'POST',
+      url: request.url.toString(),
+      payload: body,
+    );
+    RuntimeLog.instance.communication(
+      source: 'LLM',
+      direction: 'response',
+      method: 'POST',
+      url: request.url.toString(),
+      statusCode: response.statusCode,
+      duration: DateTime.now().difference(started),
+      payload: {
+        'stream': true,
+        'content_type': response.headers['content-type'],
+      },
+    );
     if (response.statusCode < 200 || response.statusCode >= 300) {
       final body = await response.stream.bytesToString();
       throw AiServiceException(
@@ -225,6 +246,7 @@ class OpenAiCompatibleClient {
       );
     }
 
+    final deltas = StringBuffer();
     await for (final line
         in response.stream
             .transform(utf8.decoder)
@@ -238,8 +260,19 @@ class OpenAiCompatibleClient {
         throw AiServiceException(error['message'] as String? ?? 'AI 流式响应返回错误');
       }
       final delta = _readDelta(decoded);
-      if (delta.isNotEmpty) yield delta;
+      if (delta.isNotEmpty) {
+        deltas.write(delta);
+        yield delta;
+      }
     }
+    RuntimeLog.instance.communication(
+      source: 'LLM',
+      direction: 'stream',
+      method: 'POST',
+      url: request.url.toString(),
+      duration: DateTime.now().difference(started),
+      payload: {'text': deltas.toString(), 'length': deltas.length},
+    );
   }
 
   Future<Map<String, dynamic>> _completeMessage({
@@ -247,13 +280,31 @@ class OpenAiCompatibleClient {
     required String apiKey,
     required Map<String, dynamic> body,
   }) async {
+    final started = DateTime.now();
+    final url = _endpoint(baseUrl, 'chat/completions');
     final response = await _client.post(
-      _endpoint(baseUrl, 'chat/completions'),
+      url,
       headers: {
         'Authorization': 'Bearer $apiKey',
         'Content-Type': 'application/json',
       },
       body: jsonEncode(body),
+    );
+    RuntimeLog.instance.communication(
+      source: 'LLM',
+      direction: 'request',
+      method: 'POST',
+      url: url.toString(),
+      payload: body,
+    );
+    RuntimeLog.instance.communication(
+      source: 'LLM',
+      direction: 'response',
+      method: 'POST',
+      url: url.toString(),
+      statusCode: response.statusCode,
+      duration: DateTime.now().difference(started),
+      payload: response.body,
     );
     if (response.statusCode < 200 || response.statusCode >= 300) {
       throw AiServiceException(
@@ -353,13 +404,32 @@ class OpenAiCompatibleClient {
     required String model,
     required List<Map<String, String>> messages,
   }) async {
+    final started = DateTime.now();
+    final url = _endpoint(baseUrl, 'chat/completions');
+    final requestBody = {'model': model, 'stream': false, 'messages': messages};
     final response = await _client.post(
-      _endpoint(baseUrl, 'chat/completions'),
+      url,
       headers: {
         'Authorization': 'Bearer $apiKey',
         'Content-Type': 'application/json',
       },
-      body: jsonEncode({'model': model, 'stream': false, 'messages': messages}),
+      body: jsonEncode(requestBody),
+    );
+    RuntimeLog.instance.communication(
+      source: 'LLM',
+      direction: 'request',
+      method: 'POST',
+      url: url.toString(),
+      payload: requestBody,
+    );
+    RuntimeLog.instance.communication(
+      source: 'LLM',
+      direction: 'response',
+      method: 'POST',
+      url: url.toString(),
+      statusCode: response.statusCode,
+      duration: DateTime.now().difference(started),
+      payload: response.body,
     );
     if (response.statusCode < 200 || response.statusCode >= 300) {
       throw AiServiceException(
@@ -494,6 +564,7 @@ class FishAudioClient {
     String format = 'mp3',
     String latency = 'normal',
     double speed = 1.0,
+    double temperature = 0.7,
   }) async {
     final bytes = await synthesizeBytes(
       apiKey: apiKey,
@@ -503,6 +574,7 @@ class FishAudioClient {
       format: format,
       latency: latency,
       speed: speed,
+      temperature: temperature,
     );
     final extension = switch (format) {
       'wav' => 'wav',
@@ -525,26 +597,50 @@ class FishAudioClient {
     String format = 'mp3',
     String latency = 'normal',
     double speed = 1.0,
+    double temperature = 0.7,
   }) async {
+    final started = DateTime.now();
+    final uri = Uri.parse(endpoint);
+    final requestBody = {
+      'text': text,
+      'reference_id': referenceId,
+      'temperature': temperature.clamp(0.0, 1.0),
+      'normalize': true,
+      'format': format,
+      'latency': latency,
+      'prosody': {
+        'speed': speed.clamp(0.5, 2.0),
+        'volume': 0.0,
+        'normalize_loudness': true,
+      },
+    };
     final response = await _client.post(
-      Uri.parse(endpoint),
+      uri,
       headers: {
         'Authorization': 'Bearer $apiKey',
         'Content-Type': 'application/json',
         'model': model,
       },
-      body: jsonEncode({
-        'text': text,
-        'reference_id': referenceId,
-        'normalize': true,
-        'format': format,
-        'latency': latency,
-        'prosody': {
-          'speed': speed.clamp(0.5, 2.0),
-          'volume': 0.0,
-          'normalize_loudness': true,
-        },
-      }),
+      body: jsonEncode(requestBody),
+    );
+    RuntimeLog.instance.communication(
+      source: 'TTS',
+      direction: 'request',
+      method: 'POST',
+      url: uri.toString(),
+      payload: requestBody,
+    );
+    RuntimeLog.instance.communication(
+      source: 'TTS',
+      direction: 'response',
+      method: 'POST',
+      url: uri.toString(),
+      statusCode: response.statusCode,
+      duration: DateTime.now().difference(started),
+      payload: {
+        'bytes': response.bodyBytes.length,
+        'content_type': response.headers['content-type'],
+      },
     );
     if (response.statusCode < 200 || response.statusCode >= 300) {
       var details = '';
@@ -600,24 +696,43 @@ class DashScopeTtsClient {
     String language = 'Chinese',
     String instructions = '',
   }) async {
+    final started = DateTime.now();
+    final uri = Uri.parse(baseUrl.trim().isEmpty ? endpoint : baseUrl.trim());
+    final requestBody = {
+      'model': model,
+      'input': {
+        'text': text,
+        'voice': voice,
+        'language_type': language,
+        if (instructions.trim().isNotEmpty) ...{
+          'instructions': instructions.trim(),
+          'optimize_instructions': true,
+        },
+      },
+    };
     final response = await _client.post(
-      Uri.parse(baseUrl.trim().isEmpty ? endpoint : baseUrl.trim()),
+      uri,
       headers: {
         'Authorization': 'Bearer $apiKey',
         'Content-Type': 'application/json',
       },
-      body: jsonEncode({
-        'model': model,
-        'input': {
-          'text': text,
-          'voice': voice,
-          'language_type': language,
-          if (instructions.trim().isNotEmpty) ...{
-            'instructions': instructions.trim(),
-            'optimize_instructions': true,
-          },
-        },
-      }),
+      body: jsonEncode(requestBody),
+    );
+    RuntimeLog.instance.communication(
+      source: 'TTS',
+      direction: 'request',
+      method: 'POST',
+      url: uri.toString(),
+      payload: requestBody,
+    );
+    RuntimeLog.instance.communication(
+      source: 'TTS',
+      direction: 'response',
+      method: 'POST',
+      url: uri.toString(),
+      statusCode: response.statusCode,
+      duration: DateTime.now().difference(started),
+      payload: response.body,
     );
     if (response.statusCode < 200 || response.statusCode >= 300) {
       throw AiServiceException(
@@ -652,6 +767,7 @@ class GenericTtsClient {
     required String voice,
     String format = 'wav',
     double speed = 1.0,
+    String instructions = '',
   }) async {
     final bytes = await synthesizeBytes(
       baseUrl: baseUrl,
@@ -661,6 +777,7 @@ class GenericTtsClient {
       voice: voice,
       format: format,
       speed: speed,
+      instructions: instructions,
     );
     return _writeTemporaryAudio(bytes, 'generic_tts', format);
   }
@@ -673,7 +790,9 @@ class GenericTtsClient {
     required String voice,
     String format = 'wav',
     double speed = 1.0,
+    String instructions = '',
   }) async {
+    final started = DateTime.now();
     final normalized = baseUrl.trim().replaceFirst(RegExp(r'/+$'), '');
     final endpoint = normalized.endsWith('/audio/speech')
         ? normalized
@@ -690,7 +809,34 @@ class GenericTtsClient {
         'voice': voice,
         'response_format': format,
         'speed': speed.clamp(0.5, 2.0),
+        if (instructions.trim().isNotEmpty) 'instructions': instructions.trim(),
       }),
+    );
+    RuntimeLog.instance.communication(
+      source: 'TTS',
+      direction: 'request',
+      method: 'POST',
+      url: endpoint,
+      payload: {
+        'model': model,
+        'input': text,
+        'voice': voice,
+        'response_format': format,
+        'speed': speed.clamp(0.5, 2.0),
+        if (instructions.trim().isNotEmpty) 'instructions': instructions.trim(),
+      },
+    );
+    RuntimeLog.instance.communication(
+      source: 'TTS',
+      direction: 'response',
+      method: 'POST',
+      url: endpoint,
+      statusCode: response.statusCode,
+      duration: DateTime.now().difference(started),
+      payload: {
+        'bytes': response.bodyBytes.length,
+        'content_type': response.headers['content-type'],
+      },
     );
     if (response.statusCode < 200 || response.statusCode >= 300) {
       throw AiServiceException(

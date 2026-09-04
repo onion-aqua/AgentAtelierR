@@ -49,7 +49,7 @@ class GlassSurface extends StatelessWidget {
           color: Colors.white.withValues(alpha: liquidGlass ? 0.34 : 0.20),
         ),
       ),
-      child: child,
+      child: Material(type: MaterialType.transparency, child: child),
     );
     return DecoratedBox(
       decoration: BoxDecoration(
@@ -77,6 +77,7 @@ class GlassIconButton extends StatelessWidget {
     required this.tooltip,
     required this.onPressed,
     this.size = 42,
+    this.iconWidget,
   });
 
   final bool liquidGlass;
@@ -84,6 +85,7 @@ class GlassIconButton extends StatelessWidget {
   final String tooltip;
   final VoidCallback? onPressed;
   final double size;
+  final Widget? iconWidget;
 
   @override
   Widget build(BuildContext context) {
@@ -98,7 +100,7 @@ class GlassIconButton extends StatelessWidget {
           tooltip: tooltip,
           color: Colors.white,
           disabledColor: Colors.white38,
-          icon: Icon(icon, size: size * 0.5),
+          icon: iconWidget ?? Icon(icon, size: size * 0.5),
         ),
       ),
     );

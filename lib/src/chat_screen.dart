@@ -14,10 +14,13 @@ import 'audio_envelope.dart';
 import 'character_appearance.dart';
 import 'character_camera.dart';
 import 'character_expression.dart';
+import 'character_gaze.dart';
 import 'character_performance.dart';
 import 'chat_segments.dart';
 import 'enhanced_animation_system.dart';
 import 'glass_ui.dart';
+import 'stage_environment_catalog.dart';
+import 'runtime_log.dart';
 import 'tap_reaction.dart';
 
 extension SceneTimeIcon on SceneTime {
@@ -144,8 +147,11 @@ class _ChatScreenState extends State<ChatScreen> {
   String? _lastTappedPart;
   bool _spineReady = false;
   bool _isReplying = false;
+  bool _isContinuing = false;
   bool _isCharacterSpeaking = false;
   bool _tapReactionActive = false;
+  Offset? _gazePointer;
+  DateTime? _gazeStartedAt;
   CharacterExpression _currentExpression = CharacterExpression.neutral;
   CharacterFacialDetail? _activeFacialDetail;
   List<CharacterMotionGroup> _motionGroups = const [];
@@ -190,6 +196,7 @@ class _ChatScreenState extends State<ChatScreen> {
   SpineWidgetController _createSpineController(CharacterAppearance appearance) {
     late final SpineWidgetController spineController;
     spineController = SpineWidgetController(
+      onBeforeUpdateWorldTransforms: _applyEyeGaze,
       onAfterUpdateWorldTransforms: _applySpeakingHeadMotion,
       onInitialized: (controller) {
         if (!identical(spineController, _spineController)) return;
@@ -215,6 +222,8 @@ class _ChatScreenState extends State<ChatScreen> {
       widget.controller.selectedCharacterAppearanceId,
     );
     if (next.id == _appearance.id) return;
+    _gazePointer = null;
+    _gazeStartedAt = null;
     _idleTimer?.cancel();
     _microMotionTimer?.cancel();
     _facialDetailTimer?.cancel();
@@ -561,6 +570,49 @@ class _ChatScreenState extends State<ChatScreen> {
     controller.skeleton.updateWorldTransform(Physics.none);
   }
 
+  void _applyEyeGaze(SpineWidgetController controller) {
+    final pointer = _gazePointer;
+    final startedAt = _gazeStartedAt;
+    if (pointer == null || startedAt == null) return;
+    final skeleton = controller.skeleton;
+    final target =
+        skeleton.findBone('control_aim_eye') ??
+        skeleton.findBone('control_eye') ??
+        skeleton.findBone('control_handle_eye');
+    if (target == null) return;
+    final setup = target.getData();
+    final influence = characterGazeInfluence(
+      DateTime.now().difference(startedAt),
+    );
+    if (influence <= 0) {
+      target
+        ..setX(setup.getX())
+        ..setY(setup.getY());
+      _gazePointer = null;
+      _gazeStartedAt = null;
+      return;
+    }
+
+    final center = skeleton.findBone('control_aim_eye_center') ?? target;
+    final origin = Offset(center.getWorldX(), center.getWorldY());
+    final bounds = skeleton.getBounds();
+    final gazeTarget = directionalGazeTarget(
+      origin: origin,
+      pointer: pointer,
+      radius: max(bounds.width, bounds.height) * 0.16,
+    );
+    final parent = target.getParent();
+    final localTarget = parent == null
+        ? gazeTarget
+        : () {
+            final position = parent.worldToLocal(gazeTarget.dx, gazeTarget.dy);
+            return Offset(position.x, position.y);
+          }();
+    target
+      ..setX(setup.getX() + (localTarget.dx - setup.getX()) * influence)
+      ..setY(setup.getY() + (localTarget.dy - setup.getY()) * influence);
+  }
+
   void _updateLipSyncFromPlaybackPosition(Duration position) {
     final envelope = _activeSpeechEnvelope;
     final entry = _lipSyncEntry;
@@ -762,7 +814,14 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Future<void> _reactToTap(Offset localPosition) async {
     final reaction = _hitTestReaction(localPosition);
-    if (reaction == null) return;
+    if (reaction == null) {
+      final spineController = _spineController;
+      if (_spineReady && spineController != null) {
+        _gazePointer = spineController.toSkeletonCoordinates(localPosition);
+        _gazeStartedAt = DateTime.now();
+      }
+      return;
+    }
     widget.controller.recordCharacterTouch();
     if (_spineReady && _spineController != null) {
       _tapReactionActive = true;
@@ -837,22 +896,31 @@ class _ChatScreenState extends State<ChatScreen> {
     return area.abs() / 2;
   }
 
-  Future<void> _sendMessage() async {
+  Future<void> _sendMessage({String? automaticPrompt}) async {
     final rawText = _inputController.text.trim();
-    if ((rawText.isEmpty && _pendingAttachments.isEmpty) || _isReplying) return;
+    if ((rawText.isEmpty &&
+            _pendingAttachments.isEmpty &&
+            automaticPrompt == null) ||
+        _isReplying) {
+      return;
+    }
     final attachments = List<ChatAttachment>.unmodifiable(_pendingAttachments);
-    final text = rawText.isEmpty ? '请分析我发送的附件。' : rawText;
+    final text = automaticPrompt ?? (rawText.isEmpty ? '请分析我发送的附件。' : rawText);
+    final isAutomatic = automaticPrompt != null;
 
     _cancelSpeechPlayback();
 
     _inputController.clear();
-    widget.controller.addUserMessage(text, attachments: attachments);
+    if (!isAutomatic) {
+      widget.controller.addUserMessage(text, attachments: attachments);
+    }
     _applyMoodAnimation();
     _playAmbientMotion(explorationChance: 0.12);
     _lastPerformanceActionKey = null;
     setState(() {
       _pendingAttachments.clear();
       _isReplying = true;
+      _isContinuing = isAutomatic;
       _manualPanelFraction = null;
     });
     final generation = ++_replyGeneration;
@@ -865,7 +933,10 @@ class _ChatScreenState extends State<ChatScreen> {
       widget.controller.addAssistantMessage(reply);
       await _playTtsIfConfigured(reply);
       if (mounted && generation == _replyGeneration) {
-        setState(() => _isReplying = false);
+        setState(() {
+          _isReplying = false;
+          _isContinuing = false;
+        });
       }
       _scrollToBottom();
       return;
@@ -876,20 +947,32 @@ class _ChatScreenState extends State<ChatScreen> {
     if (apiKey.isEmpty) {
       _stopSpeakingAnimation();
       widget.controller.addAssistantMessage('请先在设置中填写 OpenAI 兼容接口的 API Key。');
-      if (mounted) setState(() => _isReplying = false);
+      if (mounted) {
+        setState(() {
+          _isReplying = false;
+          _isContinuing = false;
+        });
+      }
       return;
     }
 
     widget.controller.beginAssistantStream();
     StreamIterator<String>? iterator;
     try {
+      RuntimeLog.instance.info(
+        'AI',
+        '开始流式回复 model=${widget.controller.openAiModel}, '
+            'agent=${widget.controller.agentEnabled}, attachments=${attachments.length}',
+      );
       iterator = StreamIterator<String>(
         _aiClient.streamChat(
           baseUrl: widget.controller.openAiBaseUrl,
           apiKey: apiKey,
           model: widget.controller.openAiModel,
           systemPrompt: widget.controller.buildCharacterPrompt(),
-          messages: widget.controller.recentMessages(),
+          messages: widget.controller.recentMessages(
+            pending: isAutomatic ? ChatMessage(text: text, isUser: true) : null,
+          ),
           reasoningEffort:
               widget.controller.openAiAdvancedEnabled &&
                   widget.controller.supportsOpenAiAdvancedControls
@@ -921,24 +1004,36 @@ class _ChatScreenState extends State<ChatScreen> {
       if (generation != _replyGeneration) return;
       final reply = widget.controller.messages.last.text;
       widget.controller.finishAssistantStream();
+      RuntimeLog.instance.info('AI', '流式回复完成，字符数=${reply.length}');
       await _playTtsIfConfigured(reply);
       if (generation != _replyGeneration) return;
       if (widget.controller.longTermMemoryEnabled &&
           widget.controller.userMessageCount % 4 == 0) {
         unawaited(_refreshLongTermMemory(apiKey));
       }
-    } on Object catch (error) {
+    } on Object catch (error, stackTrace) {
       if (generation != _replyGeneration) return;
+      RuntimeLog.instance.error('AI', error, stackTrace);
       _stopSpeakingAnimation();
       widget.controller.failAssistantStream(error.toString());
     } finally {
       if (identical(_replyIterator, iterator)) _replyIterator = null;
       if (iterator != null) unawaited(iterator.cancel());
       if (mounted && generation == _replyGeneration) {
-        setState(() => _isReplying = false);
+        setState(() {
+          _isReplying = false;
+          _isContinuing = false;
+        });
         _scrollToBottom();
       }
     }
+  }
+
+  void _continueConversation() {
+    _sendMessage(
+      automaticPrompt:
+          '请基于当前对话自然地继续说下去。不要解释这是自动继续，也不要重复上一条内容；用莱莎的口吻补充一个有意义的回应或问题。',
+    );
   }
 
   void _cancelReply() {
@@ -950,7 +1045,10 @@ class _ChatScreenState extends State<ChatScreen> {
     _cancelSpeechPlayback();
     _stopSpeakingAnimation();
     widget.controller.finishAssistantStream();
-    setState(() => _isReplying = false);
+    setState(() {
+      _isReplying = false;
+      _isContinuing = false;
+    });
     _scrollToBottom();
   }
 
@@ -1015,13 +1113,20 @@ class _ChatScreenState extends State<ChatScreen> {
     }
     final apiKey = await _secretStore.readTtsKey(widget.controller.ttsProvider);
     final missingProviderSettings = switch (widget.controller.ttsProvider) {
-      TtsProvider.fishAudio => widget.controller.fishAudioReferenceId.isEmpty,
+      TtsProvider.fishAudio =>
+        widget.controller.activeFishAudioReferenceId.isEmpty,
       TtsProvider.dashScope =>
         widget.controller.dashScopeTtsBaseUrl.isEmpty ||
-            widget.controller.dashScopeTtsVoice.isEmpty,
-      TtsProvider.generic => widget.controller.genericTtsBaseUrl.isEmpty,
+            widget.controller.activeDashScopeTtsVoice.isEmpty,
+      TtsProvider.generic =>
+        widget.controller.genericTtsBaseUrl.isEmpty ||
+            widget.controller.activeGenericTtsVoice.isEmpty,
     };
     if (apiKey.isEmpty || missingProviderSettings) {
+      RuntimeLog.instance.warning(
+        'TTS',
+        '跳过合成：${widget.controller.ttsProvider.label} 的密钥或必要配置缺失',
+      );
       _startSpeakingAnimation();
       _applyPerformanceFromResponse(text);
       _scheduleSpeechFallback(text);
@@ -1036,6 +1141,19 @@ class _ChatScreenState extends State<ChatScreen> {
     _speechCancellation = cancellation;
     final completedSegments = <_CachedSpeechSegment>[];
     try {
+      final model = switch (widget.controller.ttsProvider) {
+        TtsProvider.fishAudio => widget.controller.fishAudioModel,
+        TtsProvider.dashScope => widget.controller.dashScopeTtsModel,
+        TtsProvider.generic => widget.controller.genericTtsModel,
+      };
+      RuntimeLog.instance.info(
+        'TTS',
+        '开始合成 provider=${widget.controller.ttsProvider.label}, model=$model, '
+            'segments=${segments.length}, asmr=${widget.controller.asmrModeEnabled}, '
+            'emotion=${widget.controller.ttsEmotionIntensity.name}, '
+            'cueDensity=${widget.controller.ttsCueDensity.name}, '
+            'fishTemperature=${widget.controller.ttsEmotionIntensity.fishTemperature.toStringAsFixed(2)}',
+      );
       Future<_PreparedSpeech> pending = _prepareSpeech(
         segments.first,
         apiKey,
@@ -1080,11 +1198,16 @@ class _ChatScreenState extends State<ChatScreen> {
         if (next != null) pending = next;
       }
       await _replaceLastSpeech(completedSegments);
+      RuntimeLog.instance.info(
+        'TTS',
+        '合成与播放完成，分段数=${completedSegments.length}',
+      );
       _stopSpeakingAnimation();
       if (identical(_speechCancellation, cancellation)) {
         _speechCancellation = null;
       }
-    } on Object {
+    } on Object catch (error, stackTrace) {
+      RuntimeLog.instance.error('TTS', error, stackTrace);
       _stopSpeakingAnimation();
       if (generation != _speechPlaybackGeneration) return;
       _speechPlaybackGeneration += 1;
@@ -1116,35 +1239,53 @@ class _ChatScreenState extends State<ChatScreen> {
   ) async {
     // WAV keeps the PCM samples available for deterministic lip sync. The
     // format preference remains useful for the settings-page voice preview.
-    final plainText = segment.speechText
-        .replaceFirst(RegExp(r'^\s*\[[^\]]+\]\s*'), '')
-        .trim();
+    final plainText = stripLeadingTtsCues(segment.speechText);
+    final emotionIntensity = widget.controller.ttsEmotionIntensity;
     final path = await switch (widget.controller.ttsProvider) {
       TtsProvider.fishAudio => _fishAudioClient.synthesize(
         apiKey: apiKey,
-        referenceId: widget.controller.fishAudioReferenceId,
+        referenceId: widget.controller.activeFishAudioReferenceId,
         model: widget.controller.fishAudioModel,
         format: 'wav',
         latency: widget.controller.fishAudioLatency,
         speed: widget.controller.fishAudioSpeed,
-        text: segment.speechText,
+        temperature: emotionIntensity.fishTemperature,
+        text: applyFishEmotionIntensityPerSentence(
+          segment.speechText,
+          emotionIntensity,
+          density: widget.controller.ttsCueDensity,
+        ),
       ),
       TtsProvider.dashScope => _dashScopeTtsClient.synthesize(
         apiKey: apiKey,
         baseUrl: widget.controller.dashScopeTtsBaseUrl,
         model: widget.controller.dashScopeTtsModel,
-        voice: widget.controller.dashScopeTtsVoice,
+        voice: widget.controller.activeDashScopeTtsVoice,
         language: widget.controller.dashScopeTtsLanguage,
-        instructions: widget.controller.dashScopeTtsInstructions,
+        instructions:
+            widget.controller.dashScopeTtsModel.toLowerCase().contains(
+              'instruct',
+            )
+            ? mergeTtsInstructions(
+                widget.controller.dashScopeTtsInstructions,
+                emotionIntensity,
+              )
+            : widget.controller.dashScopeTtsInstructions,
         text: plainText,
       ),
       TtsProvider.generic => _genericTtsClient.synthesize(
         apiKey: apiKey,
         baseUrl: widget.controller.genericTtsBaseUrl,
         model: widget.controller.genericTtsModel,
-        voice: widget.controller.genericTtsVoice,
+        voice: widget.controller.activeGenericTtsVoice,
         format: 'wav',
         speed: widget.controller.fishAudioSpeed,
+        instructions:
+            widget.controller.genericTtsModel.toLowerCase().contains(
+              'gpt-4o-mini-tts',
+            )
+            ? ttsEmotionInstruction(emotionIntensity)
+            : '',
         text: plainText,
       ),
     };
@@ -1276,8 +1417,7 @@ class _ChatScreenState extends State<ChatScreen> {
         messages: [
           {
             'role': 'system',
-            'content':
-                '把对话整理为不超过200字的长期记忆。只保留用户稳定偏好、重要经历、关系变化和未完成约定。不要编造。直接输出中文记忆。',
+            'content': '把对话按情况整理为500-1000字，最多不超过1500字的长期记忆。只保留用户稳定偏好、重要经历、关系变化和未完成约定。不要编造。直接输出中文记忆。',
           },
           {
             'role': 'user',
@@ -1302,27 +1442,6 @@ class _ChatScreenState extends State<ChatScreen> {
         curve: Curves.easeOut,
       );
     });
-  }
-
-  void _showMessages() {
-    showModalBottomSheet<void>(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      barrierColor: Colors.black38,
-      constraints: BoxConstraints(
-        maxHeight: MediaQuery.sizeOf(context).height * 0.72,
-      ),
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
-      ),
-      builder: (context) => _ConversationSheet(
-        messages: widget.controller.messages,
-        isReplying: _isReplying,
-        language: widget.controller.interfaceLanguage,
-        liquidGlass: widget.controller.liquidGlassChatUi,
-      ),
-    );
   }
 
   void _showCharacterStatus() {
@@ -1523,6 +1642,10 @@ class _ChatScreenState extends State<ChatScreen> {
       setState(() => _pendingAttachments.addAll(accepted));
     }
     if (rejected.isNotEmpty) {
+      RuntimeLog.instance.warning(
+        'Attachment',
+        '附件读取或大小校验失败，数量=${rejected.length}',
+      );
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('附件读取失败或单次总大小超过 10MB：${rejected.join('、')}')),
       );
@@ -1630,7 +1753,10 @@ class _ChatScreenState extends State<ChatScreen> {
                 left: 0,
                 right: 0,
                 height: mediaQuery.size.height,
-                child: _SceneBackground(sceneTime: widget.controller.sceneTime),
+                child: _SceneBackground(
+                  sceneTime: widget.controller.sceneTime,
+                  stageId: widget.controller.selectedStageId,
+                ),
               ),
               Positioned(
                 top: mediaQuery.viewPadding.top,
@@ -1681,7 +1807,8 @@ class _ChatScreenState extends State<ChatScreen> {
               onSceneChanged: widget.controller.setSceneTime,
               onMenuPressed: widget.onMenuPressed,
               onStatusPressed: _showCharacterStatus,
-              onHistoryPressed: _showMessages,
+              asmrModeEnabled: widget.controller.asmrModeEnabled,
+              onAsmrPressed: _toggleAsmrMode,
             ),
             Expanded(
               child: ConstrainedBox(
@@ -1718,8 +1845,13 @@ class _ChatScreenState extends State<ChatScreen> {
               (message) => message.isUser,
             ),
             canReplay: _lastSpeech.isNotEmpty && !_isReplying,
+            canContinue:
+                widget.controller.messages.any((message) => !message.isUser) &&
+                !_isReplying,
+            isContinuing: _isContinuing,
             onUndo: _undoLastMessage,
             onReplay: _replayLastSpeech,
+            onContinue: _continueConversation,
             onDragUpdate: (delta) {
               setState(() {
                 _manualPanelFraction =
@@ -1829,12 +1961,28 @@ class _ChatScreenState extends State<ChatScreen> {
       ],
     );
   }
+
+  void _toggleAsmrMode() {
+    final nextValue = !widget.controller.asmrModeEnabled;
+    if (nextValue && !widget.controller.hasAsmrVoiceForCurrentProvider) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            '请先在 ${widget.controller.ttsProvider.label} 设置中填写 ASMR 音色 ID',
+          ),
+        ),
+      );
+      return;
+    }
+    widget.controller.setAsmrModeEnabled(nextValue);
+  }
 }
 
 class _SceneBackground extends StatelessWidget {
-  const _SceneBackground({required this.sceneTime});
+  const _SceneBackground({required this.sceneTime, required this.stageId});
 
   final SceneTime sceneTime;
+  final String stageId;
 
   @override
   Widget build(BuildContext context) {
@@ -1849,7 +1997,11 @@ class _SceneBackground extends StatelessWidget {
       fit: StackFit.expand,
       children: [
         Image.asset('assets/images/talk_background.png', fit: BoxFit.cover),
-        _SceneSpineLayer(sceneTime: sceneTime),
+        _SceneSpineLayer(
+          key: ValueKey('$stageId-${sceneTime.name}'),
+          sceneTime: sceneTime,
+          stageId: stageId,
+        ),
         ColoredBox(color: overlay),
         DecoratedBox(
           decoration: BoxDecoration(
@@ -1867,9 +2019,14 @@ class _SceneBackground extends StatelessWidget {
 }
 
 class _SceneSpineLayer extends StatefulWidget {
-  const _SceneSpineLayer({required this.sceneTime});
+  const _SceneSpineLayer({
+    super.key,
+    required this.sceneTime,
+    required this.stageId,
+  });
 
   final SceneTime sceneTime;
+  final String stageId;
 
   @override
   State<_SceneSpineLayer> createState() => _SceneSpineLayerState();
@@ -1880,18 +2037,17 @@ class _SceneSpineLayerState extends State<_SceneSpineLayer> {
 
   @override
   Widget build(BuildContext context) {
-    final suffix = switch (widget.sceneTime) {
-      SceneTime.morning => 'mor',
-      SceneTime.afternoon => 'aft',
-      SceneTime.evening => 'eve',
-      SceneTime.night => 'ngt',
-    };
-    final root = 'assets/scenes/stage_00_000_00_$suffix/spine';
+    final sceneId = StageEnvironmentCatalog.sceneAssetIdFor(
+      widget.stageId,
+      widget.sceneTime,
+    );
+    final root = 'assets/scenes_runtime';
     return IgnorePointer(
       child: SpineWidget.fromAsset(
-        '$root/stage_00_000_00_$suffix.atlas',
-        '$root/stage_00_000_00_$suffix.skel',
+        '$root/$sceneId.atlas',
+        '$root/$sceneId.skel',
         _controller,
+        key: ValueKey(sceneId),
         fit: BoxFit.cover,
       ),
     );
@@ -1906,7 +2062,8 @@ class _TopBar extends StatelessWidget {
     required this.onSceneChanged,
     required this.onMenuPressed,
     required this.onStatusPressed,
-    required this.onHistoryPressed,
+    required this.asmrModeEnabled,
+    required this.onAsmrPressed,
   });
 
   final AppLanguage language;
@@ -1915,7 +2072,8 @@ class _TopBar extends StatelessWidget {
   final ValueChanged<SceneTime> onSceneChanged;
   final VoidCallback onMenuPressed;
   final VoidCallback onStatusPressed;
-  final VoidCallback onHistoryPressed;
+  final bool asmrModeEnabled;
+  final VoidCallback onAsmrPressed;
 
   Future<void> _showSceneTimeMenu(BuildContext context) async {
     final selected = await showDialog<SceneTime>(
@@ -2056,9 +2214,13 @@ class _TopBar extends StatelessWidget {
           const SizedBox(width: 8),
           _RoundIcon(
             liquidGlass: liquidGlass,
-            icon: Icons.forum_outlined,
-            tooltip: language.text('对话记录', 'Conversation history', '会話履歴'),
-            onPressed: onHistoryPressed,
+            icon: asmrModeEnabled
+                ? Icons.headphones_rounded
+                : Icons.headphones_outlined,
+            tooltip: asmrModeEnabled
+                ? language.text('关闭 ASMR 模式', 'Disable ASMR mode', 'ASMRモードをオフ')
+                : language.text('开启 ASMR 模式', 'Enable ASMR mode', 'ASMRモードをオン'),
+            onPressed: onAsmrPressed,
           ),
         ],
       ),
@@ -2653,6 +2815,35 @@ class _TapResultLabel extends StatelessWidget {
   }
 }
 
+class _RotatingIcon extends StatefulWidget {
+  const _RotatingIcon(this.icon);
+
+  final IconData icon;
+
+  @override
+  State<_RotatingIcon> createState() => _RotatingIconState();
+}
+
+class _RotatingIconState extends State<_RotatingIcon>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 900),
+  )..repeat();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => RotationTransition(
+    turns: _controller,
+    child: Icon(widget.icon, size: 18),
+  );
+}
+
 class _LiquidGlassConversation extends StatelessWidget {
   const _LiquidGlassConversation({
     required this.language,
@@ -2670,8 +2861,11 @@ class _LiquidGlassConversation extends StatelessWidget {
     required this.onCancel,
     required this.canUndo,
     required this.canReplay,
+    required this.canContinue,
+    required this.isContinuing,
     required this.onUndo,
     required this.onReplay,
+    required this.onContinue,
     required this.onDragUpdate,
   });
 
@@ -2690,8 +2884,11 @@ class _LiquidGlassConversation extends StatelessWidget {
   final VoidCallback onCancel;
   final bool canUndo;
   final bool canReplay;
+  final bool canContinue;
+  final bool isContinuing;
   final VoidCallback onUndo;
   final VoidCallback onReplay;
+  final VoidCallback onContinue;
   final ValueChanged<double> onDragUpdate;
 
   @override
@@ -2746,6 +2943,23 @@ class _LiquidGlassConversation extends StatelessWidget {
                   '直前のメッセージを取り消す',
                 ),
                 onPressed: canUndo ? onUndo : null,
+                size: 36,
+              ),
+              const SizedBox(width: 7),
+              GlassIconButton(
+                liquidGlass: liquidGlass,
+                icon: isContinuing
+                    ? Icons.autorenew_rounded
+                    : Icons.double_arrow_rounded,
+                iconWidget: isContinuing
+                    ? const _RotatingIcon(Icons.autorenew_rounded)
+                    : null,
+                tooltip: language.text(
+                  '让莱莎继续对话',
+                  'Let Ryza continue',
+                  'ライザに会話を続けてもらう',
+                ),
+                onPressed: canContinue && !isContinuing ? onContinue : null,
                 size: 36,
               ),
               const SizedBox(width: 7),
@@ -2854,6 +3068,17 @@ class _GlassMessageList extends StatelessWidget {
       itemBuilder: (context, index) {
         final messageIndex = visibleMessages.length - 1 - index;
         final message = visibleMessages[messageIndex];
+        if (!message.isUser) {
+          return Padding(
+            padding: const EdgeInsets.symmetric(vertical: 10),
+            child: _SeparatedAssistantMessage(
+              response: message.text,
+              language: language,
+              attachments: message.attachments,
+              glass: true,
+            ),
+          );
+        }
         final avatar = Container(
           width: 28,
           height: 28,
@@ -2863,24 +3088,18 @@ class _GlassMessageList extends StatelessWidget {
             border: Border.all(color: Colors.white.withValues(alpha: 0.24)),
           ),
           child: Icon(
-            message.isUser
-                ? Icons.person_outline_rounded
-                : Icons.auto_awesome_rounded,
+            Icons.person_outline_rounded,
             size: 16,
             color: Colors.white,
           ),
         );
         final body = Expanded(
           child: Column(
-            crossAxisAlignment: message.isUser
-                ? CrossAxisAlignment.end
-                : CrossAxisAlignment.start,
+            crossAxisAlignment: CrossAxisAlignment.end,
             children: [
               Text(
-                message.isUser
-                    ? language.text('你', 'You', 'あなた')
-                    : language.text('莱莎', 'Ryza', 'ライザ'),
-                textAlign: message.isUser ? TextAlign.right : TextAlign.left,
+                language.text('你', 'You', 'あなた'),
+                textAlign: TextAlign.right,
                 style: const TextStyle(
                   color: Colors.white70,
                   fontSize: 11,
@@ -2888,23 +3107,19 @@ class _GlassMessageList extends StatelessWidget {
                 ),
               ),
               const SizedBox(height: 2),
-              message.isUser
-                  ? Text(
-                      message.text,
-                      textAlign: TextAlign.right,
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 14,
-                        height: 1.35,
-                      ),
-                    )
-                  : _AssistantSegmentBody(response: message.text, glass: true),
+              Text(
+                message.text,
+                textAlign: TextAlign.right,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 14,
+                  height: 1.35,
+                ),
+              ),
               if (message.attachments.isNotEmpty) ...[
                 const SizedBox(height: 7),
                 Align(
-                  alignment: message.isUser
-                      ? Alignment.centerRight
-                      : Alignment.centerLeft,
+                  alignment: Alignment.centerRight,
                   child: _SentAttachmentLabels(
                     attachments: message.attachments,
                     glass: true,
@@ -2918,9 +3133,7 @@ class _GlassMessageList extends StatelessWidget {
           padding: const EdgeInsets.symmetric(vertical: 10),
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.start,
-            children: message.isUser
-                ? [body, const SizedBox(width: 10), avatar]
-                : [avatar, const SizedBox(width: 10), body],
+            children: [body, const SizedBox(width: 10), avatar],
           ),
         );
       },
@@ -2935,26 +3148,150 @@ String _glassMessageText(ChatMessage message) {
       .trim();
 }
 
-class _AssistantSegmentBody extends StatelessWidget {
-  const _AssistantSegmentBody({required this.response, required this.glass});
+class _SeparatedAssistantMessage extends StatelessWidget {
+  const _SeparatedAssistantMessage({
+    required this.response,
+    required this.language,
+    required this.attachments,
+    required this.glass,
+  });
 
   final String response;
+  final AppLanguage language;
+  final List<ChatAttachment> attachments;
   final bool glass;
 
   @override
   Widget build(BuildContext context) {
-    final segments = parseAssistantSegments(response)
-        .where((segment) => displayTextForAssistantSegment(segment).isNotEmpty)
-        .toList(growable: false);
-    if (segments.isEmpty) {
-      return Text(
-        response.trim(),
-        style: TextStyle(
-          color: glass ? Colors.white : Theme.of(context).colorScheme.onSurface,
-          height: 1.4,
+    final runs = groupAssistantSegmentsForDisplay(response);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        for (var index = 0; index < runs.length; index++) ...[
+          if (index > 0) const SizedBox(height: 10),
+          if (runs[index].first.speaker == ChatSpeaker.narrator)
+            _NarratorRun(segments: runs[index], glass: glass)
+          else
+            _RyzaRun(segments: runs[index], language: language, glass: glass),
+        ],
+        if (attachments.isNotEmpty) ...[
+          const SizedBox(height: 7),
+          _SentAttachmentLabels(attachments: attachments, glass: glass),
+        ],
+      ],
+    );
+  }
+}
+
+class _NarratorRun extends StatelessWidget {
+  const _NarratorRun({required this.segments, required this.glass});
+
+  final List<ChatSegment> segments;
+  final bool glass;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.only(top: 1, right: 8),
+          child: Icon(
+            Icons.menu_rounded,
+            size: 18,
+            color: glass
+                ? Colors.white70
+                : Theme.of(context).colorScheme.onSurfaceVariant,
+          ),
         ),
-      );
-    }
+        Expanded(
+          child: Text(
+            segments.map(displayTextForAssistantSegment).join('\n'),
+            style: TextStyle(
+              color: glass
+                  ? Colors.white70
+                  : Theme.of(context).colorScheme.onSurfaceVariant,
+              fontSize: 13,
+              fontStyle: FontStyle.italic,
+              height: 1.38,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _RyzaRun extends StatelessWidget {
+  const _RyzaRun({
+    required this.segments,
+    required this.language,
+    required this.glass,
+  });
+
+  final List<ChatSegment> segments;
+  final AppLanguage language;
+  final bool glass;
+
+  @override
+  Widget build(BuildContext context) {
+    final avatar = Container(
+      width: 28,
+      height: 28,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        color: glass
+            ? Colors.white.withValues(alpha: 0.16)
+            : Theme.of(context).colorScheme.surfaceContainerHighest,
+        border: Border.all(
+          color: glass
+              ? Colors.white.withValues(alpha: 0.24)
+              : Theme.of(context).colorScheme.outlineVariant,
+        ),
+      ),
+      child: Icon(
+        Icons.auto_awesome_rounded,
+        size: 16,
+        color: glass ? Colors.white : Theme.of(context).colorScheme.primary,
+      ),
+    );
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        avatar,
+        const SizedBox(width: 10),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                language.text('莱莎', 'Ryza', 'ライザ'),
+                style: TextStyle(
+                  color: glass
+                      ? Colors.white70
+                      : Theme.of(context).colorScheme.onSurfaceVariant,
+                  fontSize: 11,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              const SizedBox(height: 2),
+              _DialogueSegmentBody(segments: segments, glass: glass),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _DialogueSegmentBody extends StatelessWidget {
+  const _DialogueSegmentBody({required this.segments, required this.glass});
+
+  final List<ChatSegment> segments;
+  final bool glass;
+
+  @override
+  Widget build(BuildContext context) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -3459,6 +3796,7 @@ class _ConversationSheetState extends State<_ConversationSheet> {
               child: _MessageList(
                 messages: widget.messages,
                 isReplying: widget.isReplying,
+                language: widget.language,
                 controller: _controller,
                 reverse: true,
                 showRawOutput: _showRawOutput,
@@ -3476,6 +3814,7 @@ class _MessageList extends StatelessWidget {
   const _MessageList({
     required this.messages,
     required this.isReplying,
+    required this.language,
     this.controller,
     this.reverse = false,
     this.showRawOutput = false,
@@ -3484,6 +3823,7 @@ class _MessageList extends StatelessWidget {
 
   final List<ChatMessage> messages;
   final bool isReplying;
+  final AppLanguage language;
   final ScrollController? controller;
   final bool reverse;
   final bool showRawOutput;
@@ -3506,6 +3846,21 @@ class _MessageList extends StatelessWidget {
             ? messages.length - 1 - (index - (isReplying ? 1 : 0))
             : index;
         final message = messages[messageIndex];
+        if (!message.isUser && !showRawOutput) {
+          return Align(
+            alignment: Alignment.centerLeft,
+            child: Container(
+              constraints: const BoxConstraints(maxWidth: 520),
+              margin: const EdgeInsets.symmetric(vertical: 5),
+              child: _SeparatedAssistantMessage(
+                response: message.text,
+                language: language,
+                attachments: message.attachments,
+                glass: glass,
+              ),
+            ),
+          );
+        }
         return Align(
           alignment: message.isUser
               ? Alignment.centerRight
@@ -3528,18 +3883,15 @@ class _MessageList extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               mainAxisSize: MainAxisSize.min,
               children: [
-                if (message.isUser || showRawOutput)
-                  Text(
-                    message.text,
-                    style: TextStyle(
-                      color: message.isUser
-                          ? Colors.white
-                          : (glass ? Colors.white : const Color(0xFF262521)),
-                      height: 1.4,
-                    ),
-                  )
-                else
-                  _AssistantSegmentBody(response: message.text, glass: glass),
+                Text(
+                  message.text,
+                  style: TextStyle(
+                    color: message.isUser
+                        ? Colors.white
+                        : (glass ? Colors.white : const Color(0xFF262521)),
+                    height: 1.4,
+                  ),
+                ),
                 if (message.attachments.isNotEmpty) ...[
                   const SizedBox(height: 7),
                   _SentAttachmentLabels(

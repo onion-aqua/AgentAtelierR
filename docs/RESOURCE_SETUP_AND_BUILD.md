@@ -113,10 +113,16 @@ assets/audio/tap_02.m4a
 assets/audio/tap_03.m4a
 assets/audio/alarm/alarm_ring.m4a
 assets/audio/se/se_skin_change.m4a
-assets/audio/soundscape/ambient_day.m4a
-assets/audio/soundscape/ambient_night.m4a
-assets/audio/soundscape/bgm_opening.m4a
+assets/audio/bgm/bgm_opening.m4a
+assets/audio/bgm/bgm_world_map.m4a
+assets/audio/bgm/bgm_<stageId>.m4a
+assets/audio/ambient/amb_<ambientId>_day.m4a
+assets/audio/ambient/amb_<ambientId>_night.m4a
 ```
+
+聊天场景会优先查找地点专属 BGM，再查找共用背景对应的 BGM，最后回退到 `bgm_opening.m4a`。环境音 ID 与地点、昼夜的映射集中在 `lib/src/stage_environment_catalog.dart`；仅在资源具有合法使用权时补齐对应文件。
+
+地点场景 Spine 文件放在 `assets/scenes_runtime/`，命名为 `<stageId>_<mor|aft|eve|ngt>.atlas` 和同名 `.skel`。纹理文件名以 `.atlas` 内的合法自有资源引用为准。
 
 点击语音按回复语言放在以下目录：
 
