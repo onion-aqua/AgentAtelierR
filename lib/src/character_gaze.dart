@@ -5,6 +5,17 @@ import 'package:flutter/material.dart';
 const Duration characterGazeHoldDuration = Duration(milliseconds: 1500);
 const Duration characterGazeReleaseDuration = Duration(milliseconds: 700);
 
+Offset gazeControlOffset({
+  required Offset face,
+  required Offset pointer,
+  double maxDistance = 514.7,
+  double maxOffset = 140,
+}) {
+  final delta = pointer - face;
+  if (maxDistance <= 0 || maxOffset <= 0) return Offset.zero;
+  return delta / max(maxDistance, delta.distance) * maxOffset;
+}
+
 double characterGazeInfluence(Duration elapsed) {
   if (elapsed <= Duration.zero) return 1;
   if (elapsed <= characterGazeHoldDuration) return 1;

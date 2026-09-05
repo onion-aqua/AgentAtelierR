@@ -10,6 +10,7 @@ import 'app_controller.dart';
 import 'app_localization.dart';
 import 'chat_segments.dart';
 import 'runtime_log.dart';
+import 'platform_slider.dart';
 
 String _activeTtsModel(AppController controller) =>
     switch (controller.ttsProvider) {
@@ -98,6 +99,19 @@ class SettingsScreen extends StatelessWidget {
               ),
             ),
           ),
+          SwitchListTile(
+            value: controller.gazeTrackingEnabled,
+            onChanged: controller.setGazeTrackingEnabled,
+            secondary: const Icon(Icons.visibility_rounded),
+            title: Text(language.text('视线追踪', 'Gaze tracking', '視線追跡')),
+            subtitle: Text(
+              language.text(
+                '按住角色区域时，眼睛与高光跟随手指方向',
+                'Eyes and highlights follow your finger while held',
+                '押している間、目とハイライトが指を追跡',
+              ),
+            ),
+          ),
           const Divider(indent: 16, endIndent: 16),
           _SectionLabel(language.text('场景', 'Scene', 'シーン')),
           SwitchListTile(
@@ -139,7 +153,7 @@ class SettingsScreen extends StatelessWidget {
           ListTile(
             leading: const Icon(Icons.volume_up_outlined),
             title: Text(language.text('语音音量', 'Voice volume', '音声音量')),
-            subtitle: Slider(
+            subtitle: PlatformSlider(
               value: controller.voiceVolume,
               onChanged: controller.voiceEnabled
                   ? controller.setVoiceVolume
@@ -169,7 +183,7 @@ class SettingsScreen extends StatelessWidget {
           ListTile(
             leading: const Icon(Icons.music_note),
             title: Text(language.text('音乐音量', 'Music volume', 'BGM音量')),
-            subtitle: Slider(
+            subtitle: PlatformSlider(
               value: controller.bgmVolume,
               onChanged: controller.bgmEnabled ? controller.setBgmVolume : null,
             ),
@@ -191,7 +205,7 @@ class SettingsScreen extends StatelessWidget {
           ListTile(
             leading: const Icon(Icons.surround_sound_outlined),
             title: Text(language.text('环境音量', 'Ambient volume', '環境音量')),
-            subtitle: Slider(
+            subtitle: PlatformSlider(
               value: controller.ambientVolume,
               onChanged: controller.ambientEnabled
                   ? controller.setAmbientVolume
@@ -925,7 +939,7 @@ class SettingsScreen extends StatelessWidget {
                       children: [
                         const SizedBox(width: 58, child: Text('语速')),
                         Expanded(
-                          child: Slider(
+                          child: PlatformSlider(
                             value: speed,
                             min: 0.5,
                             max: 2.0,
@@ -1388,7 +1402,7 @@ class SettingsScreen extends StatelessWidget {
                       ),
                       const SizedBox(width: 12),
                       Expanded(
-                        child: Slider(
+                        child: PlatformSlider(
                           value: speed,
                           min: 0.5,
                           max: 2,
@@ -2250,7 +2264,7 @@ class _TtsEmotionSlider extends StatelessWidget {
               ),
             ],
           ),
-          Slider(
+          PlatformSlider(
             value: value.index.toDouble(),
             min: 0,
             max: (TtsEmotionIntensity.values.length - 1).toDouble(),
@@ -2294,7 +2308,7 @@ class _TtsCueDensitySlider extends StatelessWidget {
               ),
             ],
           ),
-          Slider(
+          PlatformSlider(
             value: value.index.toDouble(),
             min: 0,
             max: (TtsCueDensity.values.length - 1).toDouble(),

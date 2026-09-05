@@ -1123,6 +1123,9 @@ void main() {
       320,
       scrollable: find.byType(Scrollable).first,
     );
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(profileTile);
+    await tester.pumpAndSettle();
     await tester.tap(profileTile);
     await tester.pumpAndSettle();
     await tester.enterText(find.byType(TextField).first, '队长');

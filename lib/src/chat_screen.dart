@@ -5,16 +5,19 @@ import 'dart:math';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show rootBundle;
 import 'package:spine_flutter/spine_flutter.dart' hide Color;
 
 import 'ai_services.dart';
 import 'app_controller.dart';
 import 'app_localization.dart';
 import 'audio_envelope.dart';
+import 'character_speech_driver.dart';
 import 'character_appearance.dart';
 import 'character_camera.dart';
 import 'character_expression.dart';
 import 'character_gaze.dart';
+import 'scene_backdrop_bounds.dart';
 import 'character_performance.dart';
 import 'chat_segments.dart';
 import 'enhanced_animation_system.dart';
@@ -152,6 +155,7 @@ class _ChatScreenState extends State<ChatScreen> {
   bool _tapReactionActive = false;
   Offset? _gazePointer;
   DateTime? _gazeStartedAt;
+  bool _gazeHeld = false;
   CharacterExpression _currentExpression = CharacterExpression.neutral;
   CharacterFacialDetail? _activeFacialDetail;
   List<CharacterMotionGroup> _motionGroups = const [];
@@ -163,6 +167,17 @@ class _ChatScreenState extends State<ChatScreen> {
   AudioAmplitudeEnvelope? _activeSpeechEnvelope;
   TrackEntry? _lipSyncEntry;
   double _currentSpeechEnergy = 0;
+  CharacterPerformanceDirector? _performanceDirector;
+  final Stopwatch _rigClock = Stopwatch()..start();
+  final Stopwatch _positionClock = Stopwatch();
+  Duration _playbackPosition = Duration.zero;
+  Duration _lastRigFrame = Duration.zero;
+  double _lastSpeechBeat = -3;
+  double _previousBeatEnergy = 0;
+  bool _syntheticSpeech = false;
+  double _speechMotionWeight = 0;
+  StreamSubscription<PlayerState>? _playerStateSubscription;
+  final Map<String, ({double x, double y, double rotation})> _rigBase = {};
   int _speechPlaybackGeneration = 0;
   Completer<void>? _speechCancellation;
   final Set<String> _temporarySpeechPaths = <String>{};
@@ -190,13 +205,22 @@ class _ChatScreenState extends State<ChatScreen> {
     _audioPositionSubscription = _audioPlayer.onPositionChanged.listen(
       _updateLipSyncFromPlaybackPosition,
     );
+    _playerStateSubscription = _audioPlayer.onPlayerStateChanged.listen((
+      state,
+    ) {
+      if (state == PlayerState.playing && _isCharacterSpeaking) {
+        _positionClock.start();
+      } else {
+        _positionClock.stop();
+      }
+    });
     widget.controller.addListener(_handleControllerChange);
   }
 
   SpineWidgetController _createSpineController(CharacterAppearance appearance) {
     late final SpineWidgetController spineController;
     spineController = SpineWidgetController(
-      onBeforeUpdateWorldTransforms: _applyEyeGaze,
+      onBeforeUpdateWorldTransforms: _restoreProceduralRig,
       onAfterUpdateWorldTransforms: _applySpeakingHeadMotion,
       onInitialized: (controller) {
         if (!identical(spineController, _spineController)) return;
@@ -218,12 +242,17 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   void _handleControllerChange() {
+    if (!widget.controller.gazeTrackingEnabled) _endGaze();
     final next = characterAppearanceById(
       widget.controller.selectedCharacterAppearanceId,
     );
     if (next.id == _appearance.id) return;
+    _lipSyncEntry = null;
+    _gazeHeld = false;
     _gazePointer = null;
     _gazeStartedAt = null;
+    _rigBase.clear();
+    _performanceDirector = null;
     _idleTimer?.cancel();
     _microMotionTimer?.cancel();
     _facialDetailTimer?.cancel();
@@ -246,8 +275,12 @@ class _ChatScreenState extends State<ChatScreen> {
     final generation = ++_motionLoadGeneration;
     try {
       final groups = await loadCharacterMotionGroups(appearance);
+      final profile = CharacterPerformanceProfile.parse(
+        await rootBundle.loadString(appearance.gestureAsset),
+      );
       if (!mounted || generation != _motionLoadGeneration) return;
       _motionGroups = groups;
+      _performanceDirector = CharacterPerformanceDirector(profile);
       _scheduleMicroMotion();
     } on Object {
       if (generation == _motionLoadGeneration) _motionGroups = const [];
@@ -263,6 +296,10 @@ class _ChatScreenState extends State<ChatScreen> {
     _idleTimer?.cancel();
     _idleTimer = Timer(Duration(seconds: 9 + _random.nextInt(8)), () {
       if (!mounted || !_spineReady) return;
+      if (_isCharacterSpeaking || _tapReactionActive) {
+        _scheduleIdleChange();
+        return;
+      }
       final candidates = _appearance.idleAnimations
           .where((animation) => animation != _currentIdleAnimation)
           .toList();
@@ -406,6 +443,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
     if (!_spineReady || _spineController == null || _tapReactionActive) return;
     if (expression == CharacterExpression.neutral && !_isCharacterSpeaking) {
+      _lipSyncEntry = null;
       for (var track = 11; track <= 16; track++) {
         _spineController!.animationState.clearTrack(track);
       }
@@ -470,8 +508,18 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
-  void _startSpeakingAnimation({AudioAmplitudeEnvelope? envelope}) {
+  void _startSpeakingAnimation({
+    AudioAmplitudeEnvelope? envelope,
+    bool awaitingAudio = false,
+  }) {
     _speechFallbackTimer?.cancel();
+    _syntheticSpeech = !awaitingAudio;
+    _playbackPosition = Duration.zero;
+    _positionClock
+      ..stop()
+      ..reset();
+    _lastSpeechBeat = -3;
+    _previousBeatEnergy = 0;
     _activeSpeechEnvelope = envelope;
     _currentSpeechEnergy = envelope == null ? 0.45 : 0;
     if (_isCharacterSpeaking) {
@@ -497,6 +545,7 @@ class _ChatScreenState extends State<ChatScreen> {
     _blinkTimer?.cancel();
     _blinkRestoreTimer?.cancel();
     _speechStopwatch.stop();
+    _positionClock.stop();
     _isCharacterSpeaking = false;
     _activeSpeechEnvelope = null;
     _lipSyncEntry = null;
@@ -516,13 +565,104 @@ class _ChatScreenState extends State<ChatScreen> {
     });
   }
 
+  void _restoreProceduralRig(SpineWidgetController controller) {
+    for (final entry in _rigBase.entries) {
+      controller.skeleton.findBone(entry.key)
+        ?..setX(entry.value.x)
+        ..setY(entry.value.y)
+        ..setRotation(entry.value.rotation);
+    }
+    _rigBase.clear();
+  }
+
   void _applySpeakingHeadMotion(SpineWidgetController controller) {
-    if (!_isCharacterSpeaking || !_speechStopwatch.isRunning) return;
-    final seconds = _speechStopwatch.elapsedMicroseconds / 1000000;
+    final now = _rigClock.elapsed;
+    final delta = (now - _lastRigFrame).inMicroseconds / 1000000;
+    _lastRigFrame = now;
+    final playing =
+        _isCharacterSpeaking && (_syntheticSpeech || _positionClock.isRunning);
+    final position = _syntheticSpeech
+        ? _speechStopwatch.elapsed
+        : interpolatedSpeechPosition(_playbackPosition, _positionClock.elapsed);
+    final seconds = position.inMicroseconds / 1000000;
+
+    void remember(String name) {
+      final bone = resolveOptionalRigBone(name, controller.skeleton.findBone);
+      if (bone == null) return;
+      _rigBase.putIfAbsent(
+        name,
+        () => (x: bone.getX(), y: bone.getY(), rotation: bone.getRotation()),
+      );
+    }
+
+    final profile = _performanceDirector?.profile;
+    // Iris meshes use the constrained offset bones, while highlights are
+    // siblings of those bones. Preserve their relation in iris-local space.
+    final eyeBaselines = <String, Offset>{};
+    for (final side in ['L', 'R']) {
+      final pupil = controller.skeleton.findBone('eyeball_${side}_offset');
+      final highlight = controller.skeleton.findBone('eyehilight_$side');
+      if (pupil != null && highlight != null) {
+        remember('eyehilight_$side');
+        final local = pupil.worldToLocal(
+          highlight.getWorldX(),
+          highlight.getWorldY(),
+        );
+        eyeBaselines[side] = Offset(local.x, local.y);
+      }
+    }
+    void finishRig() {
+      controller.skeleton.updateWorldTransform(Physics.none);
+      for (final entry in eyeBaselines.entries) {
+        final pupil = controller.skeleton.findBone(
+          'eyeball_${entry.key}_offset',
+        )!;
+        final highlight = controller.skeleton.findBone(
+          'eyehilight_${entry.key}',
+        )!;
+        final parent = highlight.getParent();
+        if (parent == null) continue;
+        final world = pupil.localToWorld(entry.value.dx, entry.value.dy);
+        final local = parent.worldToLocal(world.x, world.y);
+        highlight
+          ..setX(local.x)
+          ..setY(local.y);
+      }
+      controller.skeleton.updateWorldTransform(Physics.none);
+    }
+
+    final aimBones = profile?.aimBones ?? const <String, String>{};
+    final rollBones = profile?.rollBones ?? const <String, String>{};
+    for (final name in {
+      ...aimBones.values,
+      ...rollBones.values,
+      'control_aim_eye',
+      'control_aim_head',
+      'control_aim_body',
+      'control_eye',
+      'control_handle_eye',
+      'control_roll_head',
+      'control_roll_neck',
+      'control_roll_body_upper',
+      'control_roll_body_lower',
+      'head',
+      'neck',
+    }) {
+      remember(name);
+    }
+    _applyEyeGaze(controller);
+    if (playing && _activeSpeechEnvelope != null) {
+      _sampleSpeechEnvelope(position);
+    } else if (!playing) {
+      _currentSpeechEnergy = 0;
+      _lipSyncEntry?.setTrackTime(0);
+    }
 
     // 保留原有的唇同步逻辑
     final fallbackLipSyncEntry = _lipSyncEntry;
-    if (_activeSpeechEnvelope == null && fallbackLipSyncEntry != null) {
+    if (playing &&
+        _activeSpeechEnvelope == null &&
+        fallbackLipSyncEntry != null) {
       final phase = (seconds * 5.2) % 1;
       final closure = phase < 0.28;
       final pulse = closure ? 0.0 : sin((phase - 0.28) / 0.72 * pi).abs();
@@ -535,6 +675,45 @@ class _ChatScreenState extends State<ChatScreen> {
     }
 
     final energy = _currentSpeechEnergy;
+    final motionTarget = playing && !_tapReactionActive
+        ? 0.25 + energy * 0.75
+        : 0.0;
+    _speechMotionWeight +=
+        (motionTarget - _speechMotionWeight) *
+        (1 - exp(-delta.clamp(0.0, 0.05) / 0.18));
+    final parts =
+        _performanceDirector?.sample(
+          delta: delta,
+          emotion: _currentExpression.name,
+          speaking: playing,
+          energy: energy,
+          suppressed: _tapReactionActive,
+        ) ??
+        const <String, RigMotion>{};
+    for (final entry in parts.entries) {
+      if (_tapReactionActive) break;
+      if (entry.key == 'eye' && _gazePointer != null) continue;
+      final aim = resolveOptionalRigBone(
+        aimBones[entry.key],
+        controller.skeleton.findBone,
+      );
+      if (aim != null) {
+        // Scale in rig-local units; never translate the skeleton root or hips.
+        final reach = max(aim.getData().getY().abs(), 80.0).clamp(80.0, 180.0);
+        aim
+          ..setX(aim.getX() + entry.value.yaw * reach * 0.45)
+          ..setY(aim.getY() + entry.value.pitch * reach * 0.35);
+      }
+      final roll = resolveOptionalRigBone(
+        rollBones[entry.key],
+        controller.skeleton.findBone,
+      );
+      roll?.setRotation(roll.getRotation() + entry.value.roll * 14);
+    }
+    if (_speechMotionWeight < 0.001 || _tapReactionActive) {
+      finishRig();
+      return;
+    }
     final phraseEnvelope = pow(sin(seconds * pi * 0.22).abs(), 1.6).toDouble();
     final nod =
         sin(seconds * pi * 0.72 + 0.25) *
@@ -558,16 +737,22 @@ class _ChatScreenState extends State<ChatScreen> {
         lowerBody == null) {
       return;
     }
-    final headRotation = (nod + sway + tilt).clamp(-24.0, 24.0).toDouble();
+    final weight = (parts.isEmpty ? 1.0 : 0.7) * _speechMotionWeight;
+    final headRotation = ((nod + sway + tilt) * weight)
+        .clamp(-18.0, 18.0)
+        .toDouble();
     head?.setRotation(head.getRotation() + headRotation);
     neck?.setRotation(
-      neck.getRotation() + nod * 0.58 - sway * 0.22 + tilt * 0.36,
+      neck.getRotation() + (nod * 0.58 - sway * 0.22 + tilt * 0.36) * weight,
     );
     upperBody?.setRotation(
-      upperBody.getRotation() + nod * 0.18 + sway * 0.2 - tilt * 0.12,
+      upperBody.getRotation() +
+          (nod * 0.18 + sway * 0.2 - tilt * 0.12) * weight,
     );
-    lowerBody?.setRotation(lowerBody.getRotation() - nod * 0.07 - sway * 0.09);
-    controller.skeleton.updateWorldTransform(Physics.none);
+    lowerBody?.setRotation(
+      lowerBody.getRotation() - (nod * 0.07 + sway * 0.09) * weight,
+    );
+    finishRig();
   }
 
   void _applyEyeGaze(SpineWidgetController controller) {
@@ -580,49 +765,99 @@ class _ChatScreenState extends State<ChatScreen> {
         skeleton.findBone('control_eye') ??
         skeleton.findBone('control_handle_eye');
     if (target == null) return;
-    final setup = target.getData();
-    final influence = characterGazeInfluence(
-      DateTime.now().difference(startedAt),
-    );
+    final influence = _gazeHeld && widget.controller.gazeTrackingEnabled
+        ? 1.0
+        : characterGazeInfluence(DateTime.now().difference(startedAt));
     if (influence <= 0) {
-      target
-        ..setX(setup.getX())
-        ..setY(setup.getY());
       _gazePointer = null;
       _gazeStartedAt = null;
       return;
     }
 
-    final center = skeleton.findBone('control_aim_eye_center') ?? target;
-    final origin = Offset(center.getWorldX(), center.getWorldY());
-    final bounds = skeleton.getBounds();
-    final gazeTarget = directionalGazeTarget(
-      origin: origin,
-      pointer: pointer,
-      radius: max(bounds.width, bounds.height) * 0.16,
-    );
+    final face = skeleton.findBone('rig_face') ?? skeleton.findBone('head');
+    if (face == null) return;
+    final origin = Offset(face.getWorldX(), face.getWorldY());
+    final offset = gazeControlOffset(face: origin, pointer: pointer);
     final parent = target.getParent();
-    final localTarget = parent == null
-        ? gazeTarget
+    // The eye controller lives off-stage. Convert a direction vector, not a
+    // world position relative to that controller's unrelated world origin.
+    final localOffset = parent == null
+        ? offset
         : () {
-            final position = parent.worldToLocal(gazeTarget.dx, gazeTarget.dy);
-            return Offset(position.x, position.y);
+            final a = parent.worldToLocal(origin.dx, origin.dy);
+            final b = parent.worldToLocal(
+              origin.dx + offset.dx,
+              origin.dy + offset.dy,
+            );
+            return Offset(b.x - a.x, b.y - a.y);
           }();
     target
-      ..setX(setup.getX() + (localTarget.dx - setup.getX()) * influence)
-      ..setY(setup.getY() + (localTarget.dy - setup.getY()) * influence);
+      ..setX(target.getX() + localOffset.dx * influence)
+      ..setY(target.getY() + localOffset.dy * influence);
+    for (final part in ['head', 'body']) {
+      final aim = skeleton.findBone('control_aim_$part');
+      final scale = part == 'head' ? 0.25 : 0.08;
+      if (aim != null) {
+        aim
+          ..setX(aim.getX() + localOffset.dx * influence * scale)
+          ..setY(aim.getY() + localOffset.dy * influence * scale);
+      }
+      final roll = skeleton.findBone(
+        part == 'head' ? 'control_roll_head' : 'control_roll_body_upper',
+      );
+      roll?.setRotation(
+        roll.getRotation() +
+            offset.dx / 140 * influence * (part == 'head' ? 5 : 1.5),
+      );
+    }
+  }
+
+  void _updateGaze(Offset position) {
+    final c = _spineController;
+    if (!widget.controller.gazeTrackingEnabled || !_spineReady || c == null) {
+      return;
+    }
+    _gazePointer = c.toSkeletonCoordinates(position);
+    _gazeHeld = true;
+    _gazeStartedAt = DateTime.now();
+  }
+
+  void _endGaze() {
+    if (_gazePointer != null && _gazeHeld) {
+      _gazeHeld = false;
+      _gazeStartedAt = DateTime.now().subtract(characterGazeHoldDuration);
+    }
   }
 
   void _updateLipSyncFromPlaybackPosition(Duration position) {
+    if (!_isCharacterSpeaking) return;
+    _playbackPosition = position;
+    _positionClock.reset();
+  }
+
+  void _sampleSpeechEnvelope(Duration position) {
     final envelope = _activeSpeechEnvelope;
     final entry = _lipSyncEntry;
-    if (!_isCharacterSpeaking || envelope == null || entry == null) return;
+    if (!_isCharacterSpeaking || envelope == null) return;
     final energy = envelope.valueAt(position);
     _currentSpeechEnergy = energy;
     final mouthOpen = energy < 0.08
         ? 0.0
         : (pow((energy - 0.08) / 0.92, 0.78) * 0.48).clamp(0.0, 0.48);
-    entry.setTrackTime(entry.getAnimation().getDuration() * mouthOpen);
+    entry?.setTrackTime(entry.getAnimation().getDuration() * mouthOpen);
+    final seconds = position.inMicroseconds / 1000000;
+    if (energy > 0.48 &&
+        _previousBeatEnergy <= 0.48 &&
+        seconds - _lastSpeechBeat > 2.4 &&
+        !_tapReactionActive) {
+      _lastSpeechBeat = seconds;
+      final recentlyActed =
+          _lastSemanticActionAt != null &&
+          DateTime.now().difference(_lastSemanticActionAt!) <
+              const Duration(milliseconds: 2300);
+      if (!recentlyActed) _playAmbientMotion(explorationChance: 0.12);
+    }
+    _previousBeatEnergy = energy;
   }
 
   void _scheduleFacialDetailChange() {
@@ -703,6 +938,7 @@ class _ChatScreenState extends State<ChatScreen> {
   void _scheduleMicroMotion() {
     _microMotionTimer?.cancel();
     if (!_spineReady || !_appearance.animated) return;
+    if (_isCharacterSpeaking && _activeSpeechEnvelope != null) return;
     final delay = _isCharacterSpeaking
         ? Duration(milliseconds: 1800 + _random.nextInt(2000))
         : Duration(milliseconds: 3800 + _random.nextInt(3600));
@@ -796,6 +1032,7 @@ class _ChatScreenState extends State<ChatScreen> {
       unawaited(_deleteTemporarySpeech(segment.path));
     }
     _audioPositionSubscription?.cancel();
+    _playerStateSubscription?.cancel();
     _audioPlayer.dispose();
     _effectPlayer.dispose();
     _idleTimer?.cancel();
@@ -815,24 +1052,33 @@ class _ChatScreenState extends State<ChatScreen> {
   Future<void> _reactToTap(Offset localPosition) async {
     final reaction = _hitTestReaction(localPosition);
     if (reaction == null) {
-      final spineController = _spineController;
-      if (_spineReady && spineController != null) {
-        _gazePointer = spineController.toSkeletonCoordinates(localPosition);
-        _gazeStartedAt = DateTime.now();
-      }
       return;
     }
     widget.controller.recordCharacterTouch();
     if (_spineReady && _spineController != null) {
       _tapReactionActive = true;
       _resetMotionOverlays();
+      _lipSyncEntry = null;
       final state = _spineController!.animationState;
       for (var track = 11; track <= 16; track++) {
         state.clearTrack(track);
       }
-      state
-        ..setAnimationByName(1, reaction.animation, false).setMixDuration(0.34)
-        ..addEmptyAnimation(1, 0.36, 0);
+      final touchAnimation = _spineController!.skeletonData.findAnimation(
+        reaction.animation,
+      );
+      if (touchAnimation != null) {
+        state
+          ..setAnimationByName(
+            1,
+            reaction.animation,
+            false,
+          ).setMixDuration(0.34)
+          ..addEmptyAnimation(1, 0.36, 0);
+      } else {
+        // A skin may omit an optional touch animation. Keep the tap feedback
+        // and voice without calling Spine with an unknown animation name.
+        _tapReactionActive = false;
+      }
     }
     _tapLabelTimer?.cancel();
     if (mounted) setState(() => _lastTappedPart = reaction.label);
@@ -872,7 +1118,16 @@ class _ChatScreenState extends State<ChatScreen> {
       if (partName == null) continue;
       final attachment = slot.getAttachment();
       if (attachment is! BoundingBoxAttachment) continue;
-      final vertices = attachment.computeWorldVertices(slot);
+      late final List<double> vertices;
+      try {
+        vertices = attachment.computeWorldVertices(slot);
+      } on Object catch (error) {
+        RuntimeLog.instance.warning(
+          'Interaction',
+          '跳过无效点击碰撞体 slot=${slot.getData().getName()} error=$error',
+        );
+        continue;
+      }
       if (!polygonContainsPoint(vertices, point.dx, point.dy)) continue;
       final reactions = tapReactionsByPart[partName];
       if (reactions == null || reactions.isEmpty) continue;
@@ -1175,9 +1430,12 @@ class _ChatScreenState extends State<ChatScreen> {
         if (segment.action case final action?) {
           _performSemanticAction(action);
         }
-        _startSpeakingAnimation(envelope: prepared.envelope);
         await _audioPlayer.stop();
         await _audioPlayer.setVolume(widget.controller.voiceVolume);
+        _startSpeakingAnimation(
+          envelope: prepared.envelope,
+          awaitingAudio: true,
+        );
         final completed = _audioPlayer.onPlayerComplete.first;
         await _audioPlayer.play(DeviceFileSource(prepared.path));
         await Future.any([completed, cancellation.future]);
@@ -1355,9 +1613,12 @@ class _ChatScreenState extends State<ChatScreen> {
         if (segment.action case final action?) {
           _performSemanticAction(action);
         }
-        _startSpeakingAnimation(envelope: segment.envelope);
         await _audioPlayer.stop();
         await _audioPlayer.setVolume(widget.controller.voiceVolume);
+        _startSpeakingAnimation(
+          envelope: segment.envelope,
+          awaitingAudio: true,
+        );
         final completed = _audioPlayer.onPlayerComplete.first;
         await _audioPlayer.play(DeviceFileSource(segment.path));
         await Future.any([completed, cancellation.future]);
@@ -1900,6 +2161,10 @@ class _ChatScreenState extends State<ChatScreen> {
       children: [
         CharacterCamera(
           onTap: _reactToTap,
+          onGazeChanged: widget.controller.gazeTrackingEnabled
+              ? _updateGaze
+              : null,
+          onGazeEnd: widget.controller.gazeTrackingEnabled ? _endGaze : null,
           child: _appearance.animated
               ? SpineWidget.fromAsset(
                   _appearance.atlasAsset,
@@ -2049,6 +2314,7 @@ class _SceneSpineLayerState extends State<_SceneSpineLayer> {
         _controller,
         key: ValueKey(sceneId),
         fit: BoxFit.cover,
+        boundsProvider: const SceneBackdropBounds(),
       ),
     );
   }

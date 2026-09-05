@@ -14,6 +14,7 @@ class AudioAmplitudeEnvelope {
     if (values.isEmpty || position.isNegative) return 0;
     final frameMicros = frameDuration.inMicroseconds;
     if (frameMicros <= 0) return 0;
+    if (position.inMicroseconds >= frameMicros * values.length) return 0;
     final exact = position.inMicroseconds / frameMicros;
     final lower = exact.floor().clamp(0, values.length - 1);
     final upper = (lower + 1).clamp(0, values.length - 1);

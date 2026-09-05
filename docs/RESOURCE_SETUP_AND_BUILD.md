@@ -184,6 +184,30 @@ flutter build apk --debug
 
 Debug APK 默认输出到 `build/app/outputs/flutter-apk/app-debug.apk`。
 
+### Windows 本地构建
+
+先准备有权使用的资源，并安装 Visual Studio 的 C++ 桌面开发工作负载、Windows SDK 和 NuGet。仅安装 VS Code 扩展不够。
+本仓库不提交生成的 `windows/` 目录、应用图标、DLL 或 EXE。在本地生成桌面工程：
+
+```powershell
+flutter create --platforms=windows .
+flutter pub get
+flutter build windows --release
+```
+
+如果 MSVC 报错提示 `permission_handler_windows` 使用已弃用的 experimental coroutine 头文件，
+在生成的 `windows/CMakeLists.txt` 的项目级编译设置中添加：
+
+```cmake
+add_definitions(-D_SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS)
+```
+
+此项仅兼容旧插件头文件，不代表插件已经迁移到 C++20。重新构建后，从
+`build/windows/x64/runner/Release/ryza_chat_mvp.exe` 启动；必须保留整个 Release 目录，
+尤其是 `data/app.so` 和依赖 DLL，不能只复制 EXE。包含私人资源的 APK 或 Windows 构建均不得上传到本仓库。
+Windows 滑块使用不依赖 OverlayPortal 的兼容实现；Android 保留 Material 滑块。
+详见 [Windows 与视线修复记录](WINDOWS_GAZE_FIX_2026-09-05.md)。
+
 发布版签名未配置。若将来发布，必须先完成资源许可、隐私政策、商店合规、安全审计和独立签名配置，且不得把签名文件提交到 Git。
 
 ## 7. 资源接入验收
