@@ -312,6 +312,25 @@ class SettingsScreenState extends State<SettingsScreen> {
                   ),
                 ),
                 SwitchListTile(
+                  value: controller.unlockInputWhileReplying,
+                  onChanged: controller.setUnlockInputWhileReplying,
+                  secondary: const Icon(Icons.edit_note_rounded),
+                  title: Text(
+                    language.text(
+                      '回复时解锁输入框',
+                      'Edit while replying',
+                      '返信中も入力可能',
+                    ),
+                  ),
+                  subtitle: Text(
+                    language.text(
+                      '可提前编辑下一条消息；当前回复结束前不能再次发送',
+                      'Draft the next message while Ryza replies; sending stays disabled until the reply ends',
+                      '返信中に次のメッセージを編集できます。返信完了までは送信できません',
+                    ),
+                  ),
+                ),
+                SwitchListTile(
                   value: controller.gazeTrackingEnabled,
                   onChanged: controller.setGazeTrackingEnabled,
                   secondary: const Icon(Icons.visibility_rounded),

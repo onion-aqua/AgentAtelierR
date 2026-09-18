@@ -3254,6 +3254,8 @@ importance 使用 1-5。誓言/承诺用 promise，告白用 confession，严重
               scrollController: _scrollController,
               inputController: _inputController,
               showMicrophone: widget.controller.showMicrophoneButton,
+              unlockInputWhileReplying:
+                  widget.controller.unlockInputWhileReplying,
               attachments: _pendingAttachments,
               onTakePhoto: _takePhoto,
               onPickImage: () => _pickAttachments(imagesOnly: true),
@@ -4908,6 +4910,7 @@ class _LiquidGlassConversation extends StatelessWidget {
     required this.scrollController,
     required this.inputController,
     required this.showMicrophone,
+    required this.unlockInputWhileReplying,
     required this.attachments,
     required this.onTakePhoto,
     required this.onPickImage,
@@ -4946,6 +4949,7 @@ class _LiquidGlassConversation extends StatelessWidget {
   final ScrollController scrollController;
   final TextEditingController inputController;
   final bool showMicrophone;
+  final bool unlockInputWhileReplying;
   final List<ChatAttachment> attachments;
   final VoidCallback onTakePhoto;
   final VoidCallback onPickImage;
@@ -5022,6 +5026,7 @@ class _LiquidGlassConversation extends StatelessWidget {
                   controller: inputController,
                   isReplying: isReplying,
                   showMicrophone: showMicrophone,
+                  unlockInputWhileReplying: unlockInputWhileReplying,
                   attachments: attachments,
                   liquidGlass: liquidGlass,
                   onTakePhoto: onTakePhoto,
@@ -5957,6 +5962,7 @@ class _GlassComposer extends StatelessWidget {
     required this.controller,
     required this.isReplying,
     required this.showMicrophone,
+    required this.unlockInputWhileReplying,
     required this.attachments,
     required this.liquidGlass,
     required this.onTakePhoto,
@@ -5972,6 +5978,7 @@ class _GlassComposer extends StatelessWidget {
   final TextEditingController controller;
   final bool isReplying;
   final bool showMicrophone;
+  final bool unlockInputWhileReplying;
   final List<ChatAttachment> attachments;
   final bool liquidGlass;
   final VoidCallback onTakePhoto;
@@ -6027,7 +6034,7 @@ class _GlassComposer extends StatelessWidget {
                   ),
                   child: TextField(
                     controller: controller,
-                    readOnly: isReplying,
+                    readOnly: isReplying && !unlockInputWhileReplying,
                     minLines: 1,
                     maxLines: 3,
                     textAlignVertical: TextAlignVertical.center,

@@ -4,6 +4,17 @@ import 'package:ryza_chat_mvp/src/app_controller.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+  test('reply-time input preference survives local backup import', () async {
+    SharedPreferences.setMockInitialValues({});
+    final controller = await AppController.load();
+    controller.setUnlockInputWhileReplying(true);
+    expect(controller.exportData()['unlockInputWhileReplying'], isTrue);
+
+    final restored = await AppController.load();
+    await restored.importData(controller.exportData());
+    expect(restored.unlockInputWhileReplying, isTrue);
+  });
+
   test('agent context is retrieved on demand', () async {
     SharedPreferences.setMockInitialValues({});
     final c = await AppController.load();

@@ -49,11 +49,20 @@ void main() {
         expect(tester.takeException(), isNull);
         if (entry.key == 'appearance') {
           controller.setShowMicrophoneButton(true);
+          controller.setUnlockInputWhileReplying(true);
           await tester.pump();
           expect(
             tester
                 .widget<SwitchListTile>(
                   find.widgetWithText(SwitchListTile, '显示麦克风按钮'),
+                )
+                .value,
+            isTrue,
+          );
+          expect(
+            tester
+                .widget<SwitchListTile>(
+                  find.widgetWithText(SwitchListTile, '回复时解锁输入框'),
                 )
                 .value,
             isTrue,

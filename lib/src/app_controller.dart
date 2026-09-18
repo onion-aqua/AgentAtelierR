@@ -709,6 +709,7 @@ class AppController extends ChangeNotifier {
   bool liquidGlassChatUi = false;
   bool gazeTrackingEnabled = true;
   bool showMicrophoneButton = false;
+  bool unlockInputWhileReplying = false;
   AppFrameRateMode frameRateMode = AppFrameRateMode.adaptive;
   AppThemePreference themePreference = AppThemePreference.system;
   AppAccentTheme accentTheme = AppAccentTheme.jade;
@@ -961,6 +962,8 @@ class AppController extends ChangeNotifier {
     gazeTrackingEnabled = _preferences.getBool('gaze_tracking_enabled') ?? true;
     showMicrophoneButton =
         _preferences.getBool('show_microphone_button') ?? false;
+    unlockInputWhileReplying =
+        _preferences.getBool('unlock_input_while_replying') ?? false;
     frameRateMode = AppFrameRateMode.values.firstWhere(
       (value) => value.name == _preferences.getString('frame_rate_mode'),
       orElse: () => AppFrameRateMode.adaptive,
@@ -2271,6 +2274,7 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
     'ambientVolume': ambientVolume,
     'liquidGlassChatUi': liquidGlassChatUi,
     'showMicrophoneButton': showMicrophoneButton,
+    'unlockInputWhileReplying': unlockInputWhileReplying,
     'frameRateMode': frameRateMode.name,
     'themePreference': themePreference.name,
     'accentTheme': accentTheme.name,
@@ -2626,6 +2630,8 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
     ambientVolume = (data['ambientVolume'] as num?)?.toDouble() ?? 0.45;
     liquidGlassChatUi = data['liquidGlassChatUi'] as bool? ?? false;
     showMicrophoneButton = data['showMicrophoneButton'] as bool? ?? false;
+    unlockInputWhileReplying =
+        data['unlockInputWhileReplying'] as bool? ?? false;
     frameRateMode = AppFrameRateMode.values.firstWhere(
       (value) => value.name == data['frameRateMode'],
       orElse: () => AppFrameRateMode.adaptive,
@@ -3378,6 +3384,11 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
     _changed();
   }
 
+  void setUnlockInputWhileReplying(bool value) {
+    unlockInputWhileReplying = value;
+    _changed();
+  }
+
   void setFrameRateMode(AppFrameRateMode value) {
     if (frameRateMode == value) return;
     frameRateMode = value;
@@ -3641,6 +3652,10 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
       _preferences.setBool('liquid_glass_chat_ui', liquidGlassChatUi),
       _preferences.setBool('gaze_tracking_enabled', gazeTrackingEnabled),
       _preferences.setBool('show_microphone_button', showMicrophoneButton),
+      _preferences.setBool(
+        'unlock_input_while_replying',
+        unlockInputWhileReplying,
+      ),
       _preferences.setString('frame_rate_mode', frameRateMode.name),
       _preferences.setString('theme_preference', themePreference.name),
       _preferences.setString('interface_language', interfaceLanguage.name),
