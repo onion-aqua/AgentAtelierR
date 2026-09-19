@@ -125,6 +125,55 @@ void main() {
     },
   );
 
+  testWidgets(
+    'thinking UI reflects model capabilities without unsupported effort choices',
+    (tester) async {
+      final controller = await setup(tester);
+      controller.configureAi(
+        enabled: true,
+        baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+        model: 'qwen3.5-plus',
+      );
+      await tapVisible(
+        tester,
+        find.byKey(const ValueKey('settings-category-ai')),
+      );
+      final toggle = find.widgetWithText(SwitchListTile, '模型思考');
+      await tapVisible(tester, toggle);
+      expect(controller.activeThinkingEnabled, isTrue);
+      expect(
+        find.byType(DropdownButtonFormField<ReasoningEffort>),
+        findsNothing,
+      );
+      controller.configureGemini(
+        enabled: true,
+        baseUrl:
+            'https://generativelanguage.googleapis.com/v1beta/interactions',
+        model: 'gemini-3.8-flash',
+      );
+      await tester.pumpAndSettle();
+      expect(tester.widget<SwitchListTile>(toggle).value, isTrue);
+      expect(tester.widget<SwitchListTile>(toggle).onChanged, isNull);
+      final effort = tester.widget<DropdownButtonFormField<ReasoningEffort>>(
+        find.byType(DropdownButtonFormField<ReasoningEffort>),
+      );
+      expect(effort.initialValue, ReasoningEffort.medium);
+      controller.configureAi(
+        enabled: true,
+        baseUrl: 'https://example.test/v1',
+        model: 'custom-alias',
+      );
+      await tester.pumpAndSettle();
+      expect(tester.widget<SwitchListTile>(toggle).value, isFalse);
+      expect(tester.widget<SwitchListTile>(toggle).onChanged, isNull);
+      expect(
+        find.byType(DropdownButtonFormField<ReasoningEffort>),
+        findsNothing,
+      );
+      expect(tester.takeException(), isNull);
+    },
+  );
+
   testWidgets('memory edit saves only on Save and back discards the draft', (
     tester,
   ) async {

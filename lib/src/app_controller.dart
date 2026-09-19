@@ -12,6 +12,7 @@ import 'attachment_thumbnail_store.dart';
 import 'character_catalog.dart';
 import 'character_appearance.dart';
 import 'mimo_tts_config.dart';
+import 'model_thinking.dart';
 import 'character_prompt_defaults.dart';
 import 'frame_rate_controller.dart';
 import 'quest_models.dart';
@@ -1999,7 +2000,6 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
     llmProvider = LlmProvider.openAiCompatible;
     openAiBaseUrl = baseUrl.trim();
     openAiModel = model.trim();
-    if (!supportsOpenAiAdvancedControls) openAiAdvancedEnabled = false;
     _changed();
   }
 
@@ -2014,13 +2014,11 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
         ? 'https://generativelanguage.googleapis.com/v1beta/interactions'
         : baseUrl.trim();
     geminiModel = model.trim().isEmpty ? 'gemini-3.8-flash' : model.trim();
-    openAiAdvancedEnabled = false;
     _changed();
   }
 
   void setLlmProvider(LlmProvider provider) {
     llmProvider = provider;
-    if (!supportsOpenAiAdvancedControls) openAiAdvancedEnabled = false;
     _changed();
   }
 
@@ -2034,21 +2032,55 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
     LlmProvider.gemini => geminiModel,
   };
 
-  bool get supportsOpenAiAdvancedControls {
-    if (llmProvider != LlmProvider.openAiCompatible) return false;
-    final model = openAiModel.trim().toLowerCase();
-    return model.startsWith('gpt-5');
-  }
+  ModelThinking get modelThinking => identifyModelThinking(
+    activeLlmModel,
+    baseUrl: activeLlmBaseUrl,
+    geminiNative: llmProvider == LlmProvider.gemini,
+  );
+
+  // Legacy name retained for persisted settings and older callers.
+  bool get supportsOpenAiAdvancedControls => modelThinking.hasControl;
+
+  bool get modelThinkingEnabled =>
+      modelThinking.isEnabled(openAiAdvancedEnabled);
+
+  bool? get activeThinkingEnabled => modelThinking.canToggle
+      ? openAiAdvancedEnabled
+      : modelThinking.alwaysOn
+      ? true
+      : null;
 
   void configureOpenAiAdvanced({
     required bool enabled,
     required ReasoningEffort reasoningEffort,
     required double outputMultiplier,
   }) {
-    openAiAdvancedEnabled = enabled && supportsOpenAiAdvancedControls;
+    openAiAdvancedEnabled = enabled;
     openAiReasoningEffort = reasoningEffort;
     openAiOutputMultiplier = outputMultiplier == 1.5 ? 1.5 : 1.0;
     _changed();
+  }
+
+  String? get activeReasoningEffort =>
+      modelThinkingEnabled && modelThinking.efforts.isNotEmpty
+      ? modelThinking.normalizeEffort(openAiReasoningEffort.name)
+      : null;
+
+  void setModelThinkingEnabled(bool enabled) {
+    if (!modelThinking.canToggle) return;
+    configureOpenAiAdvanced(
+      enabled: enabled,
+      reasoningEffort: openAiReasoningEffort,
+      outputMultiplier: openAiOutputMultiplier,
+    );
+  }
+
+  void setModelReasoningEffort(ReasoningEffort effort) {
+    configureOpenAiAdvanced(
+      enabled: openAiAdvancedEnabled,
+      reasoningEffort: effort,
+      outputMultiplier: openAiOutputMultiplier,
+    );
   }
 
   void setAgentEnabled(bool value) {

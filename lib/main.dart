@@ -18,6 +18,9 @@ import 'src/character_appearance.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
+  // Atlas shaders capture this value when loaded, so configure it before
+  // any built-in or imported Spine textures are created.
+  Atlas.filterQuality = FilterQuality.high;
   LicenseRegistry.addLicense(() async* {
     yield LicenseEntryWithLineBreaks(
       ['ryza-ai-revive'],

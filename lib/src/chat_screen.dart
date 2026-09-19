@@ -232,6 +232,7 @@ class _ChatScreenState extends State<ChatScreen> {
   Offset? _gazePointer;
   DateTime? _gazeStartedAt;
   bool _gazeHeld = false;
+  final _bodyGaze = CharacterBodyGaze();
   CharacterExpression _currentExpression = CharacterExpression.neutral;
   CharacterFacialDetail? _activeFacialDetail;
   CharacterResourceBehavior _resourceBehavior = CharacterResourceBehavior.parse(
@@ -394,6 +395,11 @@ class _ChatScreenState extends State<ChatScreen> {
     _gazeHeld = false;
     _gazePointer = null;
     _gazeStartedAt = null;
+    _bodyGaze.reset();
+    widget.controller.frameRate.setActivity(
+      FrameRateActivity.characterMotion,
+      false,
+    );
     _rigBase.clear();
     _performanceDirector = CharacterPerformanceDirector(
       CharacterPerformanceProfile.fallback(),
@@ -1249,6 +1255,7 @@ class _ChatScreenState extends State<ChatScreen> {
     for (final name in {
       ...aimBones.values,
       ...rollBones.values,
+      ...characterBodyGazeBones,
       'control_aim_eye',
       'control_aim_head',
       'control_aim_body',
@@ -1323,6 +1330,7 @@ class _ChatScreenState extends State<ChatScreen> {
     if (influence <= 0) {
       _gazePointer = null;
       _gazeStartedAt = null;
+      _bodyGaze.reset();
       return;
     }
 
@@ -1366,21 +1374,38 @@ class _ChatScreenState extends State<ChatScreen> {
         ..setX(controlTarget.getX() + rigOffset.dx * influence)
         ..setY(controlTarget.getY() + rigOffset.dy * influence);
     }
-    for (final part in ['head', 'body']) {
-      final aim = skeleton.findBone('control_aim_$part');
-      final scale = part == 'head' ? 0.25 : 0.08;
-      if (aim != null) {
-        aim
-          ..setX(aim.getX() + rigOffset.dx * influence * scale)
-          ..setY(aim.getY() + rigOffset.dy * influence * scale);
-      }
-      final roll = skeleton.findBone(
-        part == 'head' ? 'control_roll_head' : 'control_roll_body_upper',
-      );
-      roll?.setRotation(
-        roll.getRotation() +
-            offset.dx / 140 * influence * (part == 'head' ? 5 : 1.5),
-      );
+    final offsets = _bodyGaze.sample(
+      direction: offset / 140,
+      delta: controller.updateDelta,
+      influence: influence,
+      standing: _appearance.isStanding,
+      crossLegged: _sittingId == 'sitting_agura',
+      allowShoulders:
+          _currentIdleAnimation == _appearance.idleAnimations.firstOrNull,
+      busy: _motionBusy,
+      tapReaction: _tapReactionActive,
+    );
+    for (final entry in offsets.entries) {
+      final bone = skeleton.findBone(entry.key);
+      if (bone == null) continue;
+      final translation = entry.value.translation;
+      final parent = bone.getParent();
+      // Convert separately for each control: eye, torso and roll controls do
+      // not share a parent coordinate system (especially in standing skins).
+      final local = parent == null
+          ? translation
+          : () {
+              final a = parent.worldToLocal(bone.getWorldX(), bone.getWorldY());
+              final b = parent.worldToLocal(
+                bone.getWorldX() + translation.dx,
+                bone.getWorldY() + translation.dy,
+              );
+              return Offset(b.x - a.x, b.y - a.y);
+            }();
+      bone
+        ..setX(bone.getX() + local.dx)
+        ..setY(bone.getY() + local.dy)
+        ..setRotation(bone.getRotation() + entry.value.rotation);
     }
   }
 
@@ -1390,6 +1415,12 @@ class _ChatScreenState extends State<ChatScreen> {
       return;
     }
     _gazePointer = c.toSkeletonCoordinates(position);
+    if (!_gazeHeld) {
+      widget.controller.frameRate.setActivity(
+        FrameRateActivity.characterMotion,
+        true,
+      );
+    }
     _gazeHeld = true;
     _gazeStartedAt = DateTime.now();
   }
@@ -1397,6 +1428,14 @@ class _ChatScreenState extends State<ChatScreen> {
   void _endGaze() {
     if (_gazePointer != null && _gazeHeld) {
       _gazeHeld = false;
+      widget.controller.frameRate.setActivity(
+        FrameRateActivity.characterMotion,
+        false,
+      );
+      widget.controller.frameRate.boost(
+        FrameRateActivity.characterMotion,
+        duration: characterGazeReleaseDuration,
+      );
       _gazeStartedAt = DateTime.now().subtract(characterGazeHoldDuration);
     }
   }
@@ -1860,6 +1899,10 @@ class _ChatScreenState extends State<ChatScreen> {
     if (replyIterator != null) unawaited(replyIterator.cancel());
     widget.controller.removeListener(_handleControllerChange);
     widget.controller.frameRate.removeListener(_handleFrameRateChange);
+    widget.controller.frameRate.setActivity(
+      FrameRateActivity.characterMotion,
+      false,
+    );
     widget.controller.frameRate.setActivity(FrameRateActivity.speech, false);
     widget.controller.frameRate.setActivity(
       FrameRateActivity.interfaceAnimation,
@@ -2132,9 +2175,9 @@ class _ChatScreenState extends State<ChatScreen> {
           messages: widget.controller.contextMessagesForModel(
             pending: isAutomatic ? ChatMessage(text: text, isUser: true) : null,
           ),
-          // Keep requests compatible across providers: reasoning and output
-          // budget controls are intentionally disabled for this build.
-          reasoningEffort: null,
+          // Reasoning is opt-in; output budget controls remain disabled.
+          reasoningEffort: widget.controller.activeReasoningEffort,
+          thinkingEnabled: widget.controller.activeThinkingEnabled,
           outputMultiplier: null,
           agentEnabled: widget.controller.agentEnabled,
         ),
@@ -2258,7 +2301,8 @@ class _ChatScreenState extends State<ChatScreen> {
         model: requestModel,
         systemPrompt: widget.controller.buildUserReplySuggestionPrompt(),
         messages: widget.controller.recentMessages(limit: 12),
-        reasoningEffort: null,
+        reasoningEffort: widget.controller.activeReasoningEffort,
+        thinkingEnabled: widget.controller.activeThinkingEnabled,
         outputMultiplier: null,
         agentEnabled: false,
       )) {

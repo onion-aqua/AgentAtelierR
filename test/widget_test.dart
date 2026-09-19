@@ -842,10 +842,7 @@ void main() {
       greaterThan(0.7),
     );
     final voicedFrames = envelope.values.skip(envelope.values.length ~/ 2);
-    expect(
-      voicedFrames.where((value) => value == 0).length,
-      0,
-    );
+    expect(voicedFrames.where((value) => value == 0).length, 0);
     expect(voicedFrames.where((value) => value > 0.5), isNotEmpty);
     expect(envelope.values.every((value) => value >= 0 && value <= 1), isTrue);
   });
@@ -2006,27 +2003,32 @@ void main() {
     await Future<void>.delayed(Duration.zero);
   });
 
-  test('Gemini provider settings persist and disable GPT controls', () async {
-    SharedPreferences.setMockInitialValues({});
-    final controller = await AppController.load();
-    controller.configureGemini(
-      enabled: true,
-      baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
-      model: 'gemini-3.8-flash',
-    );
-    await Future<void>.delayed(Duration.zero);
+  test(
+    'Gemini provider settings persist and expose native reasoning controls',
+    () async {
+      SharedPreferences.setMockInitialValues({});
+      final controller = await AppController.load();
+      controller.configureGemini(
+        enabled: true,
+        baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
+        model: 'gemini-3.8-flash',
+      );
+      await Future<void>.delayed(Duration.zero);
 
-    final restored = await AppController.load();
-    expect(restored.llmProvider, LlmProvider.gemini);
-    expect(restored.activeLlmModel, 'gemini-3.8-flash');
-    expect(restored.supportsOpenAiAdvancedControls, isFalse);
-    final exported = restored.exportData();
-    expect(exported['format'], 'agent-atelier-r-local-backup');
-    expect(
-      (exported['preferences'] as Map<String, dynamic>)['llmProvider'],
-      'gemini',
-    );
-  });
+      final restored = await AppController.load();
+      expect(restored.llmProvider, LlmProvider.gemini);
+      expect(restored.activeLlmModel, 'gemini-3.8-flash');
+      expect(restored.supportsOpenAiAdvancedControls, isTrue);
+      expect(restored.modelThinking.canToggle, isFalse);
+      expect(restored.activeThinkingEnabled, isTrue);
+      final exported = restored.exportData();
+      expect(exported['format'], 'agent-atelier-r-local-backup');
+      expect(
+        (exported['preferences'] as Map<String, dynamic>)['llmProvider'],
+        'gemini',
+      );
+    },
+  );
 
   test('AgentAtelierR imports both new and legacy backup formats', () async {
     SharedPreferences.setMockInitialValues({});

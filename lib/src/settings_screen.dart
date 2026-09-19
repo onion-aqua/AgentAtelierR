@@ -166,6 +166,7 @@ class SettingsScreenState extends State<SettingsScreen> {
   Widget _buildSettings(BuildContext context) {
     if (_detailPages > 0) return const SizedBox.expand();
     final language = controller.interfaceLanguage;
+    final thinking = controller.modelThinking;
     return Scaffold(
       backgroundColor: Colors.transparent,
       appBar: AppBar(
@@ -702,6 +703,76 @@ class SettingsScreenState extends State<SettingsScreen> {
               ],
               if (_category == _SettingsCategory.ai) ...[
                 SwitchListTile(
+                  value: controller.modelThinkingEnabled,
+                  onChanged: controller.aiEnabled && thinking.canToggle
+                      ? controller.setModelThinkingEnabled
+                      : null,
+                  secondary: const Icon(Icons.psychology_outlined),
+                  title: Text(
+                    language.text('模型思考', 'Model reasoning', 'モデルの推論'),
+                  ),
+                  subtitle: Text(
+                    '${thinking.description(language)}\n${language.text('根据模型名称与接口自动适配；自定义别名或中转服务可能不支持对应参数。', 'Detected from model name and endpoint; custom aliases or gateways may differ.', 'モデル名と接続先から自動判定します。独自の別名・中継サービスでは仕様が異なる場合があります。')}',
+                  ),
+                ),
+                if (controller.activeReasoningEffort != null)
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+                    child: DropdownButtonFormField<ReasoningEffort>(
+                      key: ValueKey(
+                        '${controller.activeLlmModel}:${controller.activeReasoningEffort}',
+                      ),
+                      initialValue: ReasoningEffort.values.firstWhere(
+                        (value) =>
+                            value.name == controller.activeReasoningEffort,
+                      ),
+                      decoration: InputDecoration(
+                        labelText: language.text(
+                          '思考程度',
+                          'Reasoning effort',
+                          '推論の強度',
+                        ),
+                      ),
+                      items: ReasoningEffort.values
+                          .where(
+                            (effort) => thinking.efforts.contains(effort.name),
+                          )
+                          .map(
+                            (effort) => DropdownMenuItem(
+                              value: effort,
+                              child: Text(switch (effort) {
+                                ReasoningEffort.minimal => language.text(
+                                  '最低',
+                                  'Minimal',
+                                  '最小',
+                                ),
+                                ReasoningEffort.low => language.text(
+                                  '低',
+                                  'Low',
+                                  '低',
+                                ),
+                                ReasoningEffort.medium => language.text(
+                                  '中',
+                                  'Medium',
+                                  '中',
+                                ),
+                                ReasoningEffort.high => language.text(
+                                  '高',
+                                  'High',
+                                  '高',
+                                ),
+                              }),
+                            ),
+                          )
+                          .toList(),
+                      onChanged: (value) {
+                        if (value != null) {
+                          controller.setModelReasoningEffort(value);
+                        }
+                      },
+                    ),
+                  ),
+                SwitchListTile(
                   value: controller.agentEnabled,
                   onChanged: controller.aiEnabled
                       ? controller.setAgentEnabled
@@ -712,9 +783,9 @@ class SettingsScreenState extends State<SettingsScreen> {
                   ),
                   subtitle: Text(
                     language.text(
-                      '按需查询人物、记忆和联网工具；每次请求累计最多执行 10 次工具调用',
-                      'Retrieve characters, memories and web tools on demand; up to 10 tool calls per request',
-                      '人物・記憶・ウェブツールを必要時に参照。1リクエスト最大10回',
+                      '查询人物，记忆，联网，炼金，采集功能，每次请求最多调用十次，请务必打开',
+                      'Character lookup, memory, web access, alchemy and gathering. Up to ten tool calls per request. Please keep enabled.',
+                      '人物検索、記憶、ウェブ、錬金、採集機能。1リクエスト最大10回呼び出せます。必ず有効にしてください。',
                     ),
                   ),
                 ),
@@ -787,7 +858,11 @@ class SettingsScreenState extends State<SettingsScreen> {
                             'No memory yet · summarized every 4 turns',
                             '記憶なし · 4ターンごとに要約',
                           )
-                        : controller.memorySummary,
+                        : language.text(
+                            '查看和编辑已记录的记忆',
+                            'View and edit saved memories',
+                            '保存した記憶を確認・編集',
+                          ),
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
                   ),
@@ -2765,12 +2840,35 @@ class _LongTermMemoryDialog extends StatefulWidget {
 class _LongTermMemoryDialogState extends State<_LongTermMemoryDialog> {
   late final TextEditingController _summary;
   late bool _enabled;
+  Map<String, dynamic>? _document;
+  List<dynamic>? _entries;
+  bool _editRaw = false;
+
+  void _parseMemory() {
+    _document = null;
+    _entries = null;
+    try {
+      final decoded = jsonDecode(_summary.text);
+      if (decoded is Map<String, dynamic> && decoded['entries'] is List) {
+        final entries = decoded['entries'] as List;
+        if (entries.every(
+          (entry) => entry is Map && entry['summary'] is String,
+        )) {
+          _document = decoded;
+          _entries = entries;
+        }
+      }
+    } on FormatException {
+      // Older plain-text memories remain editable without conversion or loss.
+    }
+  }
 
   @override
   void initState() {
     super.initState();
     _summary = TextEditingController(text: widget.summary);
     _enabled = widget.enabled;
+    _parseMemory();
   }
 
   @override
@@ -2798,20 +2896,107 @@ class _LongTermMemoryDialogState extends State<_LongTermMemoryDialog> {
               ),
             ),
             const SizedBox(height: 8),
-            TextField(
-              controller: _summary,
-              minLines: 7,
-              maxLines: 12,
-              maxLength: 2000,
-              decoration: InputDecoration(
-                labelText: language.text('当前长期记忆', 'Current memory', '現在の長期記憶'),
-                hintText: language.text(
-                  '尚未生成长期记忆',
-                  'No long-term memory yet',
-                  '長期記憶はまだありません',
+            if (_entries != null && !_editRaw) ...[
+              if (_entries!.isEmpty)
+                Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Text(
+                    language.text(
+                      '尚未生成长期记忆',
+                      'No long-term memory yet',
+                      '長期記憶はまだありません',
+                    ),
+                  ),
                 ),
-                alignLabelWithHint: true,
-                border: const OutlineInputBorder(),
+              for (var index = 0; index < _entries!.length; index++)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 12),
+                  child: Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(14),
+                    decoration: BoxDecoration(
+                      color: Theme.of(context).colorScheme.surface
+                          .withValues(alpha: .35),
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(
+                        color: Theme.of(context).colorScheme.outline
+                            .withValues(alpha: .2),
+                      ),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          _entries![index]['date']?.toString() ??
+                              language.text(
+                                '时间未记录',
+                                'Date not recorded',
+                                '日時未記録',
+                              ),
+                          style: Theme.of(context).textTheme.labelMedium
+                              ?.copyWith(
+                                color: Theme.of(context)
+                                    .colorScheme
+                                    .onSurfaceVariant,
+                              ),
+                        ),
+                        const SizedBox(height: 8),
+                        TextFormField(
+                          key: ValueKey('memory-entry-$index'),
+                          initialValue: _entries![index]['summary'] as String,
+                          minLines: 1,
+                          maxLines: null,
+                          decoration: InputDecoration(
+                            isDense: true,
+                            border: InputBorder.none,
+                            hintText: language.text(
+                              '记忆总结',
+                              'Memory summary',
+                              '記憶の要約',
+                            ),
+                          ),
+                          onChanged: (value) {
+                            _entries![index]['summary'] = value;
+                            _summary.text = jsonEncode(_document);
+                          },
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+            ] else
+              TextField(
+                controller: _summary,
+                minLines: 7,
+                maxLines: 12,
+                decoration: InputDecoration(
+                  labelText: language.text(
+                    '当前长期记忆',
+                    'Current memory',
+                    '現在の長期記憶',
+                  ),
+                  hintText: language.text(
+                    '尚未生成长期记忆',
+                    'No long-term memory yet',
+                    '長期記憶はまだありません',
+                  ),
+                  alignLabelWithHint: true,
+                  border: const OutlineInputBorder(),
+                ),
+              ),
+            Align(
+              alignment: Alignment.centerRight,
+              child: TextButton.icon(
+                icon: Icon(_editRaw ? Icons.view_agenda_outlined : Icons.code),
+                label: Text(
+                  _editRaw
+                      ? language.text('记忆卡片', 'Memory cards', '記憶カード')
+                      : language.text('编辑原始内容', 'Edit raw content', '元の内容を編集'),
+                ),
+                onPressed: () => setState(() {
+                  _parseMemory();
+                  _editRaw = !_editRaw;
+                }),
               ),
             ),
           ],

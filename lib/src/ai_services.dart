@@ -13,6 +13,7 @@ import 'device_agent_tools.dart';
 import 'runtime_log.dart';
 import 'openai_configuration_slots.dart';
 import 'retry_policy.dart';
+import 'model_thinking.dart';
 
 part 'gemini_interactions.dart';
 
@@ -206,6 +207,7 @@ class OpenAiCompatibleClient {
     required String systemPrompt,
     required List<ChatMessage> messages,
     String? reasoningEffort,
+    bool? thinkingEnabled,
     double? outputMultiplier,
     bool agentEnabled = false,
     LlmProvider provider = LlmProvider.openAiCompatible,
@@ -224,7 +226,15 @@ class OpenAiCompatibleClient {
         },
     ];
     if (provider == LlmProvider.gemini) {
-      yield* _geminiChat(baseUrl, apiKey, model, conversation, agentEnabled);
+      yield* _geminiChat(
+        baseUrl,
+        apiKey,
+        model,
+        conversation,
+        agentEnabled,
+        thinkingEnabled: thinkingEnabled,
+        reasoningEffort: reasoningEffort,
+      );
       return;
     }
     if (agentEnabled) {
@@ -234,6 +244,7 @@ class OpenAiCompatibleClient {
         model: model,
         conversation: conversation,
         reasoningEffort: reasoningEffort,
+        thinkingEnabled: thinkingEnabled,
         outputMultiplier: outputMultiplier,
       );
       return;
@@ -243,10 +254,12 @@ class OpenAiCompatibleClient {
       baseUrl: baseUrl,
       apiKey: apiKey,
       body: _chatBody(
+        baseUrl: baseUrl,
         model: model,
         stream: true,
         conversation: conversation,
         reasoningEffort: reasoningEffort,
+        thinkingEnabled: thinkingEnabled,
         outputMultiplier: outputMultiplier,
       ),
     );
@@ -258,6 +271,7 @@ class OpenAiCompatibleClient {
     required String model,
     required List<Map<String, dynamic>> conversation,
     required String? reasoningEffort,
+    required bool? thinkingEnabled,
     required double? outputMultiplier,
   }) async* {
     const maxToolRounds = 10;
@@ -267,10 +281,12 @@ class OpenAiCompatibleClient {
         baseUrl: baseUrl,
         apiKey: apiKey,
         body: _chatBody(
+          baseUrl: baseUrl,
           model: model,
           stream: false,
           conversation: conversation,
           reasoningEffort: reasoningEffort,
+          thinkingEnabled: thinkingEnabled,
           outputMultiplier: outputMultiplier,
           tools: _agentTools,
         ),
@@ -288,6 +304,12 @@ class OpenAiCompatibleClient {
         'role': 'assistant',
         'content': _messageText(assistant),
         'tool_calls': toolCalls,
+        // Some reasoning providers require opaque reasoning state to be
+        // replayed with tool results. Never treat it as dialogue or TTS text.
+        if (assistant['reasoning_content'] != null)
+          'reasoning_content': assistant['reasoning_content'],
+        if (assistant['reasoning_details'] != null)
+          'reasoning_details': assistant['reasoning_details'],
       });
       for (var index = 0; index < toolCalls.length; index += 1) {
         final toolCall = toolCalls[index];
@@ -309,10 +331,12 @@ class OpenAiCompatibleClient {
       baseUrl: baseUrl,
       apiKey: apiKey,
       body: _chatBody(
+        baseUrl: baseUrl,
         model: model,
         stream: true,
         conversation: conversation,
         reasoningEffort: reasoningEffort,
+        thinkingEnabled: thinkingEnabled,
         outputMultiplier: outputMultiplier,
         tools: _agentTools,
         toolChoice: 'none',
@@ -321,10 +345,12 @@ class OpenAiCompatibleClient {
   }
 
   Map<String, dynamic> _chatBody({
+    required String baseUrl,
     required String model,
     required bool stream,
     required List<Map<String, dynamic>> conversation,
     required String? reasoningEffort,
+    required bool? thinkingEnabled,
     required double? outputMultiplier,
     List<Map<String, dynamic>>? tools,
     String? toolChoice,
@@ -334,7 +360,12 @@ class OpenAiCompatibleClient {
       'stream': stream,
       'messages': conversation,
     };
-    if (reasoningEffort != null) body['reasoning_effort'] = reasoningEffort;
+    body.addAll(
+      identifyModelThinking(
+        model,
+        baseUrl: baseUrl,
+      ).requestFields(enabled: thinkingEnabled, effort: reasoningEffort),
+    );
     if (outputMultiplier != null) {
       body['max_completion_tokens'] = (4096 * outputMultiplier).round();
     }

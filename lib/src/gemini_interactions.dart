@@ -104,8 +104,10 @@ extension _GeminiInteractions on OpenAiCompatibleClient {
     String apiKey,
     String model,
     List<Map<String, dynamic>> conversation,
-    bool agent,
-  ) async* {
+    bool agent, {
+    bool? thinkingEnabled,
+    String? reasoningEffort,
+  }) async* {
     final url = _geminiEndpoint(baseUrl);
     final system = conversation
         .where((m) => m['role'] == 'system')
@@ -129,6 +131,11 @@ extension _GeminiInteractions on OpenAiCompatibleClient {
         'input': input,
         'store': false,
         'stream': !useTools,
+        ...identifyModelThinking(
+          model,
+          baseUrl: baseUrl,
+          geminiNative: true,
+        ).requestFields(enabled: thinkingEnabled, effort: reasoningEffort),
         if (useTools)
           'tools': [
             for (final tool in _agentTools)
