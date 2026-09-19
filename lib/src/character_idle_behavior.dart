@@ -1,6 +1,32 @@
 import 'dart:convert';
 import 'dart:math';
 
+/// New resources scope torso motion to the current base pose type. An empty
+/// authored map disables motion; only a missing map uses the legacy schema.
+Map<String, double>? idleTorsoWeights(
+  Map<String, dynamic> band,
+  Iterable<String> poseTypes,
+) {
+  final byPose = band['torsoWaistGroupWeightsByPoseType'];
+  Object? selected;
+  if (byPose is Map) {
+    for (final type in poseTypes) {
+      if (byPose[type] is Map) {
+        selected = byPose[type];
+        break;
+      }
+    }
+    selected ??= byPose[''];
+  }
+  selected ??= band['torsoWaistGroupWeights'];
+  if (selected is! Map) return null;
+  return {
+    for (final entry in selected.entries)
+      if (entry.key is String && entry.value is num)
+        entry.key as String: (entry.value as num).toDouble(),
+  };
+}
+
 /// Restores only missing ambient driver data. Costume-specific poses, groups,
 /// expressions and explicit empty bindings remain authoritative.
 String restoreMissingIdleDrivers(String source, String reference) {

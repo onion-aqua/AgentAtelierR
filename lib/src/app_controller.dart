@@ -336,6 +336,8 @@ class CharacterPerformancePromptContext {
     required this.resourcesReady,
     required Map<String, String> playableActionDescriptions,
     Map<String, String> playableMotionGroupDescriptions = const {},
+    this.availablePostures = const {},
+    this.postureManuallySelected = false,
   }) : playableActionDescriptions = Map<String, String>.unmodifiable(
          playableActionDescriptions,
        ),
@@ -421,11 +423,15 @@ class CharacterPerformancePromptContext {
   final bool resourcesReady;
   final Map<String, String> playableActionDescriptions;
   final Map<String, String> playableMotionGroupDescriptions;
+  final Map<String, String> availablePostures;
+  final bool postureManuallySelected;
 
   Map<String, Object?> toPromptData() => {
     'status': resourcesReady ? 'ready' : 'not_ready',
     'appearanceId': appearanceId,
     'posture': posture,
+    'postureManuallySelected': postureManuallySelected,
+    'availablePostures': resourcesReady ? availablePostures : const {},
     'revision': revision,
     'actions': <String, String>{
       if (resourcesReady) ...playableActionDescriptions,
@@ -1311,6 +1317,9 @@ class AppController extends ChangeNotifier {
 【表演节奏】
 先判断说话者、意图和情绪，再选 face 与 action；每个自然节拍最多一个主要动作，情绪和动作与上下句平滑衔接。问候/回应可 acknowledge，思考/解释可 think 或 explain，发现/庆祝可 excited，安慰可 comfort，调侃可 playful，拒绝可 disagree；这些只是语义建议，不是强制映射。旁白写出主要动作时，紧邻台词必须带相同 action。
 
+【持续坐姿】
+只在姿态需要改变时，在 action 标签后追加 [posture:sitting_normal] 或 [posture:sitting_agura]，只允许 availablePostures 中的值。休息、放松的长谈或用户明确要求时可选择盘腿；准备活动或场景不合适时恢复自然坐姿。不随机切换、不每句切换、不自动换皮肤。postureManuallySelected=true 时尊重用户手动姿态，不输出 posture 标签。姿态保持至下次切换；动作和旁白必须与当前姿态兼容。
+
 【当前运行时能力】
 ${jsonEncode(compactPerformanceData)}
 status=ready 时只使用 actions 或 motionGroups 中的真实能力；status=not_ready/stale 时只用 action:none。短上下文模式只展示精简动作组索引，精确组仍需复制目录中的键；无法确认时退回语义 action 或 none。
@@ -1349,6 +1358,9 @@ face 只允许：${jsonEncode(CharacterPerformancePromptContext.faceDescriptions
 表情是可延续的状态，动作是一次性的事件；情绪可以变化，但不要无理由在相邻句子间跳变或随机抖动。一个回复可分为 1 至 3 个自然节拍：在问候、发现、解释、安慰、拒绝、邀请或情绪转折等明确节拍使用一个主要 action；同一节拍的后续句通常用 action:none，不重复播放。普通聆听可用 acknowledge 或 none，不能为了“生动”强行堆动作。
 用户明确要求莱莎现在执行某个动作时，先判断执行者、肯定/否定、时态和是否只是引用或假设；只有接受且能力目录支持时才选非 none。 “不要挥手”“他刚才挥手”“如果她挥手”不是立即执行命令。用户不必说出动画名，按语义选择最接近的可用标签。
 无法由当前语义标签或能力目录准确表达的精确姿势，不要假装完成、不要输出原始 Spine 动画名；可以使用真实支持的较宽泛意图，或用自然语言说明限制。action:none 表示本节不新增主要动作，不是取消或重播前一个动作。
+
+【持续坐姿】
+只在姿态需要改变时，在 action 标签后追加 [posture:sitting_normal] 或 [posture:sitting_agura]，只允许 availablePostures 中的值。休息、放松的长谈或用户明确要求时可选择盘腿；准备活动或场景不合适时恢复自然坐姿。不随机切换、不每句切换、不自动换皮肤。postureManuallySelected=true 时尊重用户手动姿态，不输出 posture 标签。姿态保持至下次切换；动作和旁白必须与当前姿态兼容。
 
 【运行时能力边界】
 ${jsonEncode(performanceData)}
@@ -1948,6 +1960,8 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
       'status': data['status'],
       'appearanceId': data['appearanceId'],
       'posture': data['posture'],
+      'availablePostures': data['availablePostures'],
+      'postureManuallySelected': data['postureManuallySelected'],
       'revision': data['revision'],
       'actions': data['actions'],
     };

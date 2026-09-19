@@ -35,7 +35,7 @@ final RegExp _actionCue = RegExp(
   caseSensitive: false,
 );
 final RegExp _appCue = RegExp(
-  r'\[(?:face|action)\s*:\s*[^\[\]\r\n]+\]',
+  r'\[(?:face|action|posture)\s*:\s*[^\[\]\r\n]+\]',
   caseSensitive: false,
 );
 final RegExp _leadingFishCue = RegExp(
@@ -601,9 +601,11 @@ class RyzaPerformanceSegment {
     this.action,
     this.actions = const [],
     this.motionGroupIds = const [],
+    this.posture,
   });
 
   final String speechText;
+  final String? posture;
   final CharacterExpression? expression;
   final CharacterAction? action;
   final List<CharacterAction> actions;
@@ -641,6 +643,7 @@ List<RyzaPerformanceSegment> performanceSegmentsForAssistantResponse(
     result.add(
       RyzaPerformanceSegment(
         speechText: speechText,
+        posture: postureCueForAssistantResponse('莱莎：${segment.text}'),
         expression: expression,
         action: action,
         actions: actions,
@@ -649,6 +652,21 @@ List<RyzaPerformanceSegment> performanceSegmentsForAssistantResponse(
     );
   }
   return result;
+}
+
+String? postureCueForAssistantResponse(String response) {
+  String? posture;
+  final cue = RegExp(
+    r'\[posture\s*:\s*(sitting_normal|sitting_agura)\s*\]',
+    caseSensitive: false,
+  );
+  for (final segment in parseAssistantSegments(response)) {
+    if (segment.speaker != ChatSpeaker.ryza) continue;
+    for (final match in cue.allMatches(segment.text)) {
+      posture = match.group(1)!.toLowerCase();
+    }
+  }
+  return posture;
 }
 
 CharacterPerformanceCue performanceCueForAssistantResponse(String response) {

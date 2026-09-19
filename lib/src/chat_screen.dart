@@ -22,6 +22,7 @@ import 'character_speech_driver.dart';
 import 'character_resource_behavior.dart';
 import 'character_motion_dynamics.dart';
 import 'character_idle_behavior.dart';
+import 'character_posture.dart';
 import 'mimo_tts_client.dart';
 import 'protected_character_assets.dart';
 import 'device_agent_tools.dart';
@@ -138,12 +139,16 @@ class _CachedSpeechSegment {
     required this.envelope,
     required this.expression,
     required this.action,
+    this.posture,
+    this.motionGroupIds = const [],
   });
 
   final String path;
   final AudioAmplitudeEnvelope? envelope;
   final CharacterExpression? expression;
   final CharacterAction? action;
+  final String? posture;
+  final List<String> motionGroupIds;
 }
 
 class _ChatScreenState extends State<ChatScreen> {
@@ -170,13 +175,54 @@ class _ChatScreenState extends State<ChatScreen> {
   Timer? _idleTimer;
   Timer? _tapReactionTimer;
   Timer? _microMotionTimer;
-  Timer? _expressionRelaxTimer;
   Timer? _facialDetailTimer;
   Timer? _blinkTimer;
   Timer? _blinkRestoreTimer;
   Timer? _suggestionQuotaTimer;
   StreamSubscription<Duration>? _audioPositionSubscription;
   String? _currentIdleAnimation;
+  final _postureState = CharacterPostureState();
+  String? _lastPostureCue;
+
+  String get _sittingId =>
+      _appearance.isStanding ? 'standing' : _postureState.sittingId;
+
+  CharacterMotionGroup? get _crossLeggedGroup => crossLeggedPostureGroup(
+    _motionGroups,
+    standing: _appearance.isStanding,
+    pose: _currentIdleAnimation,
+    hasAnimation: (name) =>
+        _spineController?.skeletonData.findAnimation(name) != null,
+  );
+
+  void _selectPosture(String id, {bool byUser = false}) {
+    final group = _crossLeggedGroup;
+    if (!_spineReady || _tapReactionActive || _appearance.isStanding) return;
+    if (!_postureState.select(
+      id,
+      supported: id == 'sitting_normal' || group != null,
+      byUser: byUser,
+    )) {
+      return;
+    }
+    _clearPerformanceQueue();
+    _resetMotionOverlays(mixDuration: 0.6);
+    final state = _spineController!.animationState;
+    if (id == 'sitting_agura') {
+      state.setAnimationByName(3, group!.animation1, true)
+        ..setMixBlend(MixBlend.replace)
+        ..setAlpha(group.alpha1)
+        ..setTimeScale(group.speed1)
+        ..setMixDuration(max(0.6, group.blendTime));
+    } else {
+      state.setEmptyAnimation(3, 0.6);
+    }
+    widget.controller.frameRate.boost(
+      FrameRateActivity.characterMotion,
+      duration: const Duration(seconds: 2),
+    );
+  }
+
   bool _spineReady = false;
   bool _isReplying = false;
   bool _isContinuing = false;
@@ -373,6 +419,8 @@ class _ChatScreenState extends State<ChatScreen> {
       _appearance = next;
       _spineReady = false;
       _currentIdleAnimation = null;
+      _postureState.reset();
+      _lastPostureCue = null;
       _motionGroups = const [];
       _recentAmbientGroupIds.clear();
       _lastPerformanceActionKey = null;
@@ -464,7 +512,7 @@ class _ChatScreenState extends State<ChatScreen> {
       }
       final candidates = profile?.basePoses.where(
         (pose) =>
-            pose.supportsSitting('sitting_normal') &&
+            pose.supportsSitting(_sittingId) &&
             _appearance.idleAnimations.contains(pose.id),
       );
       final selected = chooseResourceWeighted<ResourceBasePose>(
@@ -542,7 +590,8 @@ class _ChatScreenState extends State<ChatScreen> {
 
   bool _canPlayMotionGroup(CharacterMotionGroup group) =>
       group.supportsPose(_currentIdleAnimation) &&
-      group.supportsSitting() &&
+      group.supportsSitting(_sittingId) &&
+      (_sittingId != 'sitting_agura' || !group.occupancy.contains('C')) &&
       group.occupiedTracks.isNotEmpty &&
       _spineController?.skeletonData.findAnimation(group.animation1) != null &&
       (group.animation2 == null ||
@@ -644,7 +693,7 @@ class _ChatScreenState extends State<ChatScreen> {
     final spineController = _spineController;
     final ready =
         _spineReady && spineController != null && _motionGroups.isNotEmpty;
-    final posture = _appearance.isStanding ? 'standing' : 'sitting';
+    final posture = _sittingId;
     final poseIndex = _currentIdleAnimation == null
         ? -1
         : _appearance.idleAnimations.indexOf(_currentIdleAnimation!);
@@ -652,7 +701,11 @@ class _ChatScreenState extends State<ChatScreen> {
     // the selected base pose makes a new snapshot visible after a pose switch
     // without coupling prompt construction to animation playback counters.
     final poseOffset = poseIndex < 0 ? 0 : poseIndex.clamp(0, 999).toInt();
-    final revision = (_motionLoadGeneration * 1000) + poseOffset;
+    final revision =
+        (_motionLoadGeneration * 10000) +
+        poseOffset * 4 +
+        (_postureState.manual ? 2 : 0) +
+        (_sittingId == 'sitting_agura' ? 1 : 0);
 
     if (!ready) {
       return CharacterPerformancePromptContext(
@@ -689,6 +742,11 @@ class _ChatScreenState extends State<ChatScreen> {
       resourcesReady: true,
       playableActionDescriptions: playable,
       playableMotionGroupDescriptions: motionGroups,
+      postureManuallySelected: _postureState.manual,
+      availablePostures: {
+        if (!_appearance.isStanding) 'sitting_normal': '自然坐姿',
+        if (_crossLeggedGroup != null) 'sitting_agura': '放松的盘腿坐姿',
+      },
     );
   }
 
@@ -846,9 +904,35 @@ class _ChatScreenState extends State<ChatScreen> {
     _motionBusyUntil = null;
     _activeMotionGroupId = null;
     for (var track = 2; track <= 10; track++) {
+      // The leg layer is a persistent posture, not a one-shot gesture.
+      if (track == 3 && _sittingId == 'sitting_agura') continue;
       if (!replacingTracks.contains(track) &&
           spineController.animationState.getCurrent(track) != null) {
         spineController.animationState.setEmptyAnimation(track, mixDuration);
+      }
+    }
+    if (_sittingId == 'sitting_agura') {
+      final restId = _resourceBehavior.restGroupsBySitting[_sittingId];
+      final rest = _motionGroups
+          .where(
+            (g) =>
+                g.id == restId && g.occupancy == 'FG' && _canPlayMotionGroup(g),
+          )
+          .firstOrNull;
+      if (rest != null) {
+        final names = [rest.animation1, rest.animation2];
+        for (var index = 0; index < rest.occupiedTracks.length; index++) {
+          final track = rest.occupiedTracks[index];
+          final name = names[index];
+          if (name == null || replacingTracks.contains(track)) continue;
+          _setFacialAnimation(
+            track,
+            name,
+            alpha: index == 0 ? rest.alpha1 : rest.alpha2,
+            timeScale: index == 0 ? rest.speed1 : rest.speed2,
+            mixDuration: mixDuration,
+          );
+        }
       }
     }
   }
@@ -885,7 +969,6 @@ class _ChatScreenState extends State<ChatScreen> {
 
   void _applyExpression(CharacterExpression expression) {
     if (expression != _currentExpression) _clearPerformanceQueue();
-    _expressionRelaxTimer?.cancel();
     if (expression != _currentExpression) {
       _activeResourceExpression = null;
       _activeFacialDetail = null;
@@ -1078,27 +1161,8 @@ class _ChatScreenState extends State<ChatScreen> {
     _currentSpeechEnergy = 0;
     _applyExpression(_currentExpression);
     _scheduleMicroMotion();
-    _scheduleExpressionRelax();
     _scheduleCharacterBlink();
     _scheduleFacialDetailChange();
-  }
-
-  void _scheduleExpressionRelax() {
-    _expressionRelaxTimer?.cancel();
-    // Allow the last emotion to settle after speech instead of snapping back
-    // on a short fixed deadline. This hold is a demo scheduling choice.
-    final profile = _resourceEmotion;
-    _expressionRelaxTimer = Timer(
-      _randomDuration(
-        profile?.poseRerollIntervalMin ?? 5,
-        profile?.poseRerollIntervalMax ?? 8,
-      ),
-      () {
-        if (mounted && !_isCharacterSpeaking && !_tapReactionActive) {
-          _applyExpression(CharacterExpression.neutral);
-        }
-      },
-    );
   }
 
   void _restoreProceduralRig(SpineWidgetController controller) {
@@ -1491,8 +1555,8 @@ class _ChatScreenState extends State<ChatScreen> {
     // fallback mouth pulses are not reasons to interrupt them with random arms.
     if (_isCharacterSpeaking) return;
     final delay = _randomDuration(
-      (_resourceEmotion?.poseRerollIntervalMin ?? 5) * 1.5,
-      (_resourceEmotion?.poseRerollIntervalMax ?? 8) * 1.5,
+      _resourceEmotion?.poseRerollIntervalMin ?? 5,
+      _resourceEmotion?.poseRerollIntervalMax ?? 8,
     );
     _microMotionTimer = Timer(delay, () {
       if (!mounted) return;
@@ -1521,7 +1585,13 @@ class _ChatScreenState extends State<ChatScreen> {
       _currentExpression.name,
       _performanceDirector.tensionBand,
     );
-    final torso = band['torsoWaistGroupWeights'] as Map?;
+    final poseTypes =
+        (_resourceEmotion?.basePoses ?? const <ResourceBasePose>[])
+            .where((pose) => pose.id == _currentIdleAnimation)
+            .expand((pose) => pose.poseTypeIds)
+            .toList();
+    final torso = idleTorsoWeights(band, poseTypes);
+    final poseType = poseTypes.firstOrNull;
     final idleWeights = <String, double>{
       if (torso != null)
         for (final group in _motionGroups.where(
@@ -1537,7 +1607,8 @@ class _ChatScreenState extends State<ChatScreen> {
         .where(
           (group) =>
               _isPromptPlayableMotionGroup(group) &&
-              (idleWeights[group.id] ?? group.weightFor(_currentExpression)) >
+              (idleWeights[group.id] ??
+                      group.weightFor(_currentExpression, poseType: poseType)) >
                   0,
         )
         .toList(growable: false);
@@ -1550,6 +1621,8 @@ class _ChatScreenState extends State<ChatScreen> {
       random: _random,
       allowLargePostureChanges: !_resourceBehavior.fixedBasePoseMode,
       authoredOnly: true,
+      sittingId: _sittingId,
+      poseType: poseType,
       groupWeights: idleWeights,
     );
     if (group == null) return;
@@ -1563,6 +1636,11 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   void _applyPerformanceFromResponse(String response) {
+    final posture = postureCueForAssistantResponse(response);
+    if (posture != null && posture != _lastPostureCue) {
+      _lastPostureCue = posture;
+      _selectPosture(posture);
+    }
     final cue = performanceCueForAssistantResponse(response);
     final expression = cue.expression;
     if (expression != null && expression != _currentExpression) {
@@ -1666,7 +1744,9 @@ class _ChatScreenState extends State<ChatScreen> {
           _isPromptPlayableMotionGroup(candidate!),
       orElse: () => null,
     );
-    if (group != null && _playMotionGroup(group, pairFace: true)) {
+    // The model already chose face explicitly. Auto-pairing is for manual
+    // previews only; otherwise an action silently replaces the dialogue face.
+    if (group != null && _playMotionGroup(group)) {
       _lastSemanticActionAt = DateTime.now();
     }
   }
@@ -1803,7 +1883,6 @@ class _ChatScreenState extends State<ChatScreen> {
     _idleTimer?.cancel();
     _tapReactionTimer?.cancel();
     _microMotionTimer?.cancel();
-    _expressionRelaxTimer?.cancel();
     _facialDetailTimer?.cancel();
     _blinkTimer?.cancel();
     _blinkRestoreTimer?.cancel();
@@ -1861,8 +1940,6 @@ class _ChatScreenState extends State<ChatScreen> {
       if (_isCharacterSpeaking) {
         _scheduleFacialDetailChange();
         _scheduleCharacterBlink();
-      } else {
-        _scheduleExpressionRelax();
       }
     });
     widget.controller.frameRate.boost(
@@ -1973,6 +2050,7 @@ class _ChatScreenState extends State<ChatScreen> {
       widget.controller.addUserMessage(text, attachments: attachments);
     }
     _lastPerformanceActionKey = null;
+    _lastPostureCue = null;
     setState(() {
       if (!isAutomatic) _pendingAttachments.clear();
       _isReplying = true;
@@ -2362,11 +2440,15 @@ class _ChatScreenState extends State<ChatScreen> {
           displayIndex,
           _readingDurationFor(segment.speechText),
         );
+        if (segment.posture case final posture?) _selectPosture(posture);
         if (segment.expression case final expression?) {
           if (expression != _currentExpression) _applyExpression(expression);
         }
         if (segment.action case final action?) {
           _performSemanticAction(action);
+        }
+        for (final id in segment.motionGroupIds.take(2)) {
+          _performMotionGroupIntent(id);
         }
         await _audioPlayer.stop();
         await _audioPlayer.setVolume(widget.controller.voiceVolume);
@@ -2388,6 +2470,8 @@ class _ChatScreenState extends State<ChatScreen> {
             envelope: prepared.envelope,
             expression: segment.expression,
             action: segment.action,
+            posture: segment.posture,
+            motionGroupIds: segment.motionGroupIds,
           ),
         );
         if (next != null) {
@@ -2584,6 +2668,7 @@ class _ChatScreenState extends State<ChatScreen> {
             const Duration(seconds: 6),
           );
         }
+        if (segment.posture case final posture?) _selectPosture(posture);
         if (segment.expression case final expression?) {
           if (expression != _currentExpression) _applyExpression(expression);
         }
@@ -2596,6 +2681,9 @@ class _ChatScreenState extends State<ChatScreen> {
           envelope: segment.envelope,
           awaitingAudio: true,
         );
+        for (final id in segment.motionGroupIds.take(2)) {
+          _performMotionGroupIntent(id);
+        }
         final completed = _audioPlayer.onPlayerComplete.first;
         await _audioPlayer.play(DeviceFileSource(segment.path));
         await Future.any([completed, cancellation.future]);
@@ -3055,7 +3143,57 @@ importance 使用 1-5。誓言/承诺用 promise，告白用 confession，严重
         appearance: _appearance,
         liquidGlass: widget.controller.liquidGlassChatUi,
         currentIdleAnimation: _currentIdleAnimation,
-        onIdleSelected: _playIdleAnimation,
+        onIdleSelected: (animation) {
+          _selectPosture('sitting_normal', byUser: true);
+          _playIdleAnimation(animation);
+        },
+        postureControls: Wrap(
+          spacing: 8,
+          children: [
+            TextButton(
+              onPressed: () {
+                _postureState.manual = false;
+                _lastPostureCue = null;
+                Navigator.pop(context);
+              },
+              child: Text(
+                widget.controller.interfaceLanguage.text(
+                  '自动姿态',
+                  'Auto posture',
+                  '姿勢を自動選択',
+                ),
+              ),
+            ),
+            if (!_appearance.isStanding)
+              TextButton(
+                onPressed: () {
+                  _selectPosture('sitting_normal', byUser: true);
+                  Navigator.pop(context);
+                },
+                child: Text(
+                  widget.controller.interfaceLanguage.text(
+                    '自然坐姿',
+                    'Sit normally',
+                    '通常座り',
+                  ),
+                ),
+              ),
+            if (_crossLeggedGroup != null)
+              TextButton(
+                onPressed: () {
+                  _selectPosture('sitting_agura', byUser: true);
+                  Navigator.pop(context);
+                },
+                child: Text(
+                  widget.controller.interfaceLanguage.text(
+                    '盘腿坐',
+                    'Sit cross-legged',
+                    'あぐら',
+                  ),
+                ),
+              ),
+          ],
+        ),
         onOneShotSelected: _playOneShotAnimation,
         onMotionGroupSelected: (group) =>
             _playMotionGroup(group, pairFace: true),
@@ -4369,9 +4507,11 @@ class _MotionPickerSheet extends StatelessWidget {
     required this.onIdleSelected,
     required this.onOneShotSelected,
     required this.onMotionGroupSelected,
+    required this.postureControls,
   });
 
   final CharacterAppearance appearance;
+  final Widget postureControls;
   final bool liquidGlass;
   final String? currentIdleAnimation;
   final ValueChanged<String> onIdleSelected;
@@ -4388,6 +4528,7 @@ class _MotionPickerSheet extends StatelessWidget {
         fallbackColor: const Color(0xE8201D1B),
         child: Column(
           children: [
+            postureControls,
             Padding(
               padding: const EdgeInsets.fromLTRB(20, 18, 12, 10),
               child: Row(

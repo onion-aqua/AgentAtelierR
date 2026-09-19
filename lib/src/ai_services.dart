@@ -1029,10 +1029,41 @@ class WebSearchClient {
 }
 
 class FishAudioClient {
-  FishAudioClient({http.Client? client}) : _client = client ?? http.Client();
+  FishAudioClient({
+    http.Client? client,
+    this.requestTimeout = const Duration(seconds: 90),
+  }) : _client = client ?? http.Client();
 
   static const endpoint = 'https://api.fish.audio/v1/tts';
   final http.Client _client;
+  final Duration requestTimeout;
+
+  Future<http.Response> _post(
+    Uri uri,
+    Map<String, String> headers,
+    String body,
+  ) async {
+    final abort = Completer<void>();
+    var timedOut = false;
+    final timer = Timer(requestTimeout, () {
+      timedOut = true;
+      abort.complete();
+    });
+    try {
+      final request = http.AbortableRequest(
+        'POST',
+        uri,
+        abortTrigger: abort.future,
+      )..headers.addAll(headers);
+      request.body = body;
+      return await http.Response.fromStream(await _client.send(request));
+    } on http.RequestAbortedException {
+      if (timedOut) throw TimeoutException('Fish Audio 请求超时', requestTimeout);
+      rethrow;
+    } finally {
+      timer.cancel();
+    }
+  }
 
   Future<String> synthesize({
     required String apiKey,
@@ -1085,18 +1116,27 @@ class FishAudioClient {
         'normalize_loudness': true,
       },
     };
-    final response = await withAiRequestRetries<http.Response>(
-      () => _client.post(
-        uri,
-        headers: {
+    late final http.Response response;
+    try {
+      response = await withAiRequestRetries<http.Response>(
+        () => _post(uri, {
           'Authorization': 'Bearer $apiKey',
           'Content-Type': 'application/json',
           'model': model,
-        },
-        body: jsonEncode(requestBody),
-      ),
-      shouldRetryResult: (result) => isRetryableHttpStatus(result.statusCode),
-    );
+        }, jsonEncode(requestBody)),
+        shouldRetryResult: (result) => isRetryableHttpStatus(result.statusCode),
+      );
+    } catch (error) {
+      if (!isRetryableNetworkError(error)) rethrow;
+      // Never include request headers or keys in the user-facing error.
+      RuntimeLog.instance.warning(
+        'TTS',
+        'Fish Audio 网络请求失败：${error.runtimeType}；主机 ${uri.host}；已用尽重试',
+      );
+      throw AiServiceException(
+        '无法连接 Fish Audio（${uri.host}），已重试 3 次。请检查网络、代理或防火墙，以及 API 端点是否可达。连接超时并不表示音色 ID 或模型错误。',
+      );
+    }
     RuntimeLog.instance.communication(
       source: 'TTS',
       direction: 'request',

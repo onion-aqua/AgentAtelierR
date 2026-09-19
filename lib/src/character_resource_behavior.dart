@@ -14,6 +14,7 @@ class CharacterResourceBehavior {
     this.lockSittingAxis = true,
     this.transitions,
     this.windAnimationPrefix = 'effect_wind',
+    this.restGroupsBySitting = const {},
   });
 
   final Map<String, CharacterResourceEmotionProfile> profiles;
@@ -21,6 +22,7 @@ class CharacterResourceBehavior {
   final bool lockSittingAxis;
   final CharacterMotionTransitions? transitions;
   final String windAnimationPrefix;
+  final Map<String, String> restGroupsBySitting;
 
   factory CharacterResourceBehavior.parse(String source) {
     Object? decoded;
@@ -45,6 +47,12 @@ class CharacterResourceBehavior {
       fixedBasePoseMode: config['fixedBasePoseMode'] != false,
       lockSittingAxis: config['lockSittingAxis'] != false,
       transitions: CharacterMotionTransitions(root),
+      restGroupsBySitting: {
+        for (final entry in _map(
+          _map(_map(config['armInOutPartConfig'])['idleGroupIds'])['byPosture'],
+        ).entries)
+          if (entry.value is String) entry.key: entry.value as String,
+      },
       windAnimationPrefix: _text(config['windAnimationPrefix']).isEmpty
           ? 'effect_wind'
           : _text(config['windAnimationPrefix']),
