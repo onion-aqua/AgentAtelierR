@@ -585,6 +585,7 @@ class AppController extends ChangeNotifier {
     'interactionStyle': userInteractionStyle.name,
     'relationshipCustom': userRelationshipCustom,
     'interactionCustom': userInteractionCustom,
+    'preferCustom': preferCustomUserProfile.toString(),
     'boundaries': userInteractionBoundaries,
   };
 
@@ -632,6 +633,7 @@ class AppController extends ChangeNotifier {
           boundaries: selected['boundaries'] ?? '',
           relationshipCustom: selected['relationshipCustom'] ?? '',
           interactionCustom: selected['interactionCustom'] ?? '',
+          preferCustom: selected['preferCustom'] == 'true',
         );
       case SettingsSlotKind.character:
         setCharacterPersona(selected['text'] ?? '');
@@ -699,6 +701,7 @@ class AppController extends ChangeNotifier {
   UserInteractionStyle userInteractionStyle = UserInteractionStyle.balanced;
   String userRelationshipCustom = '';
   String userInteractionCustom = '';
+  bool preferCustomUserProfile = false;
   String userInteractionBoundaries = '';
   CharacterMood characterMood = CharacterMood.neutral;
   int relationshipPoints = 0;
@@ -969,6 +972,8 @@ class AppController extends ChangeNotifier {
       orElse: () => AppFrameRateMode.adaptive,
     );
     translationOnly = _preferences.getBool('translation_only') ?? false;
+    preferCustomUserProfile =
+        _preferences.getBool('prefer_custom_user_profile') ?? false;
     textColorTheme = AppAccentTheme.values
         .where(
           (value) => value.name == _preferences.getString('text_color_theme'),
@@ -1207,10 +1212,10 @@ class AppController extends ChangeNotifier {
     final userProfile = jsonEncode({
       '称呼': userAddress,
       '自画像': userPortrait.trim().isEmpty ? '未设置' : userPortrait.trim(),
-      '关系定位': userRelationshipCustom.trim().isEmpty
+      '关系定位': !preferCustomUserProfile || userRelationshipCustom.trim().isEmpty
           ? userRelationshipRole.label
           : userRelationshipCustom.trim(),
-      '互动偏好': userInteractionCustom.trim().isEmpty
+      '互动偏好': !preferCustomUserProfile || userInteractionCustom.trim().isEmpty
           ? userInteractionStyle.label
           : userInteractionCustom.trim(),
       '需要避开': userInteractionBoundaries.trim().isEmpty
@@ -1693,6 +1698,7 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
     required String boundaries,
     String relationshipCustom = '',
     String interactionCustom = '',
+    bool preferCustom = false,
   }) {
     final normalizedAddress = address
         .replaceAll(RegExp(r'[\r\n]+'), ' ')
@@ -1710,6 +1716,7 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
     userInteractionStyle = interactionStyle;
     userRelationshipCustom = relationshipCustom.trim();
     userInteractionCustom = interactionCustom.trim();
+    preferCustomUserProfile = preferCustom;
     final normalizedBoundaries = boundaries.trim();
     userInteractionBoundaries = normalizedBoundaries.length > 300
         ? normalizedBoundaries.substring(0, 300)
@@ -2260,6 +2267,7 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
       'interactionStyle': userInteractionStyle.name,
       'relationshipCustom': userRelationshipCustom,
       'interactionCustom': userInteractionCustom,
+      'preferCustom': preferCustomUserProfile.toString(),
       'boundaries': userInteractionBoundaries,
     },
     'characterMood': characterMood.name,
@@ -2280,6 +2288,7 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
     'accentTheme': accentTheme.name,
     'textColorTheme': textColorTheme?.name,
     'translationOnly': translationOnly,
+    'preferCustomUserProfile': preferCustomUserProfile,
     'interfaceLanguage': interfaceLanguage.name,
     'narratorLanguage': narratorLanguage.name,
     'characterReplyLanguage': characterReplyLanguage.name,
@@ -2611,6 +2620,9 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
     );
     userRelationshipCustom = userProfile['relationshipCustom'] as String? ?? '';
     userInteractionCustom = userProfile['interactionCustom'] as String? ?? '';
+    preferCustomUserProfile =
+        userProfile['preferCustom'] == true ||
+        userProfile['preferCustom'] == 'true';
     userInteractionBoundaries = userProfile['boundaries'] as String? ?? '';
     relationshipPoints = data['relationshipPoints'] as int? ?? 0;
     characterMood = CharacterMood.values.firstWhere(
@@ -2632,6 +2644,7 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
     showMicrophoneButton = data['showMicrophoneButton'] as bool? ?? false;
     unlockInputWhileReplying =
         data['unlockInputWhileReplying'] as bool? ?? false;
+    preferCustomUserProfile = data['preferCustomUserProfile'] == true;
     frameRateMode = AppFrameRateMode.values.firstWhere(
       (value) => value.name == data['frameRateMode'],
       orElse: () => AppFrameRateMode.adaptive,
@@ -3416,6 +3429,11 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
     _changed();
   }
 
+  void setPreferCustomUserProfile(bool value) {
+    preferCustomUserProfile = value;
+    _changed();
+  }
+
   void configureLanguages({
     required AppLanguage interface,
     required AppLanguage narrator,
@@ -3537,6 +3555,10 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
       _preferences.setString('accent_theme', accentTheme.name),
       _preferences.setString('text_color_theme', textColorTheme?.name ?? ''),
       _preferences.setBool('translation_only', translationOnly),
+      _preferences.setBool(
+        'prefer_custom_user_profile',
+        preferCustomUserProfile,
+      ),
       _preferences.setString(
         'settings_slots_v1',
         jsonEncode(_settingsSlotsJson),

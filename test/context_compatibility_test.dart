@@ -15,6 +15,31 @@ void main() {
     expect(restored.unlockInputWhileReplying, isTrue);
   });
 
+  test(
+    'custom user profile priority is persisted and changes the prompt',
+    () async {
+      SharedPreferences.setMockInitialValues({});
+      final controller = await AppController.load();
+      controller.configureUserProfile(
+        address: '伙伴',
+        portrait: '',
+        relationshipRole: UserRelationshipRole.familiarPartner,
+        interactionStyle: UserInteractionStyle.balanced,
+        boundaries: '',
+        relationshipCustom: '一起旅行的老朋友',
+        interactionCustom: '多给行动建议',
+        preferCustom: false,
+      );
+      expect(controller.buildCharacterPrompt(), isNot(contains('一起旅行的老朋友')));
+      controller.setPreferCustomUserProfile(true);
+      expect(controller.buildCharacterPrompt(), contains('一起旅行的老朋友'));
+      expect(controller.exportData()['preferCustomUserProfile'], isTrue);
+      final restored = await AppController.load();
+      await restored.importData(controller.exportData());
+      expect(restored.preferCustomUserProfile, isTrue);
+    },
+  );
+
   test('agent context is retrieved on demand', () async {
     SharedPreferences.setMockInitialValues({});
     final c = await AppController.load();

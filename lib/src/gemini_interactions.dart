@@ -142,14 +142,20 @@ extension _GeminiInteractions on OpenAiCompatibleClient {
         url: url.toString(),
         payload: body,
       );
-      final request = http.Request('POST', url)
-        ..headers.addAll({
-          'x-goog-api-key': apiKey,
-          'Content-Type': 'application/json',
-          'Accept': useTools ? 'application/json' : 'text/event-stream',
-        })
-        ..body = jsonEncode(body);
-      final response = await _client.send(request);
+      final response = await withAiRequestRetries<http.StreamedResponse>(
+        () {
+          final request = http.Request('POST', url)
+            ..headers.addAll({
+              'x-goog-api-key': apiKey,
+              'Content-Type': 'application/json',
+              'Accept': useTools ? 'application/json' : 'text/event-stream',
+            })
+            ..body = jsonEncode(body);
+          return _client.send(request);
+        },
+        shouldRetryResult: (result) => isRetryableHttpStatus(result.statusCode),
+        disposeRetryResult: (result) => result.stream.drain<void>(),
+      );
       if (response.statusCode < 200 || response.statusCode >= 300) {
         final error = await response.stream.bytesToString();
         RuntimeLog.instance.communication(

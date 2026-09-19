@@ -3249,6 +3249,9 @@ importance 使用 1-5。誓言/承诺用 promise，告白用 confession，严重
             child: _LiquidGlassConversation(
               language: widget.controller.interfaceLanguage,
               liquidGlass: liquidGlass,
+              translationOnly:
+                  widget.controller.translationOnly &&
+                  widget.controller.translationLanguage.name != 'none',
               messages: widget.controller.messages,
               isReplying: _isReplying,
               scrollController: _scrollController,
@@ -4905,6 +4908,7 @@ class _LiquidGlassConversation extends StatelessWidget {
   const _LiquidGlassConversation({
     required this.language,
     required this.liquidGlass,
+    required this.translationOnly,
     required this.messages,
     required this.isReplying,
     required this.scrollController,
@@ -4944,6 +4948,7 @@ class _LiquidGlassConversation extends StatelessWidget {
 
   final AppLanguage language;
   final bool liquidGlass;
+  final bool translationOnly;
   final List<ChatMessage> messages;
   final bool isReplying;
   final ScrollController scrollController;
@@ -5004,6 +5009,7 @@ class _LiquidGlassConversation extends StatelessWidget {
                           activeSegmentDisplayDuration:
                               activeSegmentDisplayDuration,
                           latestAssistantMessageKey: latestAssistantMessageKey,
+                          translationOnly: translationOnly,
                         ),
                       ),
                       if (showScrollToBottomIndicator)
@@ -5191,6 +5197,7 @@ class _GlassMessageList extends StatelessWidget {
     required this.activeAssistantSegmentIndex,
     required this.activeSegmentDisplayDuration,
     required this.latestAssistantMessageKey,
+    required this.translationOnly,
   });
 
   final AppLanguage language;
@@ -5199,6 +5206,7 @@ class _GlassMessageList extends StatelessWidget {
   final int? activeAssistantSegmentIndex;
   final Duration activeSegmentDisplayDuration;
   final GlobalKey latestAssistantMessageKey;
+  final bool translationOnly;
 
   @override
   Widget build(BuildContext context) {
@@ -5221,6 +5229,7 @@ class _GlassMessageList extends StatelessWidget {
             padding: const EdgeInsets.symmetric(vertical: 10),
             child: _SeparatedAssistantMessage(
               response: message.text,
+              translationOnly: translationOnly,
               language: language,
               attachments: message.attachments,
               glass: true,
@@ -5306,6 +5315,7 @@ String _glassMessageText(ChatMessage message) {
 class _SeparatedAssistantMessage extends StatelessWidget {
   const _SeparatedAssistantMessage({
     required this.response,
+    required this.translationOnly,
     required this.language,
     required this.attachments,
     required this.glass,
@@ -5314,6 +5324,7 @@ class _SeparatedAssistantMessage extends StatelessWidget {
   });
 
   final String response;
+  final bool translationOnly;
   final AppLanguage language;
   final List<ChatAttachment> attachments;
   final bool glass;
@@ -5327,6 +5338,12 @@ class _SeparatedAssistantMessage extends StatelessWidget {
     final children = <Widget>[];
     for (var index = 0; index < runs.length; index++) {
       final run = runs[index];
+      if (translationOnly &&
+          (run.first.speaker == ChatSpeaker.ryza ||
+              run.first.speaker == ChatSpeaker.character) &&
+          !run.any((segment) => segment.speaker == ChatSpeaker.translation)) {
+        continue;
+      }
       final activeInRun =
           activeSegmentIndex != null &&
               activeSegmentIndex! >= segmentOffset &&
@@ -5349,6 +5366,7 @@ class _SeparatedAssistantMessage extends StatelessWidget {
             segments: run,
             language: language,
             glass: glass,
+            translationOnly: translationOnly,
             activeSegmentIndex: activeInRun,
             activeSegmentDisplayDuration: activeSegmentDisplayDuration,
           ),
@@ -5359,6 +5377,7 @@ class _SeparatedAssistantMessage extends StatelessWidget {
             segments: run,
             language: language,
             glass: glass,
+            translationOnly: translationOnly,
             activeSegmentIndex: activeInRun,
             activeSegmentDisplayDuration: activeSegmentDisplayDuration,
           ),
@@ -5438,6 +5457,7 @@ class _RyzaRun extends StatelessWidget {
     required this.segments,
     required this.language,
     required this.glass,
+    this.translationOnly = false,
     this.activeSegmentIndex,
     this.activeSegmentDisplayDuration = Duration.zero,
   });
@@ -5445,6 +5465,7 @@ class _RyzaRun extends StatelessWidget {
   final List<ChatSegment> segments;
   final AppLanguage language;
   final bool glass;
+  final bool translationOnly;
   final int? activeSegmentIndex;
   final Duration activeSegmentDisplayDuration;
 
@@ -5497,6 +5518,7 @@ class _RyzaRun extends StatelessWidget {
               const SizedBox(height: 2),
               _DialogueSegmentBody(
                 segments: segments,
+                translationOnly: translationOnly,
                 glass: glass,
                 activeSegmentIndex: activeSegmentIndex,
                 activeSegmentDisplayDuration: activeSegmentDisplayDuration,
@@ -5514,6 +5536,7 @@ class _CharacterRun extends StatelessWidget {
     required this.segments,
     required this.language,
     required this.glass,
+    this.translationOnly = false,
     this.activeSegmentIndex,
     this.activeSegmentDisplayDuration = Duration.zero,
   });
@@ -5521,6 +5544,7 @@ class _CharacterRun extends StatelessWidget {
   final List<ChatSegment> segments;
   final AppLanguage language;
   final bool glass;
+  final bool translationOnly;
   final int? activeSegmentIndex;
   final Duration activeSegmentDisplayDuration;
 
@@ -5588,6 +5612,7 @@ class _CharacterRun extends StatelessWidget {
               const SizedBox(height: 2),
               _DialogueSegmentBody(
                 segments: segments,
+                translationOnly: translationOnly,
                 glass: glass,
                 activeSegmentIndex: activeSegmentIndex,
                 activeSegmentDisplayDuration: activeSegmentDisplayDuration,
@@ -5604,12 +5629,14 @@ class _DialogueSegmentBody extends StatelessWidget {
   const _DialogueSegmentBody({
     required this.segments,
     required this.glass,
+    this.translationOnly = false,
     this.activeSegmentIndex,
     this.activeSegmentDisplayDuration = Duration.zero,
   });
 
   final List<ChatSegment> segments;
   final bool glass;
+  final bool translationOnly;
   final int? activeSegmentIndex;
   final Duration activeSegmentDisplayDuration;
 
@@ -5618,7 +5645,7 @@ class _DialogueSegmentBody extends StatelessWidget {
     final appearance = Theme.of(context).extension<DialogueAppearance>();
     final visibleIndices = dialogueDisplayIndices(
       segments,
-      appearance?.translationOnly == true,
+      translationOnly || appearance?.translationOnly == true,
     );
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -6449,6 +6476,7 @@ class _MessageList extends StatelessWidget {
               margin: const EdgeInsets.symmetric(vertical: 5),
               child: _SeparatedAssistantMessage(
                 response: message.text,
+                translationOnly: false,
                 language: language,
                 attachments: message.attachments,
                 glass: glass,

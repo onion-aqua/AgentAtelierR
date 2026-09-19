@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
@@ -96,4 +97,83 @@ void main() {
       throwsA(isA<AiServiceException>()),
     );
   });
+
+  test(
+    'OpenAI stream retries transient HTTP failures before yielding output',
+    () async {
+      var requests = 0;
+      final client = MockClient((_) async {
+        requests++;
+        if (requests <= 2) return http.Response('temporary failure', 503);
+        return http.Response.bytes(
+          utf8.encode(
+            'data: {"choices":[{"delta":{"content":"恢复"}}]}\n\n'
+            'data: [DONE]\n\n',
+          ),
+          200,
+          headers: {'content-type': 'text/event-stream'},
+        );
+      });
+
+      final output = await OpenAiCompatibleClient(client: client)
+          .streamChat(
+            baseUrl: 'https://relay.example/v1',
+            apiKey: 'test-key',
+            model: 'test-model',
+            systemPrompt: 'test',
+            messages: const [ChatMessage(text: 'hello', isUser: true)],
+          )
+          .toList();
+
+      expect(output, ['恢复']);
+      expect(requests, 3);
+    },
+  );
+
+  test('OpenAI stream does not retry authentication failures', () async {
+    var requests = 0;
+    final client = MockClient((_) async {
+      requests++;
+      return http.Response('unauthorized', 401);
+    });
+
+    await expectLater(
+      OpenAiCompatibleClient(client: client)
+          .streamChat(
+            baseUrl: 'https://relay.example/v1',
+            apiKey: 'test-key',
+            model: 'test-model',
+            systemPrompt: 'test',
+            messages: const [ChatMessage(text: 'hello', isUser: true)],
+          )
+          .toList(),
+      throwsA(isA<AiServiceException>()),
+    );
+    expect(requests, 1);
+  });
+
+  test(
+    'Fish Audio retries a transient response and returns audio bytes',
+    () async {
+      var requests = 0;
+      final client = MockClient((_) async {
+        requests++;
+        if (requests == 1) return http.Response('busy', 429);
+        return http.Response.bytes(
+          Uint8List.fromList(const [0x49, 0x44, 0x33, 0x04]),
+          200,
+          headers: {'content-type': 'audio/mpeg'},
+        );
+      });
+
+      final bytes = await FishAudioClient(client: client).synthesizeBytes(
+        apiKey: 'test-key',
+        referenceId: 'voice-id',
+        text: 'hello',
+      );
+
+      expect(bytes, isNotEmpty);
+      expect(requests, 2);
+    },
+  );
 }

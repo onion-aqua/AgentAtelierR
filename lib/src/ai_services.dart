@@ -12,6 +12,7 @@ import 'app_controller.dart';
 import 'device_agent_tools.dart';
 import 'runtime_log.dart';
 import 'openai_configuration_slots.dart';
+import 'retry_policy.dart';
 
 part 'gemini_interactions.dart';
 
@@ -348,23 +349,29 @@ class OpenAiCompatibleClient {
     required Map<String, dynamic> body,
   }) async* {
     final started = DateTime.now();
-    final request = http.Request('POST', _endpoint(baseUrl, 'chat/completions'))
-      ..headers.addAll(_openAiHeaders(apiKey, stream: true))
-      ..body = jsonEncode(body);
-
-    final response = await _client.send(request);
+    final uri = _endpoint(baseUrl, 'chat/completions');
+    final response = await withAiRequestRetries<http.StreamedResponse>(
+      () {
+        final request = http.Request('POST', uri)
+          ..headers.addAll(_openAiHeaders(apiKey, stream: true))
+          ..body = jsonEncode(body);
+        return _client.send(request);
+      },
+      shouldRetryResult: (result) => isRetryableHttpStatus(result.statusCode),
+      disposeRetryResult: (result) => result.stream.drain<void>(),
+    );
     RuntimeLog.instance.communication(
       source: 'LLM',
       direction: 'request',
       method: 'POST',
-      url: request.url.toString(),
+      url: uri.toString(),
       payload: _loggedRequest(body, stream: true),
     );
     RuntimeLog.instance.communication(
       source: 'LLM',
       direction: 'response',
       method: 'POST',
-      url: request.url.toString(),
+      url: uri.toString(),
       statusCode: response.statusCode,
       duration: DateTime.now().difference(started),
       payload: {
@@ -407,7 +414,7 @@ class OpenAiCompatibleClient {
       source: 'LLM',
       direction: 'stream',
       method: 'POST',
-      url: request.url.toString(),
+      url: uri.toString(),
       duration: DateTime.now().difference(started),
       payload: {'text': deltas.toString(), 'length': deltas.length},
     );
@@ -420,10 +427,13 @@ class OpenAiCompatibleClient {
   }) async {
     final started = DateTime.now();
     final url = _endpoint(baseUrl, 'chat/completions');
-    final response = await _client.post(
-      url,
-      headers: _openAiHeaders(apiKey),
-      body: jsonEncode(body),
+    final response = await withAiRequestRetries<http.Response>(
+      () => _client.post(
+        url,
+        headers: _openAiHeaders(apiKey),
+        body: jsonEncode(body),
+      ),
+      shouldRetryResult: (result) => isRetryableHttpStatus(result.statusCode),
     );
     RuntimeLog.instance.communication(
       source: 'LLM',
@@ -875,10 +885,13 @@ class OpenAiCompatibleClient {
     final started = DateTime.now();
     final url = _endpoint(baseUrl, 'chat/completions');
     final requestBody = {'model': model, 'stream': false, 'messages': messages};
-    final response = await _client.post(
-      url,
-      headers: _openAiHeaders(apiKey),
-      body: jsonEncode(requestBody),
+    final response = await withAiRequestRetries<http.Response>(
+      () => _client.post(
+        url,
+        headers: _openAiHeaders(apiKey),
+        body: jsonEncode(requestBody),
+      ),
+      shouldRetryResult: (result) => isRetryableHttpStatus(result.statusCode),
     );
     RuntimeLog.instance.communication(
       source: 'LLM',
@@ -1072,14 +1085,17 @@ class FishAudioClient {
         'normalize_loudness': true,
       },
     };
-    final response = await _client.post(
-      uri,
-      headers: {
-        'Authorization': 'Bearer $apiKey',
-        'Content-Type': 'application/json',
-        'model': model,
-      },
-      body: jsonEncode(requestBody),
+    final response = await withAiRequestRetries<http.Response>(
+      () => _client.post(
+        uri,
+        headers: {
+          'Authorization': 'Bearer $apiKey',
+          'Content-Type': 'application/json',
+          'model': model,
+        },
+        body: jsonEncode(requestBody),
+      ),
+      shouldRetryResult: (result) => isRetryableHttpStatus(result.statusCode),
     );
     RuntimeLog.instance.communication(
       source: 'TTS',
@@ -1163,13 +1179,16 @@ class DashScopeTtsClient {
         if (audioText.trim().isNotEmpty) 'text': audioText.trim(),
       },
     };
-    final response = await _client.post(
-      uri,
-      headers: {
-        'Authorization': 'Bearer $apiKey',
-        'Content-Type': 'application/json',
-      },
-      body: jsonEncode(requestBody),
+    final response = await withAiRequestRetries<http.Response>(
+      () => _client.post(
+        uri,
+        headers: {
+          'Authorization': 'Bearer $apiKey',
+          'Content-Type': 'application/json',
+        },
+        body: jsonEncode(requestBody),
+      ),
+      shouldRetryResult: (result) => isRetryableHttpStatus(result.statusCode),
     );
     RuntimeLog.instance.communication(
       source: 'TTS',
@@ -1274,13 +1293,16 @@ class DashScopeTtsClient {
         },
       },
     };
-    final response = await _client.post(
-      uri,
-      headers: {
-        'Authorization': 'Bearer $apiKey',
-        'Content-Type': 'application/json',
-      },
-      body: jsonEncode(requestBody),
+    final response = await withAiRequestRetries<http.Response>(
+      () => _client.post(
+        uri,
+        headers: {
+          'Authorization': 'Bearer $apiKey',
+          'Content-Type': 'application/json',
+        },
+        body: jsonEncode(requestBody),
+      ),
+      shouldRetryResult: (result) => isRetryableHttpStatus(result.statusCode),
     );
     RuntimeLog.instance.communication(
       source: 'TTS',
@@ -1310,7 +1332,10 @@ class DashScopeTtsClient {
     if (url == null || url.isEmpty) {
       throw const AiServiceException('百炼 Qwen-TTS 响应中没有音频 URL');
     }
-    final audioResponse = await _client.get(Uri.parse(url));
+    final audioResponse = await withAiRequestRetries<http.Response>(
+      () => _client.get(Uri.parse(url)),
+      shouldRetryResult: (result) => isRetryableHttpStatus(result.statusCode),
+    );
     if (audioResponse.statusCode < 200 || audioResponse.statusCode >= 300) {
       throw AiServiceException('百炼音频下载失败 (${audioResponse.statusCode})');
     }
@@ -1361,20 +1386,24 @@ class GenericTtsClient {
     final endpoint = normalized.endsWith('/audio/speech')
         ? normalized
         : '$normalized/audio/speech';
-    final response = await _client.post(
-      Uri.parse(endpoint),
-      headers: {
-        'Authorization': 'Bearer $apiKey',
-        'Content-Type': 'application/json',
-      },
-      body: jsonEncode({
-        'model': model,
-        'input': text,
-        'voice': voice,
-        'response_format': format,
-        'speed': speed.clamp(0.5, 2.0),
-        if (instructions.trim().isNotEmpty) 'instructions': instructions.trim(),
-      }),
+    final response = await withAiRequestRetries<http.Response>(
+      () => _client.post(
+        Uri.parse(endpoint),
+        headers: {
+          'Authorization': 'Bearer $apiKey',
+          'Content-Type': 'application/json',
+        },
+        body: jsonEncode({
+          'model': model,
+          'input': text,
+          'voice': voice,
+          'response_format': format,
+          'speed': speed.clamp(0.5, 2.0),
+          if (instructions.trim().isNotEmpty)
+            'instructions': instructions.trim(),
+        }),
+      ),
+      shouldRetryResult: (result) => isRetryableHttpStatus(result.statusCode),
     );
     RuntimeLog.instance.communication(
       source: 'TTS',

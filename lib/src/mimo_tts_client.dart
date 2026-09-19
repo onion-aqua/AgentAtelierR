@@ -6,6 +6,7 @@ import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 
 import 'ai_services.dart' show AiServiceException;
+import 'retry_policy.dart';
 import 'app_controller.dart';
 import 'app_localization.dart';
 import 'mimo_tts_config.dart';
@@ -271,16 +272,19 @@ class MimoTtsClient {
       },
     );
     final started = DateTime.now();
-    final response = await _client
-        .post(
-          Uri.parse(endpoint),
-          headers: {
-            'Authorization': 'Bearer ${apiKey.trim()}',
-            'Content-Type': 'application/json',
-          },
-          body: jsonEncode(body),
-        )
-        .timeout(const Duration(seconds: 120));
+    final response = await withAiRequestRetries<http.Response>(
+      () => _client
+          .post(
+            Uri.parse(endpoint),
+            headers: {
+              'Authorization': 'Bearer ${apiKey.trim()}',
+              'Content-Type': 'application/json',
+            },
+            body: jsonEncode(body),
+          )
+          .timeout(const Duration(seconds: 120)),
+      shouldRetryResult: (result) => isRetryableHttpStatus(result.statusCode),
+    );
     Map<String, dynamic>? decoded;
     try {
       final value = jsonDecode(utf8.decode(response.bodyBytes));

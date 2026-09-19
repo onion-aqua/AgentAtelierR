@@ -2851,6 +2851,7 @@ class _UserProfileDialogState extends State<_UserProfileDialog> {
   late UserInteractionStyle _interactionStyle;
   late final TextEditingController _relationshipCustom;
   late final TextEditingController _interactionCustom;
+  late bool _preferCustom;
 
   @override
   void initState() {
@@ -2872,6 +2873,7 @@ class _UserProfileDialogState extends State<_UserProfileDialog> {
       'boundaries': _boundaries.text,
       'relationshipCustom': _relationshipCustom.text,
       'interactionCustom': _interactionCustom.text,
+      'preferCustom': _preferCustom.toString(),
     };
   }
 
@@ -2882,6 +2884,7 @@ class _UserProfileDialogState extends State<_UserProfileDialog> {
     _boundaries.text = entry['boundaries'] ?? '';
     _relationshipCustom.text = entry['relationshipCustom'] ?? '';
     _interactionCustom.text = entry['interactionCustom'] ?? '';
+    _preferCustom = entry['preferCustom'] == 'true';
     _relationshipRole = UserRelationshipRole.values.firstWhere(
       (v) => v.name == entry['relationshipRole'],
       orElse: () => UserRelationshipRole.familiarPartner,
@@ -3007,6 +3010,14 @@ class _UserProfileDialogState extends State<_UserProfileDialog> {
                 tilePadding: EdgeInsets.zero,
                 title: const Text('自定义关系与互动偏好（可选）'),
                 children: [
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    secondary: const Icon(Icons.priority_high_rounded),
+                    title: const Text('优先自定义'),
+                    subtitle: const Text('启用后，自定义关系定位和互动偏好覆盖上面的选项'),
+                    value: _preferCustom,
+                    onChanged: (value) => setState(() => _preferCustom = value),
+                  ),
                   TextField(
                     controller: _relationshipCustom,
                     decoration: const InputDecoration(
