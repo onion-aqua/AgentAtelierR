@@ -7,6 +7,15 @@ import 'package:ryza_chat_mvp/src/character_idle_behavior.dart';
 import 'package:ryza_chat_mvp/src/character_speech_driver.dart';
 
 void main() {
+  test('speech permits only explicitly weighted torso tracks', () {
+    expect(isSpeakingTorsoMotion('EH', 0.8), isTrue);
+    expect(isSpeakingTorsoMotion('E', 2.5), isTrue);
+    expect(isSpeakingTorsoMotion('FG', 2.5), isFalse);
+    expect(isSpeakingTorsoMotion('CEH', 2.5), isFalse);
+    expect(isSpeakingTorsoMotion('EH', 0), isFalse);
+    expect(isSpeakingTorsoMotion('EH', null), isFalse);
+    expect(isSpeakingTorsoMotion('EH', double.nan), isFalse);
+  });
   test('idle supplement preserves outfit choices and explicit empty bindings', () {
     final current = {
       'emotionalGesture': {

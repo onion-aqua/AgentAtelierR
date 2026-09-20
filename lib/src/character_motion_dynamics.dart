@@ -1,5 +1,12 @@
 import 'dart:math';
 
+/// Preserve authored easing and prevent distance-based estimates snapping
+/// between nearby poses. Also bound malformed imported resource durations.
+double smoothCharacterGestureMix(double estimated, double authored) {
+  final base = authored.isFinite ? authored.clamp(0.45, 1.2) : 0.6;
+  return estimated.isFinite ? max(base, estimated).clamp(0.45, 2.0) : base;
+}
+
 /// Transition policies adapted from zeroa234/ryza-ai-revive (MIT).
 /// See docs/animation_dynamics.md for provenance and runtime differences.
 class CharacterMotionTransitions {

@@ -908,6 +908,24 @@ class SettingsScreenState extends State<SettingsScreen> {
                         : language.text('未启用', 'Disabled', '無効'),
                   ),
                 ),
+                SwitchListTile(
+                  title: Text(
+                    language.text(
+                      '独立语音演出',
+                      'Independent voice performance',
+                      '独立音声演出',
+                    ),
+                  ),
+                  subtitle: Text(
+                    language.text(
+                      '单独规划语音情绪与停顿，改善上下句衔接。开启后每轮增加一次模型请求，可能增加等待时间和用量。两种模式均保留感情程度和句内演出密度设置。',
+                      'Plan voice emotions and pauses separately for smoother continuity. Adds one model request per turn and may increase latency and usage. Both modes retain emotion intensity and inline cue density settings.',
+                      '音声の感情と間を個別に計画し、台詞のつながりを改善します。有効時は毎ターンモデルへのリクエストが1回増え、待ち時間と使用量が増える場合があります。両モードで感情の強さと文中演出密度の設定を利用できます。',
+                    ),
+                  ),
+                  value: controller.independentSpeechPerformance,
+                  onChanged: controller.setIndependentSpeechPerformance,
+                ),
                 for (final provider in TtsProvider.values)
                   ListTile(
                     key: ValueKey('tts-settings-${provider.name}'),
@@ -1518,7 +1536,7 @@ class SettingsScreenState extends State<SettingsScreen> {
                       controller: asmrReferenceId,
                       decoration: const InputDecoration(
                         labelText: 'ASMR 模式 Voice model ID',
-                        helperText: '可选；仅在主页开启 ASMR 模式时使用并校验',
+                        helperText: '留空使用默认 ASMR 音色；仅在开启 ASMR 模式时使用',
                         border: OutlineInputBorder(),
                       ),
                     ),
@@ -1630,7 +1648,10 @@ class SettingsScreenState extends State<SettingsScreen> {
                         final referenceForTest =
                             switch (controller.ttsVoiceMode) {
                               TtsVoiceMode.normal => referenceId.text.trim(),
-                              TtsVoiceMode.asmr => asmrReferenceId.text.trim(),
+                              TtsVoiceMode.asmr =>
+                                AppController.resolveFishAudioAsmrReferenceId(
+                                  asmrReferenceId.text,
+                                ),
                             };
                         if (key.isEmpty || referenceForTest.isEmpty) {
                           setDialogState(

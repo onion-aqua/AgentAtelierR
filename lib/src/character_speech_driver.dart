@@ -292,10 +292,17 @@ class CharacterPerformanceDirector {
     // Idle motion should read as a living character's breathing and attention,
     // rather than a continuously animated puppet. Keep a visible but bounded
     // baseline so the character does not become a statue between interactions.
+    final modifiers =
+        (bandProfile['gaze'] as Map?)?['motionModifiers'] as Map? ?? {};
+    final authoredStrength = _number(
+      modifiers,
+      'strengthScale',
+      0.85,
+    ).clamp(0.0, 1.2);
     final targetStrength = suppressed
         ? 0.0
         : speaking
-        ? 0.85
+        ? authoredStrength
         : _usingBindings
         ? 0.8
         : 0.30;

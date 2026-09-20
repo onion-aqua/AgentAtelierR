@@ -695,11 +695,30 @@ class AppController extends ChangeNotifier {
   NpcInteractionFrequency npcInteractionFrequency =
       NpcInteractionFrequency.normal;
   bool fishTtsEnabled = false;
+  bool independentSpeechPerformance = true;
+
+  void setIndependentSpeechPerformance(bool value) {
+    if (independentSpeechPerformance == value) return;
+    independentSpeechPerformance = value;
+    _changed();
+  }
+
   TtsProvider ttsProvider = TtsProvider.fishAudio;
   String fishAudioModel = 's2-pro';
   String fishAudioBaseUrl = 'https://api.fish.audio/v1/tts';
   String fishAudioReferenceId = '';
-  String fishAudioAsmrReferenceId = '';
+  static const defaultFishAudioAsmrReferenceId =
+      'c5de0b3f9ac54e08b21fb63120e4ebdb';
+
+  static String resolveFishAudioAsmrReferenceId(String value) =>
+      value.trim().isEmpty ? defaultFishAudioAsmrReferenceId : value.trim();
+
+  String _fishAudioAsmrReferenceId = defaultFishAudioAsmrReferenceId;
+  String get fishAudioAsmrReferenceId => _fishAudioAsmrReferenceId;
+  set fishAudioAsmrReferenceId(String value) {
+    _fishAudioAsmrReferenceId = resolveFishAudioAsmrReferenceId(value);
+  }
+
   String fishAudioFormat = 'mp3';
   String fishAudioLatency = 'normal';
   double fishAudioSpeed = 1.0;
@@ -889,6 +908,8 @@ class AppController extends ChangeNotifier {
       orElse: () => NpcInteractionFrequency.normal,
     );
     fishTtsEnabled = _preferences.getBool('fish_tts_enabled') ?? false;
+    independentSpeechPerformance =
+        _preferences.getBool('independent_speech_performance') ?? true;
     ttsProvider = TtsProvider.values.firstWhere(
       (value) => value.name == _preferences.getString('tts_provider'),
       orElse: () => TtsProvider.fishAudio,
@@ -1322,7 +1343,8 @@ $npc
 ${candidates.isNotEmpty ? npcInteractionFrequency.promptInstruction : ''}
 ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆时调用 search_memory，不编造未返回的记忆。' : _promptDataBlock('memory', memory)) : ''}
 ${asmrModeEnabled ? '当前是ASMR轻声交谈，语气亲近、柔和。' : ''}
-语音情绪按语义自然延续，允许少量情绪语音标签；不要输出表情或动作标签。不输出分析过程。遵守服务商政策。''';
+${independentSpeechPerformance || !fishTtsEnabled ? '只输出台词和旁白正文，不输出任何语音情绪、停顿、表情或动作标签；语音演出和肢体表演由独立模块处理。' : '传统语音演出模式：仅为莱莎台词添加与语义一致的情绪标签（如[happy]、[sad]、[relaxed]）及必要的句内[emphasis]、[short pause]；上下句情绪自然衔接。${ttsEmotionIntensity.voiceInstruction} ${ttsCueDensity.promptInstruction} ${ttsEmotionIntensity == TtsEmotionIntensity.off ? "不要添加情绪标签。" : ""} ${asmrModeEnabled ? "优先使用[breathy]、[whispering]、[soft breathy voice]表达轻声气声。" : ""} 旁白和NPC不带语音标签，不输出face/action/posture标签，肢体表演仍由独立模块处理。'}
+不输出分析过程。遵守服务商政策。''';
     }
     // A stale appearance snapshot must not advertise actions for a new model.
     // Posture/revision freshness is owned by the caller and playback queue.
@@ -2471,6 +2493,7 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
       'llmContextCompatibility': llmContextCompatibility,
       'npcInteractionFrequency': npcInteractionFrequency.name,
       'fishTtsEnabled': fishTtsEnabled,
+      'independentSpeechPerformance': independentSpeechPerformance,
       'ttsProvider': ttsProvider.name,
       'fishAudioModel': fishAudioModel,
       'fishAudioBaseUrl': fishAudioBaseUrl,
@@ -2905,6 +2928,8 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
       orElse: () => NpcInteractionFrequency.normal,
     );
     fishTtsEnabled = preferences['fishTtsEnabled'] as bool? ?? false;
+    independentSpeechPerformance =
+        preferences['independentSpeechPerformance'] as bool? ?? true;
     ttsProvider = TtsProvider.values.firstWhere(
       (value) => value.name == preferences['ttsProvider'],
       orElse: () => TtsProvider.fishAudio,
@@ -3817,6 +3842,10 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
         npcInteractionFrequency.name,
       ),
       _preferences.setBool('fish_tts_enabled', fishTtsEnabled),
+      _preferences.setBool(
+        'independent_speech_performance',
+        independentSpeechPerformance,
+      ),
       _preferences.setString('tts_provider', ttsProvider.name),
       _preferences.setString('fish_audio_model', fishAudioModel),
       _preferences.setString('fish_audio_base_url', fishAudioBaseUrl),

@@ -86,6 +86,8 @@ const _deliveryCues = {
   'pause',
   'short pause',
 };
+Set<String> get speechDeliveryTags => Set.unmodifiable(_deliveryCues);
+Set<String> get speechEmotionTags => Set.unmodifiable(_fishEmotionCues);
 const _fishEmotionCues = {
   'relaxed',
   'happy',

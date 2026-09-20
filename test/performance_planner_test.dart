@@ -5,6 +5,34 @@ import 'package:ryza_chat_mvp/src/performance_planner.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+  test(
+    'voice planning toggle persists and restores traditional voice prompt',
+    () async {
+      SharedPreferences.setMockInitialValues({});
+      final controller = await AppController.load();
+      expect(controller.independentSpeechPerformance, isTrue);
+      controller.fishTtsEnabled = true;
+      expect(
+        controller.buildCharacterPrompt(independentPerformance: true),
+        contains('不输出任何语音情绪'),
+      );
+      controller.setIndependentSpeechPerformance(false);
+      expect(
+        controller.buildCharacterPrompt(independentPerformance: true),
+        contains('传统语音演出模式'),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 600));
+      final restored = await AppController.load();
+      expect(restored.independentSpeechPerformance, isFalse);
+      expect(
+        (restored.exportData()['preferences']
+            as Map)['independentSpeechPerformance'],
+        isFalse,
+      );
+      controller.dispose();
+      restored.dispose();
+    },
+  );
   final capabilities = CharacterPerformancePromptContext(
     appearanceId: 'test',
     posture: 'sitting_normal',

@@ -1523,6 +1523,17 @@ void main() {
       );
 
       controller.setAsmrModeEnabled(true);
+      expect(controller.asmrModeEnabled, isTrue);
+      expect(
+        controller.activeFishAudioReferenceId,
+        AppController.defaultFishAudioAsmrReferenceId,
+      );
+      controller.fishAudioAsmrReferenceId = '  ';
+      expect(
+        controller.fishAudioAsmrReferenceId,
+        AppController.defaultFishAudioAsmrReferenceId,
+      );
+      controller.setAsmrModeEnabled(false);
       expect(controller.asmrModeEnabled, isFalse);
       expect(controller.activeFishAudioReferenceId, 'normal-fish-voice');
       expect(controller.buildCharacterPrompt(), contains('当前未开启 ASMR 模式'));
@@ -1609,10 +1620,7 @@ void main() {
       expect(prompt, contains('翻译由应用的独立翻译模块完成'));
       expect(prompt, contains('"narratorBodyLanguage":"English"'));
       expect(prompt, contains('"ryzaSpeechLanguage":"Japanese"'));
-      expect(
-        prompt,
-        contains('"translationLanguage":"DISABLED"'),
-      );
+      expect(prompt, contains('"translationLanguage":"DISABLED"'));
       final demoReply = restored.demoReply('Hello');
       expect(demoReply, contains('旁白：(Ryza puts down'));
       expect(demoReply, contains('莱莎：[curious][face:happy]'));

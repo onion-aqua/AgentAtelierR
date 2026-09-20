@@ -2,6 +2,13 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:ryza_chat_mvp/src/character_motion_dynamics.dart';
 
 void main() {
+  test('gesture transitions retain authored easing and bound invalid data', () {
+    expect(smoothCharacterGestureMix(0.12, 0.6), 0.6);
+    expect(smoothCharacterGestureMix(0.9, 0.6), 0.9);
+    expect(smoothCharacterGestureMix(0, 0), 0.45);
+    expect(smoothCharacterGestureMix(double.nan, double.nan), 0.6);
+    expect(smoothCharacterGestureMix(100, 100), 2);
+  });
   test(
     'pose distance chooses a longer mix for large moves, ignoring controls',
     () {

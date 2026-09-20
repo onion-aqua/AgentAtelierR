@@ -14,6 +14,7 @@ import 'package:spine_flutter/spine_flutter.dart' hide Color;
 import 'ai_services.dart';
 import 'auxiliary_llm_tasks.dart';
 import 'performance_planner.dart';
+import 'speech_planner.dart';
 import 'app_controller.dart';
 import 'app_theme.dart';
 import 'app_localization.dart';
@@ -280,6 +281,7 @@ class _ChatScreenState extends State<ChatScreen> {
   bool _memoryRefreshRunning = false;
   Future<void> Function()? _pendingMemoryRefresh;
   ChatMessage? _lastConsolidatedUser;
+  String _previousSpeechEmotion = 'relaxed';
   int _suggestionGeneration = 0;
   late int _observedDataRevision;
   int? _activeAssistantSegmentIndex;
@@ -446,6 +448,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
   void _resetConversationWorkForDataReplacement() {
     _lastConsolidatedUser = null;
+    _previousSpeechEmotion = 'relaxed';
     _pendingMemoryRefresh = null;
     _replyGeneration += 1;
     _memoryRefreshGeneration += 1;
@@ -835,13 +838,15 @@ class _ChatScreenState extends State<ChatScreen> {
 
     // Alpha, speed and blend duration are authored together in the gesture.
     // Easing the constant alpha would amplify it, not smooth it over time.
-    final blend =
-        _resourceBehavior.transitions?.groupMix(
-          _activeMotionGroupId,
-          group.id,
-          fallback: group.blendTime,
-        ) ??
-        max(0.28, group.blendTime);
+    final blend = smoothCharacterGestureMix(
+      _resourceBehavior.transitions?.groupMix(
+            _activeMotionGroupId,
+            group.id,
+            fallback: group.blendTime,
+          ) ??
+          group.blendTime,
+      group.blendTime,
+    );
     // Replace shared tracks directly: inserting an empty clip first blends
     // through setup pose and can produce hand jumps during rapid switching.
     _resetMotionOverlays(mixDuration: blend, replacingTracks: tracks);
@@ -881,13 +886,15 @@ class _ChatScreenState extends State<ChatScreen> {
     }
     longestEntry?.setListener((type, _, _) {
       if (type != EventType.complete || generation != _motionGeneration) return;
-      final release =
-          _resourceBehavior.transitions?.groupMix(
-            group.id,
-            null,
-            fallback: group.blendTime,
-          ) ??
-          max(0.3, group.blendTime);
+      final release = smoothCharacterGestureMix(
+        _resourceBehavior.transitions?.groupMix(
+              group.id,
+              null,
+              fallback: group.blendTime,
+            ) ??
+            group.blendTime,
+        group.blendTime,
+      );
       _resetMotionOverlays(mixDuration: release);
       _motionBusyUntil = DateTime.now().add(
         Duration(milliseconds: (release * 1000).ceil()),
@@ -1293,6 +1300,26 @@ class _ChatScreenState extends State<ChatScreen> {
     );
     for (final entry in parts.entries) {
       if (_tapReactionActive) break;
+      // Automatic gaze uses the same visible eyeball joints as pointer gaze.
+      // Merely moving an aim marker may not drive the eyes in every skin.
+      if (entry.key == 'eye') {
+        var moved = false;
+        for (final side in ['L', 'R']) {
+          final eye = controller.skeleton.findBone('eyeball_$side');
+          final parent = eye?.getParent();
+          if (eye == null || parent == null) continue;
+          final a = parent.worldToLocal(eye.getWorldX(), eye.getWorldY());
+          final b = parent.worldToLocal(
+            eye.getWorldX() + entry.value.yaw * 28,
+            eye.getWorldY() + entry.value.pitch * 22,
+          );
+          eye
+            ..setX(eye.getX() + b.x - a.x)
+            ..setY(eye.getY() + b.y - a.y);
+          moved = true;
+        }
+        if (moved) continue;
+      }
       final aim = resolveOptionalRigBone(
         aimBones[entry.key] ??
             (entry.key == 'head' || entry.key == 'body' || entry.key == 'eye'
@@ -1316,14 +1343,14 @@ class _ChatScreenState extends State<ChatScreen> {
             },
         controller.skeleton.findBone,
       );
-      final rotationBone =
-          roll ??
-          (aim == null && entry.key == 'head'
-              ? controller.skeleton.findBone('head')
-              : null);
-      rotationBone?.setRotation(
-        rotationBone.getRotation() + entry.value.roll * 14,
-      );
+      if (roll != null) {
+        // Authored roll controls are IK targets, not rotating body joints.
+        final distance = entry.key == 'body' ? 64.0 : 40.0;
+        roll.setX(roll.getX() + entry.value.roll * distance);
+      } else if (aim == null && entry.key == 'head') {
+        final head = controller.skeleton.findBone('head');
+        head?.setRotation(head.getRotation() + entry.value.roll * 14);
+      }
     }
   }
 
@@ -1598,9 +1625,8 @@ class _ChatScreenState extends State<ChatScreen> {
   void _scheduleMicroMotion() {
     _microMotionTimer?.cancel();
     if (!_spineReady || !_appearance.animated) return;
-    // While talking, semantic actions own the gesture tracks. Audio peaks and
-    // fallback mouth pulses are not reasons to interrupt them with random arms.
-    if (_isCharacterSpeaking) return;
+    // Speech retains resource-authored torso beats. Explicit gestures keep
+    // priority; the speaking candidate filter below never selects random arms.
     final delay = _randomDuration(
       _resourceEmotion?.poseRerollIntervalMin ?? 5,
       _resourceEmotion?.poseRerollIntervalMax ?? 8,
@@ -1622,7 +1648,6 @@ class _ChatScreenState extends State<ChatScreen> {
 
   void _playAmbientMotion() {
     if (!_spineReady ||
-        _isCharacterSpeaking ||
         _motionBusy ||
         _tapReactionActive ||
         _motionGroups.isEmpty) {
@@ -1654,6 +1679,8 @@ class _ChatScreenState extends State<ChatScreen> {
         .where(
           (group) =>
               _isPromptPlayableMotionGroup(group) &&
+              (!_isCharacterSpeaking ||
+                  isSpeakingTorsoMotion(group.occupancy, torso?[group.id])) &&
               (idleWeights[group.id] ??
                       group.weightFor(_currentExpression, poseType: poseType)) >
                   0,
@@ -1666,7 +1693,8 @@ class _ChatScreenState extends State<ChatScreen> {
       pose: _currentIdleAnimation,
       recentGroupIds: _recentAmbientGroupIds.toSet(),
       random: _random,
-      allowLargePostureChanges: !_resourceBehavior.fixedBasePoseMode,
+      allowLargePostureChanges:
+          !_isCharacterSpeaking && !_resourceBehavior.fixedBasePoseMode,
       authoredOnly: true,
       sittingId: _sittingId,
       poseType: poseType,
@@ -2250,6 +2278,19 @@ class _ChatScreenState extends State<ChatScreen> {
         );
       }
       final capabilities = _buildPerformancePromptContext();
+      // Independent of animation planning: run concurrently, never expose
+      // the voice tag catalogue to the roleplay request.
+      final speechPlanning = _planSpeechForReply(
+        reply,
+        (messages) => _aiClient.complete(
+          provider: requestProvider,
+          baseUrl: requestBaseUrl,
+          apiKey: apiKey,
+          model: requestModel,
+          lightweight: true,
+          messages: messages,
+        ),
+      );
       var performanceText = PerformancePlanner.withoutControls(reply);
       Map<String, dynamic>? stateProposal;
       final stateRevision = widget.controller.dataRevision;
@@ -2296,6 +2337,16 @@ class _ChatScreenState extends State<ChatScreen> {
           stateProposal!,
           stateRevision,
         );
+      }
+      final speechPlan = await speechPlanning;
+      if (!mounted || generation != _replyGeneration) return;
+      if (speechPlan != null) {
+        try {
+          performanceText = speechPlan.apply(performanceText);
+          _previousSpeechEmotion = speechPlan.lastEmotion;
+        } on FormatException catch (error) {
+          RuntimeLog.instance.warning('TTS', '语音规划与台词不匹配，回退本地规则：$error');
+        }
       }
       await _playTtsIfConfigured(performanceText, displaySource: reply);
       if (generation != _replyGeneration) return;
@@ -2491,6 +2542,42 @@ class _ChatScreenState extends State<ChatScreen> {
     _scrollToBottom();
   }
 
+  Future<SpeechPlan?> _planSpeechForReply(
+    String reply,
+    AuxiliaryCompletion complete,
+  ) async {
+    if (!widget.controller.fishTtsEnabled ||
+        !widget.controller.independentSpeechPerformance) {
+      return null;
+    }
+    final intensity = widget.controller.ttsEmotionIntensity;
+    final density = widget.controller.ttsCueDensity;
+    final asmr = widget.controller.asmrModeEnabled;
+    final previousEmotion = _previousSpeechEmotion;
+    try {
+      if ((await _secretStore.readTtsKey(widget.controller.ttsProvider))
+          .isEmpty) {
+        return null;
+      }
+      RuntimeLog.instance.info('TTS', '独立语音演出规划开始');
+      final plan = await SpeechPlanner()
+          .plan(
+            source: reply,
+            previousEmotion: previousEmotion,
+            intensity: intensity,
+            density: density,
+            asmr: asmr,
+            complete: complete,
+          )
+          .timeout(const Duration(seconds: 8));
+      RuntimeLog.instance.info('TTS', '独立语音演出规划完成：${plan.lines}');
+      return plan;
+    } on Object catch (error) {
+      RuntimeLog.instance.warning('TTS', '语音演出规划失败，回退本地规则：$error');
+      return null;
+    }
+  }
+
   Future<void> _playTtsIfConfigured(
     String text, {
     String? displaySource,
@@ -2668,8 +2755,20 @@ class _ChatScreenState extends State<ChatScreen> {
         ? 'mp3'
         : 'wav';
     final ttsText = compressRepeatedTtsPunctuation(segment.speechText);
-    final plainText = stripLeadingTtsCues(ttsText);
+    final plainText = displayTextForAssistantSegment(
+      ChatSegment(speaker: ChatSpeaker.ryza, text: ttsText),
+    );
     final emotionIntensity = widget.controller.ttsEmotionIntensity;
+    final plannedEmotion = RegExp(r'^\[([^\]]+)\]')
+        .firstMatch(ttsText)
+        ?.group(1);
+    final voiceDirection = [
+      if (emotionIntensity != TtsEmotionIntensity.off &&
+          speechEmotionTags.contains(plannedEmotion))
+        'Express $plannedEmotion naturally; preserve continuity with the preceding sentence.',
+      if (widget.controller.asmrModeEnabled)
+        'Speak softly in a close, quiet voice.',
+    ].join(' ');
     final path = await switch (widget.controller.ttsProvider) {
       TtsProvider.fishAudio => _fishAudioClient.synthesize(
         apiKey: apiKey,
@@ -2698,7 +2797,8 @@ class _ChatScreenState extends State<ChatScreen> {
               'instruct',
             )
             ? mergeTtsInstructions(
-                widget.controller.dashScopeTtsInstructions,
+                '${widget.controller.dashScopeTtsInstructions} $voiceDirection'
+                    .trim(),
                 emotionIntensity,
               )
             : widget.controller.dashScopeTtsInstructions,
@@ -2715,7 +2815,8 @@ class _ChatScreenState extends State<ChatScreen> {
             widget.controller.genericTtsModel.toLowerCase().contains(
               'gpt-4o-mini-tts',
             )
-            ? ttsEmotionInstruction(emotionIntensity)
+            ? '${ttsEmotionInstruction(emotionIntensity)} $voiceDirection'
+                  .trim()
             : '',
         text: plainText,
       ),

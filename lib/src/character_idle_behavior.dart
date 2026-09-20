@@ -1,6 +1,15 @@
 import 'dart:convert';
 import 'dart:math';
 
+/// Speaking may reuse authored torso beats, but must not invent arm/leg gestures
+/// or ignore a pose-specific zero weight.
+bool isSpeakingTorsoMotion(String occupancy, double? authoredWeight) =>
+    occupancy.isNotEmpty &&
+    occupancy.split('').every((part) => part == 'E' || part == 'H') &&
+    authoredWeight != null &&
+    authoredWeight.isFinite &&
+    authoredWeight > 0;
+
 /// New resources scope torso motion to the current base pose type. An empty
 /// authored map disables motion; only a missing map uses the legacy schema.
 Map<String, double>? idleTorsoWeights(
