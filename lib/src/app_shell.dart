@@ -69,6 +69,7 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
   bool _menuOpen = false;
   bool _chatUiHidden = false;
   bool _alwaysOnTop = false;
+  bool _borderless = false;
   final Set<int> _activePointers = <int>{};
 
   @override
@@ -238,55 +239,62 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
           },
           child: Scaffold(
             key: _scaffoldKey,
-            body: Listener(
-              behavior: HitTestBehavior.translucent,
-              onPointerDown: _handlePointerDown,
-              onPointerUp: _handlePointerEnd,
-              onPointerCancel: _handlePointerEnd,
-              child: Stack(
-                children: [
-                  content,
-                  if (!_chatUiHidden)
-                    Positioned(
-                      left: 16,
-                      top: safeTop + 8,
-                      child: GlassIconButton(
-                        liquidGlass: widget.controller.liquidGlassChatUi,
-                        size: 48,
-                        icon: _menuOpen
-                            ? Icons.close_rounded
-                            : Icons.menu_rounded,
-                        tooltip: widget.controller.interfaceLanguage.text(
-                          _menuOpen ? '关闭菜单' : '打开菜单',
-                          _menuOpen ? 'Close menu' : 'Open menu',
-                          _menuOpen ? 'メニューを閉じる' : 'メニューを開く',
-                        ),
-                        onPressed: _openMenu,
-                      ),
+            body: Column(
+              children: [
+                if (Platform.isWindows && _borderless) _buildWindowControls(),
+                Expanded(
+                  child: Listener(
+                    behavior: HitTestBehavior.translucent,
+                    onPointerDown: _handlePointerDown,
+                    onPointerUp: _handlePointerEnd,
+                    onPointerCancel: _handlePointerEnd,
+                    child: Stack(
+                      children: [
+                        content,
+                        if (!_chatUiHidden)
+                          Positioned(
+                            left: 16,
+                            top: safeTop + 8,
+                            child: GlassIconButton(
+                              liquidGlass: widget.controller.liquidGlassChatUi,
+                              size: 48,
+                              icon: _menuOpen
+                                  ? Icons.close_rounded
+                                  : Icons.menu_rounded,
+                              tooltip: widget.controller.interfaceLanguage.text(
+                                _menuOpen ? '关闭菜单' : '打开菜单',
+                                _menuOpen ? 'Close menu' : 'Open menu',
+                                _menuOpen ? 'メニューを閉じる' : 'メニューを開く',
+                              ),
+                              onPressed: _openMenu,
+                            ),
+                          ),
+                        if (_destination == AppDestination.chat)
+                          Positioned(
+                            left: 72,
+                            top: safeTop + 8,
+                            child: GlassIconButton(
+                              liquidGlass: widget.controller.liquidGlassChatUi,
+                              size: 48,
+                              icon: _chatUiHidden
+                                  ? Icons.visibility_rounded
+                                  : Icons.visibility_off_rounded,
+                              tooltip: widget.controller.interfaceLanguage.text(
+                                _chatUiHidden ? '恢复界面' : '隐藏界面',
+                                _chatUiHidden
+                                    ? 'Restore interface'
+                                    : 'Hide interface',
+                                _chatUiHidden ? 'UIを表示' : 'UIを隠す',
+                              ),
+                              onPressed: _toggleChatUiVisibility,
+                            ),
+                          ),
+                        _buildFoldMenu(),
+                      ],
                     ),
-                  if (_destination == AppDestination.chat)
-                    Positioned(
-                      left: 72,
-                      top: safeTop + 8,
-                      child: GlassIconButton(
-                        liquidGlass: widget.controller.liquidGlassChatUi,
-                        size: 48,
-                        icon: _chatUiHidden
-                            ? Icons.visibility_rounded
-                            : Icons.visibility_off_rounded,
-                        tooltip: widget.controller.interfaceLanguage.text(
-                          _chatUiHidden ? '恢复界面' : '隐藏界面',
-                          _chatUiHidden
-                              ? 'Restore interface'
-                              : 'Hide interface',
-                          _chatUiHidden ? 'UIを表示' : 'UIを隠す',
-                        ),
-                        onPressed: _toggleChatUiVisibility,
-                      ),
-                    ),
-                  _buildFoldMenu(),
-                ],
-              ),
+                  ),
+                ),
+              ],
             ),
           ),
         );
@@ -306,6 +314,65 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
     }
   }
 
+  Future<void> _windowCommand(String method, [Object? argument]) async {
+    try {
+      await const MethodChannel('agentatelier/window')
+          .invokeMethod<void>(method, argument);
+      if (mounted && method == 'setBorderless') {
+        setState(() => _borderless = argument as bool);
+      }
+    } on PlatformException catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(error.message ?? error.code)));
+      }
+    }
+  }
+
+  Widget _buildWindowControls() {
+    final language = widget.controller.interfaceLanguage;
+    return SizedBox(
+      height: 32,
+      child: Row(
+        children: [
+          Expanded(
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onPanStart: (_) => _windowCommand('startDrag'),
+              child: const Center(
+                child: Text('AgentAtelierR', style: TextStyle(fontSize: 12)),
+              ),
+            ),
+          ),
+          IconButton(
+            iconSize: 16,
+            tooltip: language.text('调整大小', 'Resize', 'サイズ変更'),
+            onPressed: () => _windowCommand('startResize'),
+            icon: const Icon(Icons.open_in_full),
+          ),
+          IconButton(
+            iconSize: 16,
+            tooltip: language.text('恢复窗口边框', 'Restore frame', 'ウィンドウ枠を戻す'),
+            onPressed: () => _windowCommand('setBorderless', false),
+            icon: const Icon(Icons.web_asset),
+          ),
+          IconButton(
+            iconSize: 16,
+            tooltip: language.text('最小化', 'Minimize', '最小化'),
+            onPressed: () => _windowCommand('minimize'),
+            icon: const Icon(Icons.remove),
+          ),
+          IconButton(
+            iconSize: 16,
+            tooltip: language.text('关闭', 'Close', '閉じる'),
+            onPressed: () => _windowCommand('close'),
+            icon: const Icon(Icons.close),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildFoldMenu() {
     final language = widget.controller.interfaceLanguage;
     final liquidGlass = widget.controller.liquidGlassChatUi;
@@ -318,6 +385,18 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
           fromRight: false,
           expanded: _menuOpen && !_chatUiHidden,
           children: [
+            if (Platform.isWindows)
+              GlassIconButton(
+                liquidGlass: liquidGlass,
+                size: 48,
+                icon: _borderless ? Icons.web_asset : Icons.web_asset_off,
+                tooltip: language.text(
+                  '切换无边框窗口',
+                  'Toggle borderless window',
+                  'ウィンドウ枠の切替',
+                ),
+                onPressed: () => _windowCommand('setBorderless', !_borderless),
+              ),
             if (Platform.isWindows)
               GlassIconButton(
                 liquidGlass: liquidGlass,

@@ -188,6 +188,7 @@ class OpenAiCompatibleClient {
       _inspectAlchemyInventoryTool,
       _gatherCurrentLocationTool,
       _synthesizeCustomItemTool,
+      _consumeInventoryItemTool,
       _inspectMapLocationsTool,
       _travelToStageTool,
     ],
@@ -512,6 +513,7 @@ class OpenAiCompatibleClient {
         'inspect_alchemy_inventory' ||
         'gather_current_location' ||
         'synthesize_custom_item' ||
+        'consume_inventory_item' ||
         'inspect_map_locations' ||
         'travel_to_stage' =>
           contextToolExecutor == null
@@ -732,6 +734,23 @@ class OpenAiCompatibleClient {
     },
   };
 
+  static const Map<String, dynamic> _consumeInventoryItemTool = {
+    'type': 'function',
+    'function': {
+      'name': 'consume_inventory_item',
+      'description': '用户明确要求使用、吃掉、赠送或消耗背包物品时调用。先查询库存获取真实实例 ID；只查看或拿在手中不扣除。合成已自动扣料，不得再次调用此工具扣同一批素材。不得未经用户同意丢弃物品。',
+      'parameters': {
+        'type': 'object',
+        'properties': {
+          'instance_id': {'type': 'string'},
+          'quantity': {'type': 'integer', 'minimum': 1},
+        },
+        'required': ['instance_id', 'quantity'],
+        'additionalProperties': false,
+      },
+    },
+  };
+
   static const Map<String, dynamic> _synthesizeCustomItemTool = {
     'type': 'function',
     'function': {
@@ -903,6 +922,7 @@ class OpenAiCompatibleClient {
     required String model,
     required List<Map<String, String>> messages,
     LlmProvider provider = LlmProvider.openAiCompatible,
+    bool lightweight = false,
   }) async {
     if (provider == LlmProvider.gemini) {
       return _geminiChat(
@@ -911,25 +931,38 @@ class OpenAiCompatibleClient {
         model,
         messages.map((m) => Map<String, dynamic>.from(m)).toList(),
         false,
+        thinkingEnabled: lightweight ? false : null,
+        reasoningEffort: lightweight ? 'low' : null,
       ).join();
     }
     final started = DateTime.now();
     final url = _endpoint(baseUrl, 'chat/completions');
-    final requestBody = {'model': model, 'stream': false, 'messages': messages};
-    final response = await withAiRequestRetries<http.Response>(
-      () => _client.post(
-        url,
-        headers: _openAiHeaders(apiKey),
-        body: jsonEncode(requestBody),
-      ),
-      shouldRetryResult: (result) => isRetryableHttpStatus(result.statusCode),
-    );
+    final requestBody = <String, dynamic>{
+      'model': model,
+      'stream': false,
+      'messages': messages,
+      if (lightweight)
+        ...identifyModelThinking(
+          model,
+          baseUrl: baseUrl,
+        ).requestFields(enabled: false, effort: 'low'),
+    };
     RuntimeLog.instance.communication(
       source: 'LLM',
       direction: 'request',
       method: 'POST',
       url: url.toString(),
       payload: _loggedRequest(requestBody, stream: false),
+    );
+    final response = await withAiRequestRetries<http.Response>(
+      () => _client
+          .post(
+            url,
+            headers: _openAiHeaders(apiKey),
+            body: jsonEncode(requestBody),
+          )
+          .timeout(const Duration(seconds: 90)),
+      shouldRetryResult: (result) => isRetryableHttpStatus(result.statusCode),
     );
     RuntimeLog.instance.communication(
       source: 'LLM',
@@ -942,7 +975,7 @@ class OpenAiCompatibleClient {
     );
     if (response.statusCode < 200 || response.statusCode >= 300) {
       throw AiServiceException(
-        '记忆整理失败 (${response.statusCode})${_serverMessage(response.body)}',
+        '辅助模型请求失败 (${response.statusCode})${_serverMessage(response.body)}',
       );
     }
     final decoded = jsonDecode(response.body) as Map<String, dynamic>;

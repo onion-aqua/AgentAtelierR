@@ -8,6 +8,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'app_localization.dart';
 import 'app_theme.dart';
 import 'alchemy_models.dart';
+import 'character_state.dart';
 import 'attachment_thumbnail_store.dart';
 import 'character_catalog.dart';
 import 'character_appearance.dart';
@@ -254,10 +255,12 @@ class ChatMessage {
     required this.text,
     required this.isUser,
     this.attachments = const [],
+    this.translatedText,
   });
 
   factory ChatMessage.fromJson(Map<String, dynamic> json) => ChatMessage(
     text: json['text'] as String? ?? '',
+    translatedText: json['translatedText'] as String?,
     isUser: json['isUser'] as bool? ?? false,
     attachments: (json['attachments'] as List<dynamic>? ?? const [])
         .whereType<Map<String, dynamic>>()
@@ -266,11 +269,14 @@ class ChatMessage {
   );
 
   final String text;
+  final String? translatedText;
+  String get displayText => translatedText ?? text;
   final bool isUser;
   final List<ChatAttachment> attachments;
 
   Map<String, dynamic> toJson({bool includeAttachmentThumbnails = false}) => {
     'text': text,
+    if (translatedText != null) 'translatedText': translatedText,
     'isUser': isUser,
     if (attachments.isNotEmpty)
       'attachments': attachments
@@ -282,12 +288,17 @@ class ChatMessage {
           .toList(),
   };
 
-  ChatMessage copyWith({String? text, List<ChatAttachment>? attachments}) =>
-      ChatMessage(
-        text: text ?? this.text,
-        isUser: isUser,
-        attachments: attachments ?? this.attachments,
-      );
+  ChatMessage copyWith({
+    String? text,
+    List<ChatAttachment>? attachments,
+    String? translatedText,
+  }) => ChatMessage(
+    text: text ?? this.text,
+    translatedText:
+        translatedText ?? (text == null ? this.translatedText : null),
+    isUser: isUser,
+    attachments: attachments ?? this.attachments,
+  );
 }
 
 class LocalSaveSlot {
@@ -525,6 +536,19 @@ class AppController extends ChangeNotifier {
   int _dataRevision = 0;
 
   int get dataRevision => _dataRevision;
+  CharacterState characterState = CharacterState();
+  bool settleCharacterState(
+    String turn,
+    Map<String, dynamic> proposal,
+    int expectedRevision,
+  ) {
+    if (expectedRevision != dataRevision) return false;
+    final next = characterState.apply(turn, proposal);
+    if (identical(next, characterState)) return false;
+    characterState = next;
+    _changed();
+    return true;
+  }
 
   List<ChatMessage> messages = [_initialMessage];
   SceneTime sceneTime = sceneTimeForNow();
@@ -695,6 +719,13 @@ class AppController extends ChangeNotifier {
 
   // Kept as a compatibility view for older callers and local backups.
   bool get asmrModeEnabled => ttsVoiceMode != TtsVoiceMode.normal;
+  bool splitNarrationComposer = false;
+  void setSplitNarrationComposer(bool value) {
+    if (splitNarrationComposer == value) return;
+    splitNarrationComposer = value;
+    _changed();
+  }
+
   TtsEmotionIntensity ttsEmotionIntensity = TtsEmotionIntensity.natural;
   TtsCueDensity ttsCueDensity = TtsCueDensity.normal;
   String ttsPreviewText = '你好！今天也一起去寻找有趣的炼金素材吧！';
@@ -931,6 +962,15 @@ class AppController extends ChangeNotifier {
     longTermMemoryEnabled =
         _preferences.getBool('long_term_memory_enabled') ?? true;
     memorySummary = _preferences.getString('memory_summary') ?? '';
+    splitNarrationComposer =
+        _preferences.getBool('split_narration_composer') ?? false;
+    try {
+      characterState = CharacterState.fromJson(
+        jsonDecode(_preferences.getString('character_state_v1') ?? '{}'),
+      );
+    } on FormatException {
+      characterState = CharacterState();
+    }
     suggestionUseTimes =
         (_preferences.getStringList('suggestion_use_times') ?? const [])
             .map(DateTime.tryParse)
@@ -1028,7 +1068,10 @@ class AppController extends ChangeNotifier {
     sceneChangeCount = _preferences.getInt('scene_change_count') ?? 0;
     gatherCount = _preferences.getInt('gather_count') ?? 0;
     synthesisCount =
-        _preferences.getInt('synthesis_count') ?? alchemyState.history.length;
+        _preferences.getInt('synthesis_count') ??
+        alchemyState.history
+            .where((entry) => entry.recipeId != 'custom_failed')
+            .length;
     storyQuestIndex = (_preferences.getInt('story_quest_index') ?? 0).clamp(
       0,
       builtInStoryQuests.length,
@@ -1090,6 +1133,14 @@ class AppController extends ChangeNotifier {
     messages.add(ChatMessage(text: text, isUser: false));
     if (messages.length > 60) messages.removeRange(0, messages.length - 60);
     _changed();
+  }
+
+  bool attachTranslation(ChatMessage original, String translated) {
+    final index = messages.indexOf(original);
+    if (index < 0 || original.isUser) return false;
+    messages[index] = original.copyWith(translatedText: translated);
+    _changed();
+    return true;
   }
 
   ChatMessage? undoLastUserTurn() {
@@ -1190,6 +1241,8 @@ class AppController extends ChangeNotifier {
           '确定采集时，先根据当前地点和对话判断本次发现的 1 至 3 种合理素材，再随 gather_current_location 的 discoveries 提交；'
           '素材不受内置清单限制，但数量与品质由本地系统决定。准备调合时先调用 inspect_alchemy_inventory，'
           '再由莱莎从返回的真实实例 ID 中选材并调用 synthesize_custom_item。'
+          '合成成功率由本地按素材品质与调和剂计算（60%至95%），失败也消耗投入素材，仅得到残渣；必须根据工具的 success 字段叙述，失败不得自动重试。'
+          '用户要求实际使用、吃掉或赠送物品时调用 consume_inventory_item 扣除，合成材料由合成工具自动扣除，不要重复扣料。只拿起查看不消耗。'
           '采集物和成品的名称、描述、分类与调合结果叙述必须使用当前界面语言 ${interfaceLanguage.promptLabel}；'
           '不要跟随莱莎回复语言或历史消息的语言。'
           '应用没有固定配方清单；每次都要根据用户需求、当前场景和素材性质自行决定成品名称、用途、分类、效果与选材。'
@@ -1209,6 +1262,7 @@ class AppController extends ChangeNotifier {
   String buildCharacterPrompt({
     String currentInput = '',
     CharacterPerformancePromptContext? performanceContext,
+    bool independentPerformance = false,
   }) {
     final memory = memoryPromptForCurrentConversation(
       currentInput: currentInput,
@@ -1217,6 +1271,9 @@ class AppController extends ChangeNotifier {
     final currentDate = _dateOnly(now);
     final alchemyPrompt = _alchemyPromptFor(currentInput);
     final userProfile = jsonEncode({
+      '莱莎当前状态': characterState.summary(interfaceLanguage),
+      '短期情绪': characterState.emotion,
+      '状态变化原因': characterState.reason,
       '称呼': userAddress,
       '自画像': userPortrait.trim().isEmpty ? '未设置' : userPortrait.trim(),
       '关系定位': !preferCustomUserProfile || userRelationshipCustom.trim().isEmpty
@@ -1229,14 +1286,11 @@ class AppController extends ChangeNotifier {
           ? '未设置'
           : userInteractionBoundaries.trim(),
     });
-    final translationRule = translationLanguage == TranslationLanguage.none
-        ? '不要输出译文行。'
-        : '每条“莱莎：”或“角色[角色ID]：”台词后都紧跟一条“译文：”，只将紧邻的上一条角色台词翻译为'
-              '${translationLanguage.promptLabel}；不得遗漏其他角色的译文，译文不得添加信息、标签或旁白。';
+    const translationRule = '不要输出译文行。翻译由应用的独立翻译模块完成，你只输出原文台词、旁白和表演标签。';
     final languageContract = jsonEncode({
       'narratorBodyLanguage': narratorLanguage.promptLabel,
       'ryzaSpeechLanguage': characterReplyLanguage.promptLabel,
-      'translationLanguage': translationLanguage.promptLabel ?? 'DISABLED',
+      'translationLanguage': 'DISABLED',
     });
     final appearance = characterAppearanceById(selectedCharacterAppearanceId);
     final candidates = characterCatalog.encountersFor(selectedStageId);
@@ -1252,6 +1306,24 @@ class AppController extends ChangeNotifier {
               6000,
             ),
           );
+    if (independentPerformance) {
+      return '''你扮演莱莎，自然回应用户，不代替用户行动，不编造未知事实。
+每个非空行以“旁白：”“莱莎：”或“角色[角色ID]：”开头。优先写一条简短旁白，随后角色台词。不要输出译文、face/action/posture控制标签或资源编号，表演由独立模块处理。
+角色台词使用 ${characterReplyLanguage.promptLabel}，旁白使用 ${narratorLanguage.promptLabel}，不随历史或用户输入语言改变。
+当前姿态：${performanceContext?.posture ?? '未知'}。动作描述保持合理，不承诺复杂或不可能的身体动作。
+${characterPersonaInjectionEnabled ? _promptDataBlock('persona', characterPersona.isEmpty ? compactCharacterPersona : _boundedPromptText(characterPersona, llmContextCompatibility ? 900 : 4000)) : '人物设定注入已关闭。'}
+${worldSettingInjectionEnabled ? _promptDataBlock('world', _boundedPromptText(editableWorldSetting, llmContextCompatibility ? 700 : 4000)) : '世界书注入已关闭。'}
+用户资料：$userProfile
+服装：${appearance.label}。${appearance.promptDescription}
+本地日期：$currentDate；位置：$selectedAreaName / $selectedStageId / $selectedStageName。
+${_storyQuestPrompt()}
+$alchemyPrompt
+$npc
+${candidates.isNotEmpty ? npcInteractionFrequency.promptInstruction : ''}
+${longTermMemoryEnabled ? (agentEnabled ? '需要回忆时调用 search_memory，不编造未返回的记忆。' : _promptDataBlock('memory', memory)) : ''}
+${asmrModeEnabled ? '当前是ASMR轻声交谈，语气亲近、柔和。' : ''}
+语音情绪按语义自然延续，允许少量情绪语音标签；不要输出表情或动作标签。不输出分析过程。遵守服务商政策。''';
+    }
     // A stale appearance snapshot must not advertise actions for a new model.
     // Posture/revision freshness is owned by the caller and playback queue.
     final Map<String, Object?> performanceData;
@@ -1312,6 +1384,7 @@ class AppController extends ChangeNotifier {
 
 【不可覆盖的输出协议】
 每个非空行只能以“旁白：”“莱莎：”“角色[角色ID]：”或“译文：”开头；不要 Markdown、引号、分析过程或用户前缀。
+旁白可以出现多条，并按回复中的顺序显示：对话前的环境、登场或动作铺垫放在台词前；台词后的反应、收尾动作或气氛变化放在台词后。需要时使用“旁白 → 台词 → 旁白”的结构；下方旁白必须简短、描述说完后的新变化，不能重复台词。
 每条莱莎台词开头必须且只能有：${'[情绪][face:表情][action:动作]'}，例如 `[calm][face:neutral][action:none]`。face 只能用 neutral、happy、laughing、angry、sad、crying、shy、tease、cuddle；action 只能用 none、acknowledge、disagree、think、explain、excited、wave、shy、surprised、comfort、playful、invite，或当前能力目录中的 `grp_*`。表情是持续状态，动作是一次性事件；没有新动作就用 `[action:none]`，不要随机堆动作。
 旁白、NPC、译文绝不带 face/action/语音标签，也不使用莱莎 TTS。每轮优先先写 1 条独立短旁白，描写本轮可观察的神态、动作或环境变化；只有纯事实回答或确实没有可叙述变化时可省略。不要把旁白塞进莱莎台词。用户明确要求动作时，先判断是否接受、是否为现在时；只有能力目录支持才选择精确组。否定、引用、假设或过去事件不触发动作。不要输出 Spine 动画名或目录外组名。
 
@@ -1347,6 +1420,7 @@ ${asmrModeEnabled ? 'ASMR 已开启：以轻声、近距离、克制的语气为
 
 【输出契约】
 每个非空行只能以“旁白：”“莱莎：”“角色[角色ID]：”或“译文：”开头，不用 Markdown、引号或分析说明。
+旁白不是只能放在开头：可以输出多条“旁白：”，本地会按出现顺序渲染。将环境/登场/动作铺垫放在对应台词之前，将说完后的反应、收尾动作或气氛变化放在台词之后，形成“上方旁白 → 台词 → 下方旁白”；下方旁白保持简短且不得复述台词。
 每条莱莎台词的正文前必须且只能有一组头部：［主情绪］［face:表情］［action:动作］。使用英文标签、半角方括号和半角冒号；正文开始后不补发或改写标签。动作可以是语义标签，也可以是本轮能力目录中的精确 `grp_*` 组标签；不能使用目录外的组名。
 face 只允许：${jsonEncode(CharacterPerformancePromptContext.faceDescriptions)}。
 主情绪使用 Fish Audio 支持的简短情绪词（如 calm、relaxed、happy、curious、excited、confident、surprised、worried、empathetic、angry、confused、embarrassed、sad、encouraging、friendly、sarcastic），与语义和前后句连续；不要把语音词当成 face。
@@ -1428,6 +1502,24 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
     }
     if (name == 'synthesize_custom_item') {
       return _synthesizeToolResult(args);
+    }
+    if (name == 'consume_inventory_item') {
+      try {
+        final id = args['instance_id'];
+        final quantity = args['quantity'];
+        if (id is! String || quantity is! int) {
+          throw const FormatException('物品 ID 和整数数量必填');
+        }
+        consumeAlchemyItem(id, quantity: quantity);
+        return jsonEncode({
+          'ok': true,
+          'consumed': quantity,
+          'instance_id': id,
+          'message': '物品已消耗。仅叙述本次用途，不得虚构应用尚未实现的属性变化。',
+        });
+      } on Object catch (error) {
+        return jsonEncode({'ok': false, 'message': error.toString()});
+      }
     }
     final query = (args['query'] as String? ?? '').trim();
     if (query.isEmpty || query.length > 300) {
@@ -2305,6 +2397,7 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
         )
         .toList(),
     'memorySummary': memorySummary,
+    'characterState': characterState.toJson(),
     'settingsSlots': _settingsSlotsJson,
     'userProfile': {
       'address': userAddress,
@@ -2412,6 +2505,7 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
     'version': 1,
     'messages': messages.map((message) => message.toJson()).toList(),
     'memorySummary': memorySummary,
+    'characterState': characterState.toJson(),
     'characterMood': characterMood.name,
     'relationshipPoints': relationshipPoints,
     'sceneTime': sceneTime.name,
@@ -2578,6 +2672,9 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
           : importedMessages.sublist(importedMessages.length - 60);
     }
     memorySummary = data['memorySummary'] as String? ?? memorySummary;
+    if (data.containsKey('characterState')) {
+      characterState = CharacterState.fromJson(data['characterState']);
+    }
     characterMood = CharacterMood.values.firstWhere(
       (mood) => mood.name == data['characterMood'],
       orElse: () => characterMood,
@@ -2624,9 +2721,15 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
     }
     if (data['alchemy'] case final Map<dynamic, dynamic> alchemy) {
       alchemyState = AlchemyState.fromJson(Map<String, dynamic>.from(alchemy));
+    } else if (data['alchemy'] == null) {
+      alchemyState = AlchemyState.empty();
+    } else {
+      throw const FormatException('存档中的背包数据无效');
     }
     if (!progress.containsKey('synthesisCount')) {
-      synthesisCount = alchemyState.history.length;
+      synthesisCount = alchemyState.history
+          .where((entry) => entry.recipeId != 'custom_failed')
+          .length;
     }
     dynamicQuests = _parseDynamicQuests(data['dynamicQuests']);
   }
@@ -2653,6 +2756,7 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
           : importedMessages.sublist(importedMessages.length - 60);
     }
     memorySummary = data['memorySummary'] as String? ?? '';
+    characterState = CharacterState.fromJson(data['characterState']);
     final userProfile = data['userProfile'] as Map<String, dynamic>? ?? {};
     userAddress = userProfile['address'] as String? ?? '伙伴';
     userPortrait = userProfile['portrait'] as String? ?? '';
@@ -2754,9 +2858,15 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
         .toSet();
     if (data['alchemy'] case final Map<dynamic, dynamic> alchemy) {
       alchemyState = AlchemyState.fromJson(Map<String, dynamic>.from(alchemy));
+    } else if (data['alchemy'] == null) {
+      alchemyState = AlchemyState.empty();
+    } else {
+      throw const FormatException('存档中的背包数据无效');
     }
     if (!progress.containsKey('synthesisCount')) {
-      synthesisCount = alchemyState.history.length;
+      synthesisCount = alchemyState.history
+          .where((entry) => entry.recipeId != 'custom_failed')
+          .length;
     }
     dynamicQuests = _parseDynamicQuests(data['dynamicQuests']);
     final preferences = data['preferences'] as Map<String, dynamic>? ?? {};
@@ -2972,7 +3082,26 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
       ].take(50).toList(growable: false),
       gatherAvailableAtByStage: alchemyState.gatherAvailableAtByStage,
     );
-    synthesisCount += 1;
+    if (recipeId != 'custom_failed') synthesisCount += 1;
+    _changed();
+  }
+
+  void consumeAlchemyItem(String instanceId, {int quantity = 1}) {
+    final item = _findAlchemyItem(instanceId);
+    if (quantity < 1 || quantity > item.quantity) {
+      throw const FormatException('消耗数量必须大于零且不超过库存');
+    }
+    alchemyState = AlchemyState(
+      inventory: [
+        for (final current in alchemyState.inventory)
+          if (current.instanceId != instanceId)
+            current
+          else if (current.quantity > quantity)
+            current.copyWith(quantity: current.quantity - quantity),
+      ],
+      history: alchemyState.history,
+      gatherAvailableAtByStage: alchemyState.gatherAvailableAtByStage,
+    );
     _changed();
   }
 
@@ -3008,17 +3137,42 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
         .toList(growable: false);
     final catalyst = catalystId == null ? null : _findAlchemyItem(catalystId);
     final requiredCounts = _requiredAlchemyCounts(ingredients, catalyst);
-    final result = const AlchemyEngine().synthesizeCustom(
+    final rng = random ?? Random.secure();
+    final crafted = const AlchemyEngine().synthesizeCustom(
       name: normalizedName,
       description: normalizedDescription,
       category: normalizedCategory,
       ingredients: ingredients,
       catalyst: catalyst,
-      random: random,
+      random: rng,
     );
+    final success =
+        rng.nextDouble() <
+        const AlchemyEngine().successChance(ingredients, catalyst: catalyst);
+    final result = success
+        ? crafted
+        : AlchemyItem(
+            instanceId: crafted.instanceId,
+            templateId: 'custom_failed_product',
+            quality: 0,
+            quantity: 1,
+            tagIds: const [],
+            acquiredAt: crafted.acquiredAt,
+            customName: interfaceLanguage.text(
+              '调合残渣',
+              'Synthesis residue',
+              '調合の残滓',
+            ),
+            customDescription: interfaceLanguage.text(
+              '调合失败后留下的残渣，不具备预期成品效果。',
+              'Residue from a failed synthesis; it has none of the intended effects.',
+              '調合失敗で残った残滓。予定した効果はありません。',
+            ),
+            customCategories: const [],
+          );
     _commitSynthesis(
       result: result,
-      recipeId: 'custom',
+      recipeId: success ? 'custom' : 'custom_failed',
       requiredCounts: requiredCounts,
     );
     return result;
@@ -3218,10 +3372,17 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
       );
       return jsonEncode({
         'ok': true,
+        'success': result.templateId != 'custom_failed_product',
+        'inventory_after': alchemyState.inventory
+            .where((item) => consumedCounts.containsKey(item.instanceId))
+            .map(_alchemyItemToolJson)
+            .toList(),
         'kind': 'llm_recipe',
         'result': _alchemyItemToolJson(result),
         'consumed': consumed,
-        'message': '调合已完成，结果和素材消耗已写入本地背包。',
+        'message': result.templateId == 'custom_failed_product'
+            ? '调合失败，投入素材已消耗，只获得残渣。不得宣称获得预期成品，也不要自动重试，等待用户决定。'
+            : '调合成功，结果和素材消耗已写入本地背包。',
       });
     } on Object catch (error) {
       return jsonEncode({
@@ -3688,6 +3849,11 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
       _preferences.setString('tts_preview_text', ttsPreviewText),
       _preferences.setBool('long_term_memory_enabled', longTermMemoryEnabled),
       _preferences.setString('memory_summary', memorySummary),
+      _preferences.setBool('split_narration_composer', splitNarrationComposer),
+      _preferences.setString(
+        'character_state_v1',
+        jsonEncode(characterState.toJson()),
+      ),
       _preferences.setStringList(
         'suggestion_use_times',
         suggestionUseTimes.map((value) => value.toIso8601String()).toList(),

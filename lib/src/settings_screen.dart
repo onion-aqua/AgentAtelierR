@@ -81,14 +81,14 @@ extension on _SettingsCategory {
       'モデル、推論、コンテキスト、エージェント',
     ),
     _SettingsCategory.roleplay => language.text(
-      '人物设定、世界书、NPC 与长期记忆',
-      'Persona, world book, NPCs and memory',
-      '人物設定、ワールドブック、NPC、記憶',
+      '人物设定、世界书与 NPC',
+      'Persona, world book and NPCs',
+      '人物設定、ワールドブック、NPC',
     ),
     _SettingsCategory.data => language.text(
-      '本地导入导出与聊天记录管理',
-      'Local import, export and chat history',
-      'ローカルデータの読み込み、書き出し、会話履歴',
+      '长期记忆、本地导入导出与聊天记录',
+      'Memory, local import, export and chat history',
+      '長期記憶、データの読み込み・書き出し、会話履歴',
     ),
     _SettingsCategory.about => 'AgentAtelierR · 1.0.0',
   };
@@ -793,7 +793,7 @@ class SettingsScreenState extends State<SettingsScreen> {
               if (_category == _SettingsCategory.roleplay) ...[
                 const Divider(indent: 16, endIndent: 16),
                 _SectionLabel(
-                  language.text('互动与记忆', 'Interaction & memory', '交流と記憶'),
+                  language.text('角色互动', 'Character interaction', 'キャラクター交流'),
                 ),
                 ListTile(
                   leading: const Icon(Icons.forum_outlined),
@@ -846,6 +846,8 @@ class SettingsScreenState extends State<SettingsScreen> {
                     ],
                   ),
                 ),
+              ],
+              if (_category == _SettingsCategory.data) ...[
                 ListTile(
                   leading: const Icon(Icons.psychology_alt_outlined),
                   title: Text(
@@ -878,17 +880,15 @@ class SettingsScreenState extends State<SettingsScreen> {
                   ),
                   onTap: () => _showLongTermMemorySettings(context),
                 ),
+              ],
+              if (_category == _SettingsCategory.roleplay) ...[
                 ListTile(
                   leading: const Icon(Icons.favorite_border),
                   title: Text(
                     language.text('角色状态', 'Character status', 'キャラクター状態'),
                   ),
                   subtitle: Text(
-                    language.text(
-                      '${controller.characterMood.label} · 关系点数 ${controller.relationshipPoints}',
-                      '${controller.characterMood.label} · Bond ${controller.relationshipPoints}',
-                      '${controller.characterMood.label} · 親密度 ${controller.relationshipPoints}',
-                    ),
+                    '${controller.characterState.summary(language)}\n${controller.characterState.reason}',
                   ),
                 ),
                 const Divider(indent: 16, endIndent: 16),
@@ -2926,23 +2926,41 @@ class _LongTermMemoryDialogState extends State<_LongTermMemoryDialog> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(
-                          _entries![index]['date']?.toString() ??
-                              language.text(
-                                '时间未记录',
-                                'Date not recorded',
-                                '日時未記録',
+                        Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                _entries![index]['date']?.toString() ??
+                                    language.text(
+                                      '时间未记录',
+                                      'Date not recorded',
+                                      '日時未記録',
+                                    ),
+                                style: Theme.of(context).textTheme.labelMedium
+                                    ?.copyWith(
+                                      color: Theme.of(context)
+                                          .colorScheme
+                                          .onSurfaceVariant,
+                                    ),
                               ),
-                          style: Theme.of(context).textTheme.labelMedium
-                              ?.copyWith(
-                                color: Theme.of(context)
-                                    .colorScheme
-                                    .onSurfaceVariant,
+                            ),
+                            IconButton(
+                              tooltip: language.text(
+                                '删除这条记忆',
+                                'Delete memory',
+                                'この記憶を削除',
                               ),
+                              icon: const Icon(Icons.delete_outline),
+                              onPressed: () => setState(() {
+                                _entries!.removeAt(index);
+                                _summary.text = jsonEncode(_document);
+                              }),
+                            ),
+                          ],
                         ),
                         const SizedBox(height: 8),
                         TextFormField(
-                          key: ValueKey('memory-entry-$index'),
+                          key: ObjectKey(_entries![index]),
                           initialValue: _entries![index]['summary'] as String,
                           minLines: 1,
                           maxLines: null,

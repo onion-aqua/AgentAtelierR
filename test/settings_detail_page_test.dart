@@ -75,7 +75,8 @@ void main() {
         'appearance': ['主题', '主题色', '语言'],
         'profile': ['称呼与自画像'],
         'ai': ['OpenAI 兼容接口', 'Google Gemini'],
-        'roleplay': ['编辑人物设定', '编辑世界书', '长期记忆'],
+        'roleplay': ['编辑人物设定', '编辑世界书'],
+        'data': ['长期记忆'],
         'audio': ['Fish Audio', '百炼 Qwen-TTS', '通用 OpenAI TTS', 'MiMo TTS'],
       }.entries) {
         await tapVisible(
@@ -181,7 +182,7 @@ void main() {
     c.configureLongTermMemory(enabled: true, summary: '原记忆');
     await tapVisible(
       tester,
-      find.byKey(const ValueKey('settings-category-roleplay')),
+      find.byKey(const ValueKey('settings-category-data')),
     );
     await tapVisible(tester, find.text('长期记忆'));
     await tester.enterText(find.byType(TextField), '新记忆');

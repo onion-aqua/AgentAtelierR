@@ -728,6 +728,17 @@ class AlchemyCatalog {
 class AlchemyEngine {
   const AlchemyEngine();
 
+  double successChance(List<AlchemyItem> ingredients, {AlchemyItem? catalyst}) {
+    if (ingredients.isEmpty) return 0;
+    final quality =
+        ingredients.fold<int>(0, (sum, item) => sum + item.quality) /
+        ingredients.length;
+    return (0.60 + quality * 0.003 + (catalyst == null ? 0 : 0.08)).clamp(
+      0.60,
+      0.95,
+    );
+  }
+
   AlchemyItem synthesizeCustom({
     required String name,
     required String description,

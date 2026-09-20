@@ -2,6 +2,13 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:ryza_chat_mvp/src/chat_segments.dart';
 
 void main() {
+  test('user narration is separate and retains multiline continuation', () {
+    final parts = parseUserComposerParts('旁白：摸摸头\n轻轻笑了。\n发言：见到你很开心\n真的。');
+    expect(parts.narration, '摸摸头\n轻轻笑了。');
+    expect(parts.speech, '见到你很开心\n真的。');
+    expect(parseUserComposerParts('你好').speech, '你好');
+    expect(parseUserComposerParts('旁白：挥手').speech, isEmpty);
+  });
   test('tavern-style wrapped asides stay outside character dialogue', () {
     const response = '''<|assistant|>
 *莱莎抬起头，耳朵轻轻动了一下。*

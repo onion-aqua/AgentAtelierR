@@ -85,7 +85,8 @@ assets/**/*
 # Do not vendor third-party runtime source or extracted application files.
 packages/
 downloaded_skin_resources/
-/windows/
+/windows/flutter/ephemeral/
+/windows/flutter/generated_*
 *.dex
 *.arsc
 # Local-only downloaded outfits: all revisions, textures, skeletons and gestures.

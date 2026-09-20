@@ -168,6 +168,8 @@ class RuntimeLog extends ChangeNotifier {
     return normalized == 'llm' ||
         normalized == 'tts' ||
         normalized == 'ai' ||
+        normalized == 'memory' ||
+        normalized == 'translation' ||
         normalized.contains('fish audio') ||
         normalized.contains('qwen-tts') ||
         normalized.contains('通用 tts') ||

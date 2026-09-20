@@ -152,6 +152,24 @@ final RegExp _metadataLine = RegExp(
   caseSensitive: false,
 );
 
+/// Preserve multiline user narration independently from spoken dialogue.
+({String narration, String speech}) parseUserComposerParts(String text) {
+  final narration = <String>[];
+  final speech = <String>[];
+  var isNarration = false;
+  for (final line in text.replaceAll('\r\n', '\n').split('\n')) {
+    final prefix = RegExp(r'^\s*(旁白|发言)\s*[：:]\s*').firstMatch(line);
+    if (prefix != null) isNarration = prefix.group(1) == '旁白';
+    (isNarration ? narration : speech).add(
+      prefix == null ? line : line.substring(prefix.end),
+    );
+  }
+  return (
+    narration: narration.join('\n').trim(),
+    speech: speech.join('\n').trim(),
+  );
+}
+
 List<ChatSegment> parseAssistantSegments(String response) {
   final segments = <ChatSegment>[];
   ChatSpeaker? activeSpeaker;
@@ -758,5 +776,10 @@ List<int> dialogueDisplayIndices(
   bool translationOnly,
 ) => [
   for (var i = 0; i < segments.length; i++)
-    if (!translationOnly || segments[i].speaker == ChatSpeaker.translation) i,
+    if (!translationOnly ||
+        !segments.any(
+          (segment) => segment.speaker == ChatSpeaker.translation,
+        ) ||
+        segments[i].speaker == ChatSpeaker.translation)
+      i,
 ];

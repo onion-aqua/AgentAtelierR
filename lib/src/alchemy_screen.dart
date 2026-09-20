@@ -16,6 +16,73 @@ class AlchemyScreen extends StatefulWidget {
 
 class _AlchemyScreenState extends State<AlchemyScreen> {
   @override
+  void initState() {
+    super.initState();
+    widget.controller.addListener(_refresh);
+  }
+
+  @override
+  void didUpdateWidget(covariant AlchemyScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.controller != widget.controller) {
+      oldWidget.controller.removeListener(_refresh);
+      widget.controller.addListener(_refresh);
+    }
+  }
+
+  void _refresh() {
+    if (mounted) setState(() {});
+  }
+
+  @override
+  void dispose() {
+    widget.controller.removeListener(_refresh);
+    super.dispose();
+  }
+
+  Future<void> _useItem(AlchemyItem item, AppLanguage language) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(language.text('使用物品', 'Use item', 'アイテムを使う')),
+        content: Text(
+          language.text(
+            '消耗 1 份「${item.displayNameFor(language)}」？此操作只扣除库存，不自动增加角色属性。',
+            'Consume 1 ${item.displayNameFor(language)}? This reduces inventory only; character stats will not change.',
+            '「${item.displayNameFor(language)}」を1個消費しますか？在庫のみ減り、キャラクターの能力値は変わりません。',
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: Text(language.text('取消', 'Cancel', 'キャンセル')),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: Text(language.text('使用', 'Use', '使う')),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    try {
+      widget.controller.consumeAlchemyItem(item.instanceId);
+    } on FormatException {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            language.text(
+              '库存已变化，请重新选择',
+              'Inventory changed. Select again.',
+              '在庫が変わりました。選び直してください。',
+            ),
+          ),
+        ),
+      );
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
     final language = widget.controller.interfaceLanguage;
     return DefaultTabController(
@@ -88,6 +155,11 @@ class _AlchemyScreenState extends State<AlchemyScreen> {
         final tags = _tagNames(item).join('、');
         return ListTile(
           title: Text('${item.displayNameFor(language)} × ${item.quantity}'),
+          trailing: IconButton(
+            tooltip: language.text('使用 1 份', 'Use one', '1個使う'),
+            icon: const Icon(Icons.remove_circle_outline),
+            onPressed: () => _useItem(item, language),
+          ),
           subtitle: Text(
             '${language.text('品质', 'Quality', '品質')} '
             '${item.qualityRank}（${item.quality}）\n'
@@ -118,7 +190,9 @@ class _AlchemyScreenState extends State<AlchemyScreen> {
         final entry = history[index];
         return ListTile(
           leading: const Icon(Icons.history_rounded),
-          title: Text(entry.result.displayNameFor(language)),
+          title: Text(
+            '${entry.recipeId == 'custom_failed' ? language.text('失败 · ', 'Failed · ', '失敗 · ') : ''}${entry.result.displayNameFor(language)}',
+          ),
           subtitle: Text(
             '${language.text('品质', 'Quality', '品質')} '
             '${entry.result.qualityRank}（${entry.result.quality}） · '

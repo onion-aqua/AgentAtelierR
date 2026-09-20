@@ -1462,8 +1462,8 @@ void main() {
     final prompt = controller.buildCharacterPrompt();
 
     expect(prompt, contains('莱莎和其他角色所有说出口的台词都必须使用 Japanese'));
-    expect(prompt, contains('每条“莱莎：”或“角色[角色ID]：”台词后都紧跟一条“译文：”'));
-    expect(prompt, contains('不得遗漏其他角色的译文'));
+    expect(prompt, contains('翻译由应用的独立翻译模块完成'));
+    expect(prompt, contains('不要输出译文行'));
   });
 
   test(
@@ -1606,12 +1606,12 @@ void main() {
       expect(restored.translationLanguage, TranslationLanguage.chinese);
       expect(prompt, contains('所有说出口的台词都必须使用 Japanese'));
       expect(prompt, contains('旁白正文必须使用 English'));
-      expect(prompt, contains('每条“莱莎：”或“角色[角色ID]：”台词后都紧跟一条“译文：”'));
+      expect(prompt, contains('翻译由应用的独立翻译模块完成'));
       expect(prompt, contains('"narratorBodyLanguage":"English"'));
       expect(prompt, contains('"ryzaSpeechLanguage":"Japanese"'));
       expect(
         prompt,
-        contains('"translationLanguage":"Chinese (Simplified Chinese)"'),
+        contains('"translationLanguage":"DISABLED"'),
       );
       final demoReply = restored.demoReply('Hello');
       expect(demoReply, contains('旁白：(Ryza puts down'));

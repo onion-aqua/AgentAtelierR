@@ -12,6 +12,30 @@ import 'package:shared_preferences/shared_preferences.dart';
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
+  test('auxiliary completion reuses authentication without tools or heavy reasoning', () async {
+    SharedPreferences.setMockInitialValues({});
+    final client = MockClient((request) async {
+      expect(request.headers['authorization'], 'Bearer test-key');
+      final body = jsonDecode(request.body) as Map;
+      expect(body['reasoning_effort'], 'none');
+      expect(body.containsKey('tools'), isFalse);
+      expect(body['messages'], hasLength(2));
+      return http.Response('{"choices":[{"message":{"content":"done"}}]}', 200);
+    });
+    final output = await OpenAiCompatibleClient(client: client).complete(
+      baseUrl: 'https://example.test/v1',
+      apiKey: 'test-key',
+      model: 'gpt-5.1',
+      lightweight: true,
+      messages: const [
+        {'role': 'system', 'content': 'Translate only'},
+        {'role': 'user', 'content': 'Hello'},
+      ],
+    );
+    expect(output, 'done');
+    client.close();
+  });
+
   test('OpenAI stream accepts decorated DONE terminal frames', () async {
     SharedPreferences.setMockInitialValues({});
     final client = MockClient((_) async {

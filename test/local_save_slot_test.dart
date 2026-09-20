@@ -1,13 +1,61 @@
 import 'dart:io';
+import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ryza_chat_mvp/src/app_controller.dart';
+import 'package:ryza_chat_mvp/src/alchemy_models.dart';
 import 'package:ryza_chat_mvp/src/attachment_thumbnail_store.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+
+  test(
+    'inventory follows slots, consumption, restart and legacy empty saves',
+    () async {
+      SharedPreferences.setMockInitialValues({});
+      final c = await AppController.load();
+      c.alchemyState = AlchemyState(
+        inventory: [
+          AlchemyItem(
+            instanceId: 'custom',
+            templateId: 'custom_material',
+            customName: '星砂',
+            quantity: 5,
+            quality: 60,
+            tagIds: const [],
+            acquiredAt: DateTime(2026),
+          ),
+        ],
+        history: const [],
+      );
+      await c.saveToLocalSlot(0);
+      c.consumeAlchemyItem('custom', quantity: 3);
+      await c.saveToLocalSlot(1);
+      await c.loadFromLocalSlot(0);
+      expect(c.alchemyState.inventory.single.quantity, 5);
+      await c.loadFromLocalSlot(1);
+      expect(c.alchemyState.inventory.single.quantity, 2);
+      await Future<void>.delayed(Duration.zero);
+      final restored = await AppController.load();
+      expect(restored.alchemyState.inventory.single.quantity, 2);
+      final prefs = await SharedPreferences.getInstance();
+      final legacy = jsonDecode(prefs.getString('local_save_slot_0')!) as Map;
+      (legacy['snapshot'] as Map).remove('alchemy');
+      await prefs.setString('local_save_slot_2', jsonEncode(legacy));
+      await restored.loadFromLocalSlot(2);
+      expect(restored.alchemyState.inventory, isEmpty);
+      await restored.loadFromLocalSlot(0);
+      expect(restored.alchemyState.inventory.single.quantity, 5);
+      final malformed = Map<String, dynamic>.from(restored.exportData())
+        ..['alchemy'] = 'broken';
+      await expectLater(restored.importData(malformed), throwsFormatException);
+      expect(restored.alchemyState.inventory.single.quantity, 5);
+      c.dispose();
+      restored.dispose();
+    },
+  );
 
   test('local save slots capture, restore, and delete game state', () async {
     SharedPreferences.setMockInitialValues({});

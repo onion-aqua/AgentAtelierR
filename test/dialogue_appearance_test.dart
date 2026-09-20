@@ -20,7 +20,7 @@ void main() {
       expect(dialogueDisplayIndices(segments, true), [1, 3]);
       expect(dialogueDisplayIndices(segments, false), [0, 1, 2, 3]);
       expect(segments.first.text, 'こんにちは');
-      expect(dialogueDisplayIndices(segments.take(1).toList(), true), isEmpty);
+      expect(dialogueDisplayIndices(segments.take(1).toList(), true), [0]);
     },
   );
 
