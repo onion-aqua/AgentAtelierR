@@ -27,6 +27,7 @@ class PerformancePlanner {
     required String source,
     required CharacterPerformancePromptContext capabilities,
     required String currentFace,
+    String currentIntensity = 'normal',
     required List<String> recentActions,
     required AuxiliaryCompletion complete,
     Map<String, dynamic>? characterState,
@@ -57,6 +58,10 @@ class PerformancePlanner {
           entry.key;
     }
     final output = await complete([
+      {
+        'role': 'system',
+        'content': '每个segments条目可增加intensity字段，只从expression_intensities对应情绪的档位选择：weak含蓄、normal自然、strong明显。默认normal，按剧情逐渐变化。每档连接原资源全部有效表情组合，本地保持成套眼睛、眉毛、嘴型和眨眼，不需要输出资源编号。动作候选已按当前骨骼和姿态校验，不能臆造候选。',
+      },
       if (characterState != null)
         {
           'role': 'system',
@@ -75,6 +80,8 @@ class PerformancePlanner {
           'reply': clean,
           'line_ids': ids,
           'current_face': currentFace,
+          'current_intensity': currentIntensity,
+          'expression_intensities': capabilities.expressionIntensities,
           'recent_actions': recentActions,
           'posture': capabilities.posture,
           'character_state': ?characterState,
@@ -112,6 +119,12 @@ class PerformancePlanner {
         );
       }
       final posture = row['posture'];
+      final intensity = row['intensity'] ?? 'normal';
+      final levels =
+          capabilities.expressionIntensities[row['face']] ?? const ['normal'];
+      if (intensity is! String || !levels.contains(intensity)) {
+        throw const FormatException('Invalid expression intensity');
+      }
       if (posture != null &&
           (posture is! String ||
               !capabilities.availablePostures.containsKey(posture) ||
@@ -127,7 +140,7 @@ class PerformancePlanner {
           ? 'none'
           : mapping[row['action']];
       tags[row['id'] as int] =
-          '[face:${row['face']}][action:$action]${changesPosture ? '[posture:$posture]' : ''}';
+          '[face:${row['face']}${intensity == 'normal' ? '' : '/$intensity'}][action:$action]${changesPosture ? '[posture:$posture]' : ''}';
     }
     if (tags.length != ids.length) {
       throw const FormatException('Incomplete performance plan');

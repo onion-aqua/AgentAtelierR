@@ -348,6 +348,7 @@ class CharacterPerformancePromptContext {
     required this.resourcesReady,
     required Map<String, String> playableActionDescriptions,
     Map<String, String> playableMotionGroupDescriptions = const {},
+    this.expressionIntensities = const {},
     this.availablePostures = const {},
     this.postureManuallySelected = false,
   }) : playableActionDescriptions = Map<String, String>.unmodifiable(
@@ -435,6 +436,7 @@ class CharacterPerformancePromptContext {
   final bool resourcesReady;
   final Map<String, String> playableActionDescriptions;
   final Map<String, String> playableMotionGroupDescriptions;
+  final Map<String, List<String>> expressionIntensities;
   final Map<String, String> availablePostures;
   final bool postureManuallySelected;
 

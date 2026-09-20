@@ -11,11 +11,19 @@ enum CharacterExpression {
 }
 
 CharacterExpression characterExpressionFromTag(String value) {
-  final normalized = value.trim().toLowerCase();
+  final normalized = value.trim().toLowerCase().split('/').first;
   return CharacterExpression.values.firstWhere(
     (expression) => expression.name == normalized,
     orElse: () => CharacterExpression.neutral,
   );
+}
+
+String characterExpressionIntensityFromTag(String value) {
+  final parts = value.trim().toLowerCase().split('/');
+  return parts.length == 2 &&
+          const {'weak', 'normal', 'strong'}.contains(parts.last)
+      ? parts.last
+      : 'normal';
 }
 
 class CharacterExpressionPreset {

@@ -15,9 +15,17 @@ class CharacterResourceBehavior {
     this.transitions,
     this.windAnimationPrefix = 'effect_wind',
     this.restGroupsBySitting = const {},
+    this.intensityProfiles = const {},
+    this.effectAnimations = const {},
   });
 
   final Map<String, CharacterResourceEmotionProfile> profiles;
+  final Map<String, String> effectAnimations;
+  final Map<String, Map<String, CharacterResourceEmotionProfile>>
+  intensityProfiles;
+
+  CharacterResourceEmotionProfile? profile(String emotion, String intensity) =>
+      intensityProfiles[emotion]?[intensity] ?? profiles[emotion];
   final bool fixedBasePoseMode;
   final bool lockSittingAxis;
   final CharacterMotionTransitions? transitions;
@@ -36,14 +44,29 @@ class CharacterResourceBehavior {
     final config = _map(root['projectConfig']);
     final closedEye = _text(config['closedEyeAnimation']);
     final result = <String, CharacterResourceEmotionProfile>{};
+    final variants = <String, Map<String, CharacterResourceEmotionProfile>>{};
     for (final entry in emotions.entries) {
       final name = entry.key.trim().toLowerCase();
       final data = _map(entry.value);
       if (name.isEmpty || data.isEmpty) continue;
       result[name] = CharacterResourceEmotionProfile._parse(data, closedEye);
+      variants[name] = Map.unmodifiable({
+        for (final level in ['weak', 'normal', 'strong'])
+          if (_map(data['intensityProfiles']).containsKey(level))
+            level: CharacterResourceEmotionProfile._parse(
+              data,
+              closedEye,
+              level,
+            ),
+      });
     }
     return CharacterResourceBehavior._(
       Map.unmodifiable(result),
+      intensityProfiles: Map.unmodifiable(variants),
+      effectAnimations: Map.unmodifiable({
+        for (final entry in _map(config['fxOnAnimNames']).entries)
+          if (entry.value is String) entry.key: entry.value as String,
+      }),
       fixedBasePoseMode: config['fixedBasePoseMode'] != false,
       lockSittingAxis: config['lockSittingAxis'] != false,
       transitions: CharacterMotionTransitions(root),
@@ -62,6 +85,7 @@ class CharacterResourceBehavior {
 
 class CharacterResourceEmotionProfile {
   const CharacterResourceEmotionProfile._({
+    this.effectSets = const [],
     required this.expressionSets,
     required this.basePoses,
     required this.mixDurationEye,
@@ -76,6 +100,7 @@ class CharacterResourceEmotionProfile {
   });
 
   final List<ResourceExpressionSet> expressionSets;
+  final List<List<String>> effectSets;
   final List<ResourceBasePose> basePoses;
   final double mixDurationEye;
   final double mixDurationEyebrow;
@@ -90,9 +115,10 @@ class CharacterResourceEmotionProfile {
 
   factory CharacterResourceEmotionProfile._parse(
     Map<String, Object?> data,
-    String closedEyeFallback,
-  ) {
-    final normal = _map(_map(data['intensityProfiles'])['normal']);
+    String closedEyeFallback, [
+    String intensity = 'normal',
+  ]) {
+    final normal = _map(_map(data['intensityProfiles'])[intensity]);
     final expressions = <ResourceExpressionSet>[];
     for (final value in _list(normal['expressionSets'])) {
       final expression = ResourceExpressionSet._parse(
@@ -134,6 +160,11 @@ class CharacterResourceEmotionProfile {
     final rerollMax = _positive(normal['poseRerollIntervalMax'], 8);
     final lipSync = _text(data['lipSyncScrubClip']);
     return CharacterResourceEmotionProfile._(
+      effectSets: List.unmodifiable([
+        for (final value in _list(normal['effectSets']))
+          if (_weight(_map(value)) > 0)
+            List<String>.unmodifiable(_strings(_map(value)['names'])),
+      ]),
       expressionSets: List.unmodifiable(expressions),
       basePoses: List.unmodifiable(poses),
       mixDurationEye: _nonNegative(normal['mixDurationEye'], 0.45),

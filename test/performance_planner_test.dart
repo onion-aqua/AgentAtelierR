@@ -2,9 +2,44 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:ryza_chat_mvp/src/app_controller.dart';
 import 'package:ryza_chat_mvp/src/performance_planner.dart';
+import 'package:ryza_chat_mvp/src/chat_segments.dart';
+import 'package:ryza_chat_mvp/src/character_expression.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+  test('independent planner intensity survives parsing and is hidden from speech', () async {
+    final capabilities = CharacterPerformancePromptContext(
+      appearanceId: 'test',
+      posture: 'sitting_normal',
+      revision: 1,
+      resourcesReady: true,
+      playableActionDescriptions: const {},
+      expressionIntensities: const {
+        'shy': ['weak', 'normal', 'strong'],
+      },
+    );
+    final result = await PerformancePlanner().plan(
+      userInput: '你好',
+      source: '旁白：她红着脸。\n莱莎：你好。',
+      capabilities: capabilities,
+      currentFace: 'neutral',
+      recentActions: [],
+      complete: (messages) async {
+        expect(messages.last['content'], contains('expression_intensities'));
+        return '{"segments":[{"id":1,"face":"shy","intensity":"strong","action":"none"}]}';
+      },
+    );
+    final cue = performanceCueForAssistantResponse(result);
+    expect(cue.expression, CharacterExpression.shy);
+    expect(cue.expressionIntensity, 'strong');
+    final line = performanceSegmentsForAssistantResponse(
+      result,
+      fallbackMood: CharacterMood.neutral,
+    ).single;
+    expect(line.expressionIntensity, 'strong');
+    expect(line.speechText, isNot(contains('face:')));
+    expect(result, contains('旁白：她红着脸。'));
+  });
   test(
     'voice planning toggle persists and restores traditional voice prompt',
     () async {

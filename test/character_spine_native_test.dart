@@ -3,6 +3,7 @@ import 'dart:math';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:spine_flutter/spine_flutter.dart';
+import 'package:ryza_chat_mvp/src/character_track_transition.dart';
 
 // Opt-in: requires the local Spine native library on PATH and owned resources.
 // Exercises the actual Flutter drawable/C++ runtime, not a JS emulation.
@@ -34,6 +35,48 @@ void main() {
         );
         try {
           final data = drawable.skeletonData;
+          // Regression: an empty overlay must have a mixing source, while a
+          // live overlay must mix directly without visiting the setup pose.
+          final gesture = data.getAnimations().firstWhere(
+            (a) => a.getName().startsWith('motion_add_'),
+          );
+          final state = drawable.animationState;
+          final entering =
+              transitionCharacterTrack(
+                  state,
+                  2,
+                  gesture.getName(),
+                  loop: false,
+                  mixDuration: 0.6,
+                )
+                ..setAlpha(0.85)
+                ..setTimeScale(1.1);
+          expect(entering.getMixDuration(), closeTo(0.6, 0.001));
+          expect(await entering.getAlpha(), closeTo(0.85, 0.001));
+          expect(entering.getTimeScale(), closeTo(1.1, 0.001));
+          drawable.update(1 / 120);
+          drawable.update(1 / 120);
+          expect(state.getCurrent(2)!.getMixingFrom(), isNotNull);
+          expect(state.getCurrent(2)!.getMixTime(), lessThan(0.6));
+          for (var i = 0; i < 90; i++) {
+            drawable.update(1 / 120);
+          }
+          final replacement = transitionCharacterTrack(
+            state,
+            2,
+            gesture.getName(),
+            loop: false,
+            mixDuration: 0.6,
+          );
+          expect(
+            replacement.getMixingFrom()!.getAnimation().getName(),
+            gesture.getName(),
+          );
+          state.setEmptyAnimation(2, 0.6);
+          for (var i = 0; i < 90; i++) {
+            drawable.update(1 / 120);
+          }
+          expect(state.getCurrent(2), isNull);
           final base = data.getAnimations().firstWhere(
             (a) =>
                 a.getName().endsWith('_idle') &&

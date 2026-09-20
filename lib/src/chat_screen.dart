@@ -24,6 +24,7 @@ import 'speech_envelope_loader.dart';
 import 'character_speech_driver.dart';
 import 'character_resource_behavior.dart';
 import 'character_motion_dynamics.dart';
+import 'character_track_transition.dart';
 import 'character_idle_behavior.dart';
 import 'character_posture.dart';
 import 'mimo_tts_client.dart';
@@ -138,6 +139,7 @@ class _PreparedSpeech {
 
 class _CachedSpeechSegment {
   const _CachedSpeechSegment({
+    this.expressionIntensity = 'normal',
     required this.path,
     required this.envelope,
     required this.expression,
@@ -147,6 +149,7 @@ class _CachedSpeechSegment {
   });
 
   final String path;
+  final String expressionIntensity;
   final AudioAmplitudeEnvelope? envelope;
   final CharacterExpression? expression;
   final CharacterAction? action;
@@ -243,6 +246,7 @@ class _ChatScreenState extends State<ChatScreen> {
     '{}',
   );
   ResourceExpressionSet? _activeResourceExpression;
+  List<String> _activeResourceEffects = const [];
   bool _speechBlinkClosed = false;
   CharacterBlinkBeat _blinkBeat = const CharacterBlinkBeat(
     gap: 3,
@@ -299,7 +303,8 @@ class _ChatScreenState extends State<ChatScreen> {
   bool _conversationFullscreen = false;
 
   CharacterResourceEmotionProfile? get _resourceEmotion =>
-      _resourceBehavior.profiles[_currentExpression.name];
+      _resourceBehavior.profile(_currentExpression.name, _expressionIntensity);
+  String _expressionIntensity = 'normal';
 
   bool get _motionBusy =>
       _motionBusyUntil != null && DateTime.now().isBefore(_motionBusyUntil!);
@@ -590,9 +595,15 @@ class _ChatScreenState extends State<ChatScreen> {
     }
     _resetMotionOverlays(mixDuration: 0.28);
     final state = spineController.animationState;
-    final entry = state.setAnimationByName(1, animation, false)
-      ..setMixDuration(0.34);
-    state.addEmptyAnimation(1, 0.36, 0);
+    final entry = transitionCharacterTrack(
+      state,
+      1,
+      animation,
+      loop: false,
+      mixDuration: 0.34,
+    );
+    // Begin release after the whole authored clip, not 0.36s before its end.
+    state.addEmptyAnimation(1, 0.36, entry.getAnimation().getDuration());
     final motionDuration = Duration(
       milliseconds: ((entry.getAnimation().getDuration() + 0.36) * 1000).ceil(),
     );
@@ -759,6 +770,16 @@ class _ChatScreenState extends State<ChatScreen> {
       resourcesReady: true,
       playableActionDescriptions: playable,
       playableMotionGroupDescriptions: motionGroups,
+      expressionIntensities: {
+        for (final emotion in _resourceBehavior.intensityProfiles.entries)
+          emotion.key: [
+            'normal',
+            for (final level in emotion.value.entries)
+              if (level.key != 'normal' &&
+                  level.value.expressionSets.any(_isPlayableExpression))
+                level.key,
+          ],
+      },
       postureManuallySelected: _postureState.manual,
       availablePostures: {
         if (!_appearance.isStanding) 'sitting_normal': '自然坐姿',
@@ -871,7 +892,13 @@ class _ChatScreenState extends State<ChatScreen> {
       }
 
       final entry =
-          state.setAnimationByName(tracks[index], animation.name, false)
+          transitionCharacterTrack(
+              state,
+              tracks[index],
+              animation.name,
+              loop: false,
+              mixDuration: blend,
+            )
             ..setAlpha(animation.alpha)
             ..setTimeScale(animation.speed)
             ..setMixBlend(MixBlend.replace)
@@ -927,7 +954,19 @@ class _ChatScreenState extends State<ChatScreen> {
     for (var track = 2; track <= 10; track++) {
       // The leg layer is a persistent posture, not a one-shot gesture.
       if (track == 3 && _sittingId == 'sitting_agura') continue;
+      final restTracks = _sittingId == 'sitting_agura'
+          ? _motionGroups
+                .where(
+                  (g) =>
+                      g.id ==
+                          _resourceBehavior.restGroupsBySitting[_sittingId] &&
+                      g.occupancy == 'FG' &&
+                      _canPlayMotionGroup(g),
+                )
+                .expand((g) => g.occupiedTracks)
+          : const <int>[];
       if (!replacingTracks.contains(track) &&
+          !restTracks.contains(track) &&
           spineController.animationState.getCurrent(track) != null) {
         spineController.animationState.setEmptyAnimation(track, mixDuration);
       }
@@ -981,14 +1020,24 @@ class _ChatScreenState extends State<ChatScreen> {
         ..setTimeScale(timeScale);
       return;
     }
-    spineController.animationState.setAnimationByName(track, animation, loop)
+    transitionCharacterTrack(
+        spineController.animationState,
+        track,
+        animation,
+        loop: loop,
+        mixDuration: mixDuration,
+      )
       ..setMixBlend(MixBlend.replace)
       ..setMixDuration(mixDuration)
       ..setAlpha(alpha)
       ..setTimeScale(timeScale);
   }
 
-  void _applyExpression(CharacterExpression expression) {
+  void _applyExpression(CharacterExpression expression, {String? intensity}) {
+    if (intensity != null && intensity != _expressionIntensity) {
+      _expressionIntensity = intensity;
+      _activeResourceExpression = null;
+    }
     if (expression != _currentExpression) _clearPerformanceQueue();
     if (expression != _currentExpression) {
       _activeResourceExpression = null;
@@ -1047,14 +1096,14 @@ class _ChatScreenState extends State<ChatScreen> {
       _appearance.isStanding
           ? 'facial_add_blush_off'
           : 'facial_add_blush_000_off',
-      preset.blush,
+      _resourceFacialEffect('blush') ?? preset.blush,
     );
     _setFacialEffect(
       15,
       _appearance.isStanding
           ? 'facial_add_tear_off'
           : 'facial_add_tear_000_off',
-      preset.tear,
+      _resourceFacialEffect('tear') ?? preset.tear,
     );
     if (!_appearance.isStanding) {
       _spineController!.animationState.clearTrack(16);
@@ -1072,8 +1121,24 @@ class _ChatScreenState extends State<ChatScreen> {
     return null;
   }
 
+  String? _resourceFacialEffect(String family) {
+    for (final name in _activeResourceEffects) {
+      final clip = _resourceBehavior.effectAnimations[name];
+      if (clip != null &&
+          clip.contains('facial_add_$family') &&
+          _resolveResourceClip(clip) != null) {
+        return clip;
+      }
+    }
+    return null;
+  }
+
   void _selectResourceExpression({bool renew = false}) {
     if (!renew && _activeResourceExpression != null) return;
+    final effects = _resourceEmotion?.effectSets ?? const <List<String>>[];
+    _activeResourceEffects = effects.isEmpty
+        ? const []
+        : effects[_random.nextInt(effects.length)];
     final candidates = _resourceEmotion?.expressionSets
         .where(
           (set) =>
@@ -1092,6 +1157,12 @@ class _ChatScreenState extends State<ChatScreen> {
       _random,
     );
   }
+
+  bool _isPlayableExpression(ResourceExpressionSet set) =>
+      _resolveResourceClip(set.eyeOpen) != null &&
+      _resolveResourceClip(set.eyeClosed) != null &&
+      _resolveResourceClip(set.eyebrow) != null &&
+      _resolveResourceClip(set.mouth) != null;
 
   String get _openEye =>
       _resolveResourceClip(_activeResourceExpression?.eyeOpen) ??
@@ -1718,8 +1789,10 @@ class _ChatScreenState extends State<ChatScreen> {
     }
     final cue = performanceCueForAssistantResponse(response);
     final expression = cue.expression;
-    if (expression != null && expression != _currentExpression) {
-      _applyExpression(expression);
+    if (expression != null &&
+        (expression != _currentExpression ||
+            cue.expressionIntensity != _expressionIntensity)) {
+      _applyExpression(expression, intensity: cue.expressionIntensity);
     }
     final actions = cue.actions.isEmpty && cue.action != null
         ? <CharacterAction>[cue.action!]
@@ -2303,6 +2376,7 @@ class _ChatScreenState extends State<ChatScreen> {
               source: reply,
               capabilities: capabilities,
               currentFace: _currentExpression.name,
+              currentIntensity: _expressionIntensity,
               characterState: {
                 'values': widget.controller.characterState.values,
                 'emotion': widget.controller.characterState.emotion,
@@ -2668,7 +2742,7 @@ class _ChatScreenState extends State<ChatScreen> {
         );
         if (segment.posture case final posture?) _selectPosture(posture);
         if (segment.expression case final expression?) {
-          if (expression != _currentExpression) _applyExpression(expression);
+          _applyExpression(expression, intensity: segment.expressionIntensity);
         }
         if (segment.action case final action?) {
           _performSemanticAction(action);
@@ -2695,6 +2769,7 @@ class _ChatScreenState extends State<ChatScreen> {
             path: prepared.path,
             envelope: prepared.envelope,
             expression: segment.expression,
+            expressionIntensity: segment.expressionIntensity,
             action: segment.action,
             posture: segment.posture,
             motionGroupIds: segment.motionGroupIds,
@@ -2910,7 +2985,7 @@ class _ChatScreenState extends State<ChatScreen> {
         }
         if (segment.posture case final posture?) _selectPosture(posture);
         if (segment.expression case final expression?) {
-          if (expression != _currentExpression) _applyExpression(expression);
+          _applyExpression(expression, intensity: segment.expressionIntensity);
         }
         if (segment.action case final action?) {
           _performSemanticAction(action);

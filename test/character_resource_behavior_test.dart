@@ -14,6 +14,83 @@ CharacterResourceBehavior parseProfiles(Map<String, Object?> profiles) =>
     );
 
 void main() {
+  for (final id in [
+    '0001_01',
+    '0001_99',
+    '0002_01',
+    '0003_01',
+    '0004_01',
+    '0005_01',
+  ]) {
+    final skin = 'crf_skn_002_$id';
+    final file = File('assets/character/ryza/$skin/${skin}_gesture.json');
+    test(
+      'all three intensity catalogs remain complete: $skin',
+      () {
+        final source = file.readAsStringSync();
+        final raw = jsonDecode(source) as Map;
+        final profiles = raw['emotionalGesture']['EmotionProfilesV4'] as Map;
+        final parsed = CharacterResourceBehavior.parse(source);
+        for (final emotion in profiles.entries) {
+          final levels = emotion.value['intensityProfiles'] as Map;
+          for (final level in levels.entries) {
+            final expected = (level.value['expressionSets'] as List? ?? [])
+                .cast<Map>()
+                .where((row) => ((row['weight'] ?? 1) as num) > 0);
+            final actual = parsed.profile(
+              emotion.key as String,
+              level.key as String,
+            )!;
+            expect(
+              actual.expressionSets.map((row) => row.id).toList(),
+              expected.map((row) => row['id']).toList(),
+              reason: '$skin ${emotion.key}/${level.key}',
+            );
+          }
+        }
+      },
+      skip: !file.existsSync()
+          ? 'Licensed local resources are not distributed with source'
+          : false,
+    );
+  }
+  test('reads all intensity tuples and authored effect sets', () {
+    final behavior = parseProfiles({
+      'shy': {
+        'intensityProfiles': {
+          for (final level in ['weak', 'normal', 'strong'])
+            level: {
+              'expressionSets': [
+                {
+                  'id': level,
+                  'eyeOpen': 'eye_$level',
+                  'eyebrow': 'brow',
+                  'mouth': 'mouth',
+                },
+                {
+                  'id': 'disabled',
+                  'eyeOpen': 'eye',
+                  'eyebrow': 'brow',
+                  'mouth': 'mouth',
+                  'weight': 0,
+                },
+              ],
+              'effectSets': [
+                {
+                  'names': ['blush002'],
+                },
+              ],
+            },
+        },
+      },
+    });
+    for (final level in ['weak', 'normal', 'strong']) {
+      final profile = behavior.profile('shy', level)!;
+      expect(profile.expressionSets.single.id, level);
+      expect(profile.effectSets.single, ['blush002']);
+    }
+    expect(behavior.profile('shy', 'unknown'), same(behavior.profiles['shy']));
+  });
   for (final skin in ['crf_skn_002_0001_01', 'crf_skn_002_0001_99']) {
     final resource = File('assets/character/ryza/$skin/${skin}_gesture.json');
     test(

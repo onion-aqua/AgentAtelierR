@@ -597,6 +597,7 @@ String mergeTtsInstructions(String base, TtsEmotionIntensity intensity) {
 
 class CharacterPerformanceCue {
   const CharacterPerformanceCue({
+    this.expressionIntensity = 'normal',
     this.expression,
     this.action,
     this.actions = const [],
@@ -605,6 +606,7 @@ class CharacterPerformanceCue {
   });
 
   final CharacterExpression? expression;
+  final String expressionIntensity;
   final CharacterAction? action;
   final List<CharacterAction> actions;
   final List<String> motionGroupIds;
@@ -616,6 +618,7 @@ class CharacterPerformanceCue {
 
 class RyzaPerformanceSegment {
   const RyzaPerformanceSegment({
+    this.expressionIntensity = 'normal',
     required this.speechText,
     this.expression,
     this.action,
@@ -625,6 +628,7 @@ class RyzaPerformanceSegment {
   });
 
   final String speechText;
+  final String expressionIntensity;
   final String? posture;
   final CharacterExpression? expression;
   final CharacterAction? action;
@@ -640,12 +644,16 @@ List<RyzaPerformanceSegment> performanceSegmentsForAssistantResponse(
   for (final segment in parseAssistantSegments(response)) {
     if (segment.speaker != ChatSpeaker.ryza) continue;
     CharacterExpression? expression;
+    var expressionIntensity = 'normal';
     CharacterAction? action;
     final actions = <CharacterAction>[];
     final motionGroupIds = <String>[];
     final faceMatches = _faceCue.allMatches(segment.text);
     for (final match in faceMatches) {
       expression = characterExpressionFromTag(match.group(1) ?? '');
+      expressionIntensity = characterExpressionIntensityFromTag(
+        match.group(1) ?? '',
+      );
     }
     final actionMatches = _actionCue.allMatches(segment.text);
     for (final match in actionMatches) {
@@ -665,6 +673,7 @@ List<RyzaPerformanceSegment> performanceSegmentsForAssistantResponse(
         speechText: speechText,
         posture: postureCueForAssistantResponse('莱莎：${segment.text}'),
         expression: expression,
+        expressionIntensity: expressionIntensity,
         action: action,
         actions: actions,
         motionGroupIds: motionGroupIds,
@@ -691,6 +700,7 @@ String? postureCueForAssistantResponse(String response) {
 
 CharacterPerformanceCue performanceCueForAssistantResponse(String response) {
   CharacterExpression? expression;
+  var expressionIntensity = 'normal';
   CharacterAction? action;
   final actions = <CharacterAction>[];
   final motionGroupIds = <String>[];
@@ -699,6 +709,9 @@ CharacterPerformanceCue performanceCueForAssistantResponse(String response) {
     if (segment.speaker != ChatSpeaker.ryza) continue;
     for (final match in _faceCue.allMatches(segment.text)) {
       expression = characterExpressionFromTag(match.group(1) ?? '');
+      expressionIntensity = characterExpressionIntensityFromTag(
+        match.group(1) ?? '',
+      );
     }
     for (final match in _actionCue.allMatches(segment.text)) {
       actionCueCount += 1;
@@ -716,6 +729,7 @@ CharacterPerformanceCue performanceCueForAssistantResponse(String response) {
   }
   return CharacterPerformanceCue(
     expression: expression,
+    expressionIntensity: expressionIntensity,
     action: action,
     actions: actions,
     motionGroupIds: motionGroupIds,
