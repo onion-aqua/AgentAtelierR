@@ -6,6 +6,7 @@ import 'dart:typed_data';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:html/parser.dart' as html_parser;
 import 'package:http/http.dart' as http;
+import 'package:http/io_client.dart';
 import 'package:path_provider/path_provider.dart';
 
 import 'app_controller.dart';
@@ -925,9 +926,18 @@ class OpenAiCompatibleClient {
     LlmProvider provider = LlmProvider.openAiCompatible,
     bool lightweight = false,
     bool fastPlanning = false,
+    bool performancePlanning = false,
   }) async {
-    if (fastPlanning) {
-      final transport = PlanningHttpClient(http.Client());
+    if (fastPlanning || performancePlanning) {
+      final budget = Duration(seconds: performancePlanning ? 30 : 3);
+      final socketClient = HttpClient()
+        ..connectionTimeout = const Duration(seconds: 3);
+      final transport = PlanningHttpClient(
+        IOClient(socketClient),
+        attemptTimeout: performancePlanning
+            ? const Duration(seconds: 20)
+            : const Duration(milliseconds: 1500),
+      );
       try {
         return await OpenAiCompatibleClient(client: transport)
             .complete(
@@ -938,7 +948,7 @@ class OpenAiCompatibleClient {
               provider: provider,
               lightweight: lightweight,
             )
-            .timeout(const Duration(seconds: 3));
+            .timeout(budget);
       } finally {
         transport.close();
       }

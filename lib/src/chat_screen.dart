@@ -2567,33 +2567,31 @@ class _ChatScreenState extends State<ChatScreen> {
       final stateRevision = widget.controller.dataRevision;
       final stateTurn = '${DateTime.now().microsecondsSinceEpoch}:$generation';
       try {
-        RuntimeLog.instance.info('AI', '独立表演规划开始');
-        final planned = await PerformancePlanner()
-            .plan(
-              userInput: text,
-              source: reply,
-              capabilities: capabilities,
-              currentFace: _currentExpression.name,
-              currentIntensity: _expressionIntensity,
-              characterState: {
-                'values': widget.controller.characterState.values,
-                'emotion': widget.controller.characterState.emotion,
-                'reason_language':
-                    widget.controller.interfaceLanguage.promptLabel,
-              },
-              onStateProposal: (proposal) => stateProposal = proposal,
-              recentActions: _recentAmbientGroupIds.take(4).toList(),
-              complete: (messages) => _aiClient.complete(
-                fastPlanning: true,
-                provider: requestProvider,
-                baseUrl: requestBaseUrl,
-                apiKey: apiKey,
-                model: requestModel,
-                lightweight: true,
-                messages: messages,
-              ),
-            )
-            .timeout(const Duration(seconds: 3));
+        RuntimeLog.instance.info('AI', '独立表演规划开始（连接3秒，单次生成20秒，总预算30秒；与语音规划并行）');
+        final planned = await PerformancePlanner().plan(
+          userInput: text,
+          source: reply,
+          capabilities: capabilities,
+          currentFace: _currentExpression.name,
+          currentIntensity: _expressionIntensity,
+          characterState: {
+            'values': widget.controller.characterState.values,
+            'emotion': widget.controller.characterState.emotion,
+            'reason_language': widget.controller.interfaceLanguage.promptLabel,
+          },
+          onStateProposal: (proposal) => stateProposal = proposal,
+          recentActions: _recentAmbientGroupIds.take(4).toList(),
+          complete: (messages) => _aiClient.complete(
+            performancePlanning: true,
+            provider: requestProvider,
+            baseUrl: requestBaseUrl,
+            apiKey: apiKey,
+            model: requestModel,
+            lightweight: true,
+            messages: messages,
+          ),
+        );
+        if (!mounted || generation != _replyGeneration) return;
         final current = _buildPerformancePromptContext();
         if (current.appearanceId == capabilities.appearanceId &&
             current.revision == capabilities.revision) {
