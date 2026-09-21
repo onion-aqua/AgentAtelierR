@@ -155,20 +155,27 @@ final RegExp _metadataLine = RegExp(
 );
 
 /// Preserve multiline user narration independently from spoken dialogue.
-({String narration, String speech}) parseUserComposerParts(String text) {
+({String narration, String speech, String bottomNarration})
+parseUserComposerParts(String text) {
   final narration = <String>[];
   final speech = <String>[];
+  final bottom = <String>[];
   var isNarration = false;
+  var afterSpeech = false;
   for (final line in text.replaceAll('\r\n', '\n').split('\n')) {
     final prefix = RegExp(r'^\s*(旁白(?:上|下)?|发言)\s*[：:]\s*').firstMatch(line);
-    if (prefix != null) isNarration = prefix.group(1) != '发言';
-    (isNarration ? narration : speech).add(
+    if (prefix != null) {
+      isNarration = prefix.group(1) != '发言';
+      if (!isNarration || prefix.group(1) == '旁白下') afterSpeech = true;
+    }
+    (isNarration ? (afterSpeech ? bottom : narration) : speech).add(
       prefix == null ? line : line.substring(prefix.end),
     );
   }
   return (
     narration: narration.join('\n').trim(),
     speech: speech.join('\n').trim(),
+    bottomNarration: bottom.join('\n').trim(),
   );
 }
 

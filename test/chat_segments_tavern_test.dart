@@ -2,6 +2,16 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:ryza_chat_mvp/src/chat_segments.dart';
 
 void main() {
+  test('user narration preserves both sides including empty speech', () {
+    final parts = parseUserComposerParts('旁白：走近\n发言：你好\n旁白：挥手\n微笑');
+    expect(parts.narration, '走近');
+    expect(parts.speech, '你好');
+    expect(parts.bottomNarration, '挥手\n微笑');
+    final bottomOnly = parseUserComposerParts('发言：\n旁白：离开');
+    expect(bottomOnly.narration, isEmpty);
+    expect(bottomOnly.speech, isEmpty);
+    expect(bottomOnly.bottomNarration, '离开');
+  });
   test('user narration is separate and retains multiline continuation', () {
     final parts = parseUserComposerParts('旁白：摸摸头\n轻轻笑了。\n发言：见到你很开心\n真的。');
     expect(parts.narration, '摸摸头\n轻轻笑了。');

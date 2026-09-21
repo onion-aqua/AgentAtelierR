@@ -2207,9 +2207,10 @@ class _ChatScreenState extends State<ChatScreen> {
         automaticPrompt ??
         [
           if (narration.isNotEmpty) '旁白：$narration',
-          if (rawText.isNotEmpty) '发言：$rawText',
+          if (rawText.isNotEmpty || narrationBottom.isNotEmpty) '发言：$rawText',
           if (narrationBottom.isNotEmpty) '旁白：$narrationBottom',
-          if (narration.isEmpty && rawText.isEmpty) '请分析我发送的附件。',
+          if (narration.isEmpty && rawText.isEmpty && narrationBottom.isEmpty)
+            '请分析我发送的附件。',
         ].join('\n');
     final isAutomatic = automaticPrompt != null;
 
@@ -2614,7 +2615,12 @@ class _ChatScreenState extends State<ChatScreen> {
     _narrationInputController
       ..text = restored.narration
       ..selection = TextSelection.collapsed(offset: restored.narration.length);
-    if (restored.narration.isNotEmpty) {
+    _narrationBottomInputController
+      ..text = restored.bottomNarration
+      ..selection = TextSelection.collapsed(
+        offset: restored.bottomNarration.length,
+      );
+    if (restored.narration.isNotEmpty || restored.bottomNarration.isNotEmpty) {
       widget.controller.setSplitNarrationComposer(true);
     }
     setState(() {
@@ -5970,6 +5976,18 @@ class _GlassMessageList extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [body, const SizedBox(width: 10), avatar],
                 ),
+              if (userParts.bottomNarration.isNotEmpty) ...[
+                const SizedBox(height: 10),
+                _NarratorRun(
+                  segments: [
+                    ChatSegment(
+                      speaker: ChatSpeaker.narrator,
+                      text: userParts.bottomNarration,
+                    ),
+                  ],
+                  glass: true,
+                ),
+              ],
             ],
           ),
         );
@@ -7382,6 +7400,18 @@ class _MessageList extends StatelessWidget {
                       ),
                     ),
                   ),
+                if (parts.bottomNarration.isNotEmpty) ...[
+                  const SizedBox(height: 10),
+                  _NarratorRun(
+                    segments: [
+                      ChatSegment(
+                        speaker: ChatSpeaker.narrator,
+                        text: parts.bottomNarration,
+                      ),
+                    ],
+                    glass: glass,
+                  ),
+                ],
               ],
             ),
           );
