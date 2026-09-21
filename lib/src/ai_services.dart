@@ -14,6 +14,7 @@ import 'runtime_log.dart';
 import 'openai_configuration_slots.dart';
 import 'retry_policy.dart';
 import 'model_thinking.dart';
+import 'planning_http_client.dart';
 
 part 'gemini_interactions.dart';
 
@@ -923,7 +924,25 @@ class OpenAiCompatibleClient {
     required List<Map<String, String>> messages,
     LlmProvider provider = LlmProvider.openAiCompatible,
     bool lightweight = false,
+    bool fastPlanning = false,
   }) async {
+    if (fastPlanning) {
+      final transport = PlanningHttpClient(http.Client());
+      try {
+        return await OpenAiCompatibleClient(client: transport)
+            .complete(
+              baseUrl: baseUrl,
+              apiKey: apiKey,
+              model: model,
+              messages: messages,
+              provider: provider,
+              lightweight: lightweight,
+            )
+            .timeout(const Duration(seconds: 3));
+      } finally {
+        transport.close();
+      }
+    }
     if (provider == LlmProvider.gemini) {
       return _geminiChat(
         baseUrl,

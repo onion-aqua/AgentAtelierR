@@ -86,13 +86,60 @@ void main() {
     await controller.loadFromLocalSlot(0);
 
     expect(controller.messages.last.text, '存档前的消息');
-    expect(controller.worldSetting, '当前全局世界设定');
+    expect(controller.worldSetting, '存档时的世界设定');
     expect(controller.fishAudioReferenceId, 'current-voice');
     expect(controller.fishAudioBaseUrl, 'https://current.example.test/v1/tts');
 
     await controller.deleteLocalSlot(0);
     expect(controller.localSaveSlots.first, isNull);
   });
+
+  test(
+    'save management roundtrips role settings without loading on import',
+    () async {
+      SharedPreferences.setMockInitialValues({});
+      final c = await AppController.load();
+      c.setCharacterPersona('存档人物');
+      c.setWorldSetting('存档世界');
+      c.setWorldSettingInjectionEnabled(false);
+      final profile = c.exportData()['userProfile'];
+      final slots = c.exportData()['settingsSlots'];
+      c.messages = [];
+      await c.saveToLocalSlot(0);
+      await c.renameLocalSlot(0, ' 新旅程 ');
+      final saved = c.exportLocalSlot(0);
+      expect(c.localSaveSlots[0]!.name, '新旅程');
+      expect(
+        (saved['snapshot'] as Map)['roleSettings'],
+        containsPair('userProfile', profile),
+      );
+      c.setCharacterPersona('当前人物');
+      c.setWorldSetting('当前世界');
+      c.setWorldSettingInjectionEnabled(true);
+      c.addUserMessage('当前消息');
+      await c.importLocalSlot(1, saved);
+      expect(c.characterPersona, '当前人物');
+      expect(c.messages.last.text, '当前消息');
+      final malformed = jsonDecode(jsonEncode(saved)) as Map<String, dynamic>;
+      (malformed['snapshot'] as Map)['roleSettings'] = 'broken';
+      await expectLater(c.importLocalSlot(1, malformed), throwsFormatException);
+      expect(c.localSaveSlots[1]!.name, '新旅程');
+      await c.loadFromLocalSlot(1);
+      expect(c.messages, isEmpty);
+      expect(c.characterPersona, '存档人物');
+      expect(c.worldSetting, '存档世界');
+      expect(c.worldSettingInjectionEnabled, isFalse);
+      expect(c.exportData()['userProfile'], profile);
+      expect(c.exportData()['settingsSlots'], slots);
+      final legacy = jsonDecode(jsonEncode(saved)) as Map<String, dynamic>;
+      (legacy['snapshot'] as Map).remove('roleSettings');
+      await c.importLocalSlot(2, legacy);
+      c.setWorldSetting('旧存档保留当前设置');
+      await c.loadFromLocalSlot(2);
+      expect(c.worldSetting, '旧存档保留当前设置');
+      c.dispose();
+    },
+  );
 
   test('empty and out-of-range save slots are rejected', () async {
     SharedPreferences.setMockInitialValues({});

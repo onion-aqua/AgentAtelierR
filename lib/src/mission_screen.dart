@@ -320,9 +320,9 @@ class _EmptyQuestState extends StatelessWidget {
           const SizedBox(height: 8),
           Text(
             language.text(
-              '回到聊天并请莱莎想一个任务。采集、调合、旅行或交流会自动记录进度。',
-              'Ask Ryza to create a quest in chat. Gathering, synthesis, travel, and conversation update it automatically.',
-              '会話に戻り、ライザに依頼を考えてもらいましょう。採取・調合・移動・会話で進行します。',
+              '开启 AI 接口中的联网 Agent，然后在聊天中说“给我一个委托”，或接受莱莎提出的任务。工具创建成功后会显示在这里；采集、调合、旅行或交流会自动记录进度。',
+              'Enable Agent in AI settings, then ask Ryza for a quest or accept her proposal. Quests appear here after successful tool creation; gathering, synthesis, travel and conversation update progress automatically.',
+              'AI設定のAgentを有効にして「依頼を作って」と話しかけるか、ライザの提案を受けてください。ツールで作成された依頼がここに表示され、採取・調合・移動・会話で進行します。',
             ),
             textAlign: TextAlign.center,
             style: TextStyle(

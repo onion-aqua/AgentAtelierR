@@ -21,6 +21,7 @@ import 'settings_slot_selector.dart';
 import 'openai_settings_dialog.dart';
 import 'legacy_data_converter.dart';
 import 'settings_detail_page.dart';
+import 'conversation_collections_page.dart';
 
 String _activeTtsModel(AppController controller) =>
     switch (controller.ttsProvider) {
@@ -848,6 +849,22 @@ class SettingsScreenState extends State<SettingsScreen> {
                 ),
               ],
               if (_category == _SettingsCategory.data) ...[
+                ListTile(
+                  leading: const Icon(Icons.collections_bookmark_outlined),
+                  title: Text(
+                    language.text(
+                      '语音和文字收藏',
+                      'Voice & text collections',
+                      '音声・テキストのお気に入り',
+                    ),
+                  ),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => _openDetailPage<void>(
+                    context: context,
+                    builder: (_) =>
+                        ConversationCollectionsPage(controller: controller),
+                  ),
+                ),
                 ListTile(
                   leading: const Icon(Icons.psychology_alt_outlined),
                   title: Text(

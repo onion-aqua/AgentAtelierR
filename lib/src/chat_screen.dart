@@ -16,6 +16,9 @@ import 'auxiliary_llm_tasks.dart';
 import 'performance_planner.dart';
 import 'speech_planner.dart';
 import 'app_controller.dart';
+import 'conversation_collection_store.dart';
+import 'swipe_collection_selection.dart';
+import 'voice_playback_progress.dart';
 import 'app_theme.dart';
 import 'app_localization.dart';
 import 'attachment_thumbnail_store.dart';
@@ -282,6 +285,151 @@ class _ChatScreenState extends State<ChatScreen> {
   Completer<void>? _speechCancellation;
   final Set<String> _temporarySpeechPaths = <String>{};
   List<_CachedSpeechSegment> _lastSpeech = const [];
+  String? _lastSpeechSource;
+  String? _lastSpeechPerformance;
+  bool _regeneratingSpeech = false;
+  bool _selectingCollection = false;
+  bool _savingCollection = false;
+  final Map<String, Set<String>> _collectionSelection = {};
+  Set<String> _availableCollectionVoices = {};
+
+  Future<void> _toggleCollection() async {
+    if (_savingCollection) return;
+    setState(() => _savingCollection = true);
+    try {
+      final store = await ConversationCollectionStore.open();
+      if (!_selectingCollection) {
+        final keys = await store.availableVoiceKeys();
+        if (!mounted) return;
+        setState(() {
+          _availableCollectionVoices = keys;
+          _collectionSelection.clear();
+          _selectingCollection = true;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              widget.controller.interfaceLanguage.text(
+                '右滑自动选择对话和已有语音，左滑取消；再次点击收藏按钮保存。',
+                'Swipe a message right to select it. Cached audio is included automatically; tap the collection button again to save.',
+                '会話を右にスワイプして選択。保存済み音声も含めます。もう一度ボタンを押して保存。',
+              ),
+            ),
+          ),
+        );
+      } else {
+        final selections = [
+          for (final message in widget.controller.messages)
+            if (_collectionSelection[message.collectionKey]?.isNotEmpty ??
+                false)
+              <String, dynamic>{
+                'key': message.collectionKey,
+                'text': _glassMessageText(message),
+                'sourceText': message.text,
+                'isUser': message.isUser,
+                'saveText': _collectionSelection[message.collectionKey]!
+                    .contains('text'),
+                'saveVoice': _collectionSelection[message.collectionKey]!
+                    .contains('voice'),
+              },
+        ];
+        if (selections.isNotEmpty) {
+          if (!mounted) return;
+          final language = widget.controller.interfaceLanguage;
+          var draftName = '';
+          final formKey = GlobalKey<FormState>();
+          final name = await showDialog<String>(
+            context: context,
+            builder: (dialogContext) {
+              void save() {
+                if (formKey.currentState!.validate()) {
+                  Navigator.pop(dialogContext, draftName.trim());
+                }
+              }
+
+              return AlertDialog(
+                title: Text(
+                  language.text('收藏名称', 'Collection name', 'お気に入りの名前'),
+                ),
+                content: Form(
+                  key: formKey,
+                  child: TextFormField(
+                    autofocus: true,
+                    maxLength: 60,
+                    textInputAction: TextInputAction.done,
+                    decoration: InputDecoration(
+                      hintText: language.text(
+                        '为这份收藏起个名字',
+                        'Name this collection',
+                        '名前を入力してください',
+                      ),
+                    ),
+                    onChanged: (value) => draftName = value,
+                    validator: (value) => (value ?? '').trim().isEmpty
+                        ? language.text(
+                            '请输入收藏名称',
+                            'Please enter a name',
+                            '名前を入力してください',
+                          )
+                        : null,
+                    onFieldSubmitted: (_) => save(),
+                  ),
+                ),
+                actions: [
+                  TextButton(
+                    onPressed: () => Navigator.pop(dialogContext),
+                    child: Text(
+                      language.text(
+                        '取消收藏',
+                        'Cancel collection',
+                        'お気に入り登録をキャンセル',
+                      ),
+                    ),
+                  ),
+                  TextButton(
+                    onPressed: save,
+                    child: Text(language.text('保存', 'Save', '保存')),
+                  ),
+                ],
+              );
+            },
+          );
+          if (!mounted) return;
+          if (name == null) {
+            setState(() {
+              _selectingCollection = false;
+              _collectionSelection.clear();
+            });
+            return;
+          }
+          await store.collect(selections, name: name);
+        }
+        if (!mounted) return;
+        setState(() => _selectingCollection = false);
+        if (selections.isNotEmpty) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                widget.controller.interfaceLanguage.text(
+                  '已保存至设置 → 数据管理 → 语音和文字收藏',
+                  'Saved to Settings → Local data → Collections',
+                  '設定 → データ管理 → お気に入りに保存しました',
+                ),
+              ),
+            ),
+          );
+        }
+      }
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('$error')));
+      }
+    } finally {
+      if (mounted) setState(() => _savingCollection = false);
+    }
+  }
+
   int _motionGeneration = 0;
   int _replyGeneration = 0;
   int _memoryRefreshGeneration = 0;
@@ -399,6 +547,8 @@ class _ChatScreenState extends State<ChatScreen> {
   void _handleControllerChange({bool forceAppearanceReload = false}) {
     _syncBackgroundVoicePolicy();
     if (_observedDataRevision != widget.controller.dataRevision) {
+      _selectingCollection = false;
+      _collectionSelection.clear();
       _observedDataRevision = widget.controller.dataRevision;
       _resetConversationWorkForDataReplacement();
     }
@@ -2374,6 +2524,7 @@ class _ChatScreenState extends State<ChatScreen> {
           apiKey: apiKey,
           model: requestModel,
           lightweight: true,
+          fastPlanning: true,
           messages: messages,
         ),
       );
@@ -2399,6 +2550,7 @@ class _ChatScreenState extends State<ChatScreen> {
               onStateProposal: (proposal) => stateProposal = proposal,
               recentActions: _recentAmbientGroupIds.take(4).toList(),
               complete: (messages) => _aiClient.complete(
+                fastPlanning: true,
                 provider: requestProvider,
                 baseUrl: requestBaseUrl,
                 apiKey: apiKey,
@@ -2407,7 +2559,7 @@ class _ChatScreenState extends State<ChatScreen> {
                 messages: messages,
               ),
             )
-            .timeout(const Duration(seconds: 8));
+            .timeout(const Duration(seconds: 3));
         final current = _buildPerformancePromptContext();
         if (current.appearanceId == capabilities.appearanceId &&
             current.revision == capabilities.revision) {
@@ -2661,7 +2813,7 @@ class _ChatScreenState extends State<ChatScreen> {
             asmr: asmr,
             complete: complete,
           )
-          .timeout(const Duration(seconds: 8));
+          .timeout(const Duration(seconds: 3));
       RuntimeLog.instance.info('TTS', '独立语音演出规划完成：${plan.lines}');
       return plan;
     } on Object catch (error) {
@@ -2674,6 +2826,9 @@ class _ChatScreenState extends State<ChatScreen> {
     String text, {
     String? displaySource,
   }) async {
+    final collectionMessage = widget.controller.messages
+        .where((m) => !m.isUser && m.text == (displaySource ?? text))
+        .lastOrNull;
     if (!_mayPlayVoice) return;
     if (text.trim().isEmpty) {
       _stopSpeakingAnimation();
@@ -2803,7 +2958,24 @@ class _ChatScreenState extends State<ChatScreen> {
           _stopSpeakingAnimation();
         }
       }
+      if (collectionMessage != null) {
+        try {
+          final store = await ConversationCollectionStore.open();
+          await store.cacheVoice(
+            collectionMessage.collectionKey,
+            completedSegments.map((s) => s.path).toList(),
+          );
+        } catch (error) {
+          RuntimeLog.instance.warning('TTS', '语音缓存保存失败：$error');
+        }
+      }
+      if (generation != _speechPlaybackGeneration) {
+        await _deleteSpeechSegments(completedSegments);
+        return;
+      }
       await _replaceLastSpeech(completedSegments);
+      _lastSpeechSource = displaySource ?? text;
+      _lastSpeechPerformance = text;
       RuntimeLog.instance.info(
         'TTS',
         '合成与播放完成，分段数=${completedSegments.length}',
@@ -2972,10 +3144,56 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _clearLastSpeech() async {
+    _lastSpeechSource = null;
+    _lastSpeechPerformance = null;
     final previous = _lastSpeech;
     _lastSpeech = const [];
     await _deleteSpeechSegments(previous);
     if (mounted) setState(() {});
+  }
+
+  Future<void> _regenerateLastSpeech() async {
+    if (_isReplying || _regeneratingSpeech || !_mayPlayVoice) return;
+    final message = widget.controller.messages
+        .where((m) => !m.isUser && m.text.trim().isNotEmpty)
+        .lastOrNull;
+    if (message == null) return;
+    if (!widget.controller.fishTtsEnabled) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            widget.controller.interfaceLanguage.text(
+              '请先开启语音合成',
+              'Enable speech synthesis first',
+              '先に音声合成を有効にしてください',
+            ),
+          ),
+        ),
+      );
+      return;
+    }
+    final source = message.text;
+    final performance = _lastSpeechSource == source
+        ? (_lastSpeechPerformance ?? source)
+        : source;
+    _cancelSpeechPlayback();
+    final generation = ++_replyGeneration;
+    setState(() {
+      _regeneratingSpeech = true;
+      _isReplying = true;
+    });
+    try {
+      await _playTtsIfConfigured(performance, displaySource: source);
+    } catch (error, stack) {
+      RuntimeLog.instance.error('TTS', error, stack);
+    } finally {
+      if (mounted) {
+        setState(() {
+          _regeneratingSpeech = false;
+          if (generation == _replyGeneration) _isReplying = false;
+        });
+      }
+    }
   }
 
   Future<void> _replayLastSpeech() async {
@@ -3950,6 +4168,25 @@ class _ChatScreenState extends State<ChatScreen> {
               onSuggestReply: _suggestUserReply,
               onUndo: _undoLastMessage,
               onReplay: _replayLastSpeech,
+              speechProgress: VoicePlaybackProgress(player: _audioPlayer),
+              onRegenerateSpeech: _regenerateLastSpeech,
+              regeneratingSpeech: _regeneratingSpeech,
+              selectingCollection: _selectingCollection,
+              savingCollection: _savingCollection,
+              collectionSelection: _collectionSelection,
+              availableCollectionVoices: _availableCollectionVoices,
+              onToggleCollection: _toggleCollection,
+              onSelectCollection: (key, type, selected) => setState(() {
+                final choices = _collectionSelection.putIfAbsent(
+                  key,
+                  () => <String>{},
+                );
+                if (selected) {
+                  choices.add(type);
+                } else {
+                  choices.remove(type);
+                }
+              }),
               onContinue: _continueConversation,
               showFullscreenButton:
                   _conversationFullscreen || panelFraction >= 0.675,
@@ -5565,6 +5802,12 @@ class _SuggestionQuotaButton extends StatelessWidget {
 
 class _LiquidGlassConversation extends StatelessWidget {
   const _LiquidGlassConversation({
+    required this.selectingCollection,
+    required this.savingCollection,
+    required this.collectionSelection,
+    required this.availableCollectionVoices,
+    required this.onToggleCollection,
+    required this.onSelectCollection,
     required this.language,
     required this.liquidGlass,
     required this.translationOnly,
@@ -5602,6 +5845,9 @@ class _LiquidGlassConversation extends StatelessWidget {
     required this.onSuggestReply,
     required this.onUndo,
     required this.onReplay,
+    required this.speechProgress,
+    required this.onRegenerateSpeech,
+    required this.regeneratingSpeech,
     required this.onContinue,
     required this.showFullscreenButton,
     required this.conversationFullscreen,
@@ -5610,6 +5856,12 @@ class _LiquidGlassConversation extends StatelessWidget {
   });
 
   final AppLanguage language;
+  final bool selectingCollection;
+  final bool savingCollection;
+  final Map<String, Set<String>> collectionSelection;
+  final Set<String> availableCollectionVoices;
+  final VoidCallback onToggleCollection;
+  final void Function(String, String, bool) onSelectCollection;
   final bool liquidGlass;
   final bool translationOnly;
   final List<ChatMessage> messages;
@@ -5646,6 +5898,9 @@ class _LiquidGlassConversation extends StatelessWidget {
   final VoidCallback onSuggestReply;
   final VoidCallback onUndo;
   final VoidCallback onReplay;
+  final Widget speechProgress;
+  final VoidCallback onRegenerateSpeech;
+  final bool regeneratingSpeech;
   final VoidCallback onContinue;
   final bool showFullscreenButton;
   final bool conversationFullscreen;
@@ -5667,17 +5922,27 @@ class _LiquidGlassConversation extends StatelessWidget {
                   child: Stack(
                     children: [
                       Positioned.fill(
-                        child: _GlassMessageList(
-                          language: language,
-                          messages: messages,
-                          controller: scrollController,
-                          activeAssistantSegmentIndex:
-                              activeAssistantSegmentIndex,
-                          activeSegmentDisplayDuration:
-                              activeSegmentDisplayDuration,
-                          latestAssistantMessageKey: latestAssistantMessageKey,
-                          translationOnly: translationOnly,
-                        ),
+                        child: selectingCollection
+                            ? _CollectionMessageSelector(
+                                messages: messages,
+                                language: language,
+                                selection: collectionSelection,
+                                availableVoices: availableCollectionVoices,
+                                onChanged: onSelectCollection,
+                                enabled: !savingCollection,
+                              )
+                            : _GlassMessageList(
+                                language: language,
+                                messages: messages,
+                                controller: scrollController,
+                                activeAssistantSegmentIndex:
+                                    activeAssistantSegmentIndex,
+                                activeSegmentDisplayDuration:
+                                    activeSegmentDisplayDuration,
+                                latestAssistantMessageKey:
+                                    latestAssistantMessageKey,
+                                translationOnly: translationOnly,
+                              ),
                       ),
                       if (showScrollToBottomIndicator)
                         Positioned(
@@ -5694,25 +5959,29 @@ class _LiquidGlassConversation extends StatelessWidget {
                   height: 1,
                   color: Colors.white.withValues(alpha: 0.2),
                 ),
-                _GlassComposer(
-                  language: language,
-                  controller: inputController,
-                  narrationController: narrationController,
-                  bottomNarrationController: bottomNarrationController,
-                  splitNarration: splitNarration,
-                  onToggleNarration: onToggleNarration,
-                  isReplying: isReplying,
-                  showMicrophone: showMicrophone,
-                  unlockInputWhileReplying: unlockInputWhileReplying,
-                  attachments: attachments,
-                  liquidGlass: liquidGlass,
-                  onTakePhoto: onTakePhoto,
-                  onPickImage: onPickImage,
-                  onPickFile: onPickFile,
-                  onRemoveAttachment: onRemoveAttachment,
-                  onSubmitted: onSubmitted,
-                  onSend: onSend,
-                  onCancel: onCancel,
+                speechProgress,
+                IgnorePointer(
+                  ignoring: selectingCollection,
+                  child: _GlassComposer(
+                    language: language,
+                    controller: inputController,
+                    narrationController: narrationController,
+                    bottomNarrationController: bottomNarrationController,
+                    splitNarration: splitNarration,
+                    onToggleNarration: onToggleNarration,
+                    isReplying: isReplying,
+                    showMicrophone: showMicrophone,
+                    unlockInputWhileReplying: unlockInputWhileReplying,
+                    attachments: attachments,
+                    liquidGlass: liquidGlass,
+                    onTakePhoto: onTakePhoto,
+                    onPickImage: onPickImage,
+                    onPickFile: onPickFile,
+                    onRemoveAttachment: onRemoveAttachment,
+                    onSubmitted: onSubmitted,
+                    onSend: onSend,
+                    onCancel: onCancel,
+                  ),
                 ),
               ],
             ),
@@ -5720,65 +5989,106 @@ class _LiquidGlassConversation extends StatelessWidget {
         ),
         Positioned(
           left: 12,
+          right: showFullscreenButton ? 116 : 64,
           top: 0,
-          child: Row(
-            children: [
-              _SuggestionQuotaButton(
-                language: language,
-                liquidGlass: liquidGlass,
-                isSuggesting: isSuggestingReply,
-                remaining: suggestionUsesRemaining,
-                progress: suggestionRefreshProgress,
-                wait: suggestionRefreshWait,
-                onPressed:
-                    !isReplying &&
-                        !isSuggestingReply &&
-                        suggestionUsesRemaining > 0
-                    ? onSuggestReply
-                    : null,
-              ),
-              const SizedBox(width: 7),
-              GlassIconButton(
-                liquidGlass: liquidGlass,
-                icon: Icons.undo_rounded,
-                tooltip: language.text(
-                  '撤回上一条消息',
-                  'Undo last message',
-                  '直前のメッセージを取り消す',
+          child: FittedBox(
+            fit: BoxFit.scaleDown,
+            alignment: Alignment.centerLeft,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                _SuggestionQuotaButton(
+                  language: language,
+                  liquidGlass: liquidGlass,
+                  isSuggesting: isSuggestingReply,
+                  remaining: suggestionUsesRemaining,
+                  progress: suggestionRefreshProgress,
+                  wait: suggestionRefreshWait,
+                  onPressed:
+                      !isReplying &&
+                          !selectingCollection &&
+                          !isSuggestingReply &&
+                          suggestionUsesRemaining > 0
+                      ? onSuggestReply
+                      : null,
                 ),
-                onPressed: canUndo ? onUndo : null,
-                size: 36,
-              ),
-              const SizedBox(width: 7),
-              GlassIconButton(
-                liquidGlass: liquidGlass,
-                icon: isContinuing
-                    ? Icons.autorenew_rounded
-                    : Icons.double_arrow_rounded,
-                iconWidget: isContinuing
-                    ? const _RotatingIcon(Icons.autorenew_rounded)
-                    : null,
-                tooltip: language.text(
-                  '让莱莎继续对话',
-                  'Let Ryza continue',
-                  'ライザに会話を続けてもらう',
+                const SizedBox(width: 7),
+                GlassIconButton(
+                  liquidGlass: liquidGlass,
+                  icon: Icons.undo_rounded,
+                  tooltip: language.text(
+                    '撤回上一条消息',
+                    'Undo last message',
+                    '直前のメッセージを取り消す',
+                  ),
+                  onPressed: canUndo && !selectingCollection ? onUndo : null,
+                  size: 36,
                 ),
-                onPressed: canContinue && !isContinuing ? onContinue : null,
-                size: 36,
-              ),
-              const SizedBox(width: 7),
-              GlassIconButton(
-                liquidGlass: liquidGlass,
-                icon: Icons.replay_rounded,
-                tooltip: language.text(
-                  '重播上一条语音',
-                  'Replay last voice',
-                  '直前の音声を再生',
+                const SizedBox(width: 7),
+                GlassIconButton(
+                  liquidGlass: liquidGlass,
+                  icon: isContinuing
+                      ? Icons.autorenew_rounded
+                      : Icons.double_arrow_rounded,
+                  iconWidget: isContinuing
+                      ? const _RotatingIcon(Icons.autorenew_rounded)
+                      : null,
+                  tooltip: language.text(
+                    '让莱莎继续对话',
+                    'Let Ryza continue',
+                    'ライザに会話を続けてもらう',
+                  ),
+                  onPressed:
+                      canContinue && !isContinuing && !selectingCollection
+                      ? onContinue
+                      : null,
+                  size: 36,
                 ),
-                onPressed: canReplay ? onReplay : null,
-                size: 36,
-              ),
-            ],
+                const SizedBox(width: 7),
+                GlassIconButton(
+                  liquidGlass: liquidGlass,
+                  icon: Icons.replay_rounded,
+                  iconWidget: regeneratingSpeech
+                      ? const _RotatingIcon(Icons.autorenew_rounded)
+                      : null,
+                  onLongPress:
+                      !isReplying &&
+                          !selectingCollection &&
+                          messages.any(
+                            (m) => !m.isUser && m.text.trim().isNotEmpty,
+                          )
+                      ? onRegenerateSpeech
+                      : null,
+                  tooltip: language.text(
+                    '点击重播语音，长按重新生成',
+                    'Tap to replay; hold to regenerate speech',
+                    'タップで再生、長押しで音声を再生成',
+                  ),
+                  onPressed: canReplay && !selectingCollection
+                      ? onReplay
+                      : null,
+                  size: 36,
+                ),
+                const SizedBox(width: 7),
+                GlassIconButton(
+                  liquidGlass: liquidGlass,
+                  icon: selectingCollection
+                      ? Icons.bookmark_add_rounded
+                      : Icons.checklist_rounded,
+                  tooltip: language.text(
+                    selectingCollection ? '保存收藏（未选择则退出）' : '多选收藏文字或语音',
+                    selectingCollection
+                        ? 'Save collection (empty selection exits)'
+                        : 'Select text or audio',
+                    selectingCollection ? 'お気に入りを保存（未選択で終了）' : 'テキスト・音声を選択',
+                  ),
+                  onPressed: isReplying || savingCollection
+                      ? null
+                      : onToggleCollection,
+                  size: 36,
+                ),
+              ],
+            ),
           ),
         ),
         Positioned(
@@ -5858,6 +6168,63 @@ class _GlassDragHandle extends StatelessWidget {
       ),
     );
   }
+}
+
+class _CollectionMessageSelector extends StatelessWidget {
+  const _CollectionMessageSelector({
+    required this.messages,
+    required this.language,
+    required this.selection,
+    required this.availableVoices,
+    required this.onChanged,
+    required this.enabled,
+  });
+  final List<ChatMessage> messages;
+  final AppLanguage language;
+  final Map<String, Set<String>> selection;
+  final Set<String> availableVoices;
+  final void Function(String, String, bool) onChanged;
+  final bool enabled;
+
+  @override
+  Widget build(BuildContext context) => ListView.separated(
+    reverse: true,
+    padding: const EdgeInsets.fromLTRB(4, 32, 14, 8),
+    itemCount: messages.length,
+    separatorBuilder: (_, _) =>
+        Divider(height: 1, color: Colors.white.withValues(alpha: 0.2)),
+    itemBuilder: (context, index) {
+      final message = messages[messages.length - 1 - index];
+      final key = message.collectionKey;
+      final choices = selection[key] ?? const <String>{};
+      final voiceAvailable = !message.isUser && availableVoices.contains(key);
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 8),
+        child: SwipeCollectionSelection(
+          key: ValueKey(key),
+          selected: choices.contains('text'),
+          selectedLabel: language.text('已选择', 'Selected', '選択済み'),
+          onChanged: enabled
+              ? (value) {
+                  onChanged(key, 'text', value);
+                  onChanged(key, 'voice', value && voiceAvailable);
+                }
+              : null,
+          child: message.isUser
+              ? _UserComposerBody(text: message.displayText, glass: true)
+              : _SeparatedAssistantMessage(
+                  response: message.displayText,
+                  translationOnly: false,
+                  language: language,
+                  attachments: message.attachments,
+                  glass: true,
+                  activeSegmentIndex: null,
+                  activeSegmentDisplayDuration: Duration.zero,
+                ),
+        ),
+      );
+    },
+  );
 }
 
 class _GlassMessageList extends StatelessWidget {

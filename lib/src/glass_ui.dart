@@ -143,6 +143,7 @@ class GlassIconButton extends StatelessWidget {
     required this.onPressed,
     this.size = 42,
     this.iconWidget,
+    this.onLongPress,
   });
 
   final bool liquidGlass;
@@ -151,6 +152,7 @@ class GlassIconButton extends StatelessWidget {
   final VoidCallback? onPressed;
   final double size;
   final Widget? iconWidget;
+  final VoidCallback? onLongPress;
 
   @override
   Widget build(BuildContext context) {
@@ -159,14 +161,22 @@ class GlassIconButton extends StatelessWidget {
       blurSigma: 10,
       borderRadius: BorderRadius.circular(size / 2),
       fallbackColor: Colors.black.withValues(alpha: 0.38),
-      child: SizedBox.square(
-        dimension: size,
-        child: IconButton(
-          onPressed: onPressed,
-          tooltip: tooltip,
-          color: Colors.white,
-          disabledColor: Colors.white38,
-          icon: iconWidget ?? Icon(icon, size: size * 0.5),
+      child: Tooltip(
+        message: tooltip,
+        triggerMode: onLongPress == null
+            ? TooltipTriggerMode.longPress
+            : TooltipTriggerMode.manual,
+        child: SizedBox.square(
+          dimension: size,
+          child: GestureDetector(
+            onLongPress: onLongPress,
+            child: IconButton(
+              onPressed: onPressed,
+              color: Colors.white,
+              disabledColor: Colors.white38,
+              icon: iconWidget ?? Icon(icon, size: size * 0.5),
+            ),
+          ),
         ),
       ),
     );

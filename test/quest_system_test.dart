@@ -11,6 +11,31 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+  test(
+    'accepting a quest through structured speech creates a real commission',
+    () async {
+      SharedPreferences.setMockInitialValues({});
+      final controller = await AppController.load()
+        ..setAgentEnabled(true);
+      controller.addAssistantMessage('莱莎：有一个委托，和我聊一次炼金术，好吗？');
+      controller.addUserMessage('旁白：我点头\n发言：好的\n旁白：露出微笑');
+      final result = jsonDecode(
+        controller.queryContextTool('create_quest', {
+          'title': '聊炼金术',
+          'description': '和莱莎交流一次。',
+          'objective_type': 'chat',
+          'target': 1,
+          'authorization': 'user_accepted',
+        }),
+      );
+      expect(result['ok'], isTrue);
+      final quest = controller.dynamicQuests.single;
+      controller.addUserMessage('发言：我们聊聊材料吧');
+      expect(controller.isDynamicQuestComplete(quest), isTrue);
+      expect(controller.claimDynamicQuest(quest.id), isTrue);
+      controller.dispose();
+    },
+  );
 
   test('built-in story contains 20 localized sequential quests', () {
     expect(builtInStoryQuests, hasLength(20));

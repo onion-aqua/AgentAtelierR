@@ -17,6 +17,7 @@ import 'model_thinking.dart';
 import 'character_prompt_defaults.dart';
 import 'frame_rate_controller.dart';
 import 'quest_models.dart';
+import 'chat_segments.dart' show parseUserComposerParts;
 import 'runtime_log.dart';
 import 'settings_slots.dart';
 import 'openai_configuration_slots.dart';
@@ -252,6 +253,7 @@ class ChatAttachment {
 
 class ChatMessage {
   const ChatMessage({
+    this.id = '',
     required this.text,
     required this.isUser,
     this.attachments = const [],
@@ -259,6 +261,7 @@ class ChatMessage {
   });
 
   factory ChatMessage.fromJson(Map<String, dynamic> json) => ChatMessage(
+    id: json['id'] as String? ?? '',
     text: json['text'] as String? ?? '',
     translatedText: json['translatedText'] as String?,
     isUser: json['isUser'] as bool? ?? false,
@@ -269,12 +272,15 @@ class ChatMessage {
   );
 
   final String text;
+  final String id;
+  String get collectionKey => id.isNotEmpty ? id : jsonEncode([isUser, text]);
   final String? translatedText;
   String get displayText => translatedText ?? text;
   final bool isUser;
   final List<ChatAttachment> attachments;
 
   Map<String, dynamic> toJson({bool includeAttachmentThumbnails = false}) => {
+    if (id.isNotEmpty) 'id': id,
     'text': text,
     if (translatedText != null) 'translatedText': translatedText,
     'isUser': isUser,
@@ -293,6 +299,7 @@ class ChatMessage {
     List<ChatAttachment>? attachments,
     String? translatedText,
   }) => ChatMessage(
+    id: id,
     text: text ?? this.text,
     translatedText:
         translatedText ?? (text == null ? this.translatedText : null),
@@ -303,6 +310,7 @@ class ChatMessage {
 
 class LocalSaveSlot {
   const LocalSaveSlot({
+    this.name = '',
     required this.index,
     required this.savedAt,
     required this.location,
@@ -311,6 +319,7 @@ class LocalSaveSlot {
   });
 
   final int index;
+  final String name;
   final DateTime savedAt;
   final String location;
   final int messageCount;
@@ -1155,7 +1164,12 @@ class AppController extends ChangeNotifier {
     List<ChatAttachment> attachments = const [],
   }) {
     messages.add(
-      ChatMessage(text: text, isUser: true, attachments: attachments),
+      ChatMessage(
+        id: 'user_${DateTime.now().microsecondsSinceEpoch}',
+        text: text,
+        isUser: true,
+        attachments: attachments,
+      ),
     );
     userMessageCount += 1;
     relationshipPoints += 1;
@@ -1164,7 +1178,13 @@ class AppController extends ChangeNotifier {
   }
 
   void addAssistantMessage(String text) {
-    messages.add(ChatMessage(text: text, isUser: false));
+    messages.add(
+      ChatMessage(
+        id: 'assistant_${DateTime.now().microsecondsSinceEpoch}',
+        text: text,
+        isUser: false,
+      ),
+    );
     if (messages.length > 60) messages.removeRange(0, messages.length - 60);
     _changed();
   }
@@ -1196,7 +1216,13 @@ class AppController extends ChangeNotifier {
   }
 
   void beginAssistantStream() {
-    messages.add(const ChatMessage(text: '', isUser: false));
+    messages.add(
+      ChatMessage(
+        id: 'assistant_${DateTime.now().microsecondsSinceEpoch}',
+        text: '',
+        isUser: false,
+      ),
+    );
     notifyListeners();
   }
 
@@ -1798,15 +1824,17 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
   bool _isQuestCreationAuthorized(String authorization) {
     final lastUserIndex = messages.lastIndexWhere((message) => message.isUser);
     if (lastUserIndex < 0) return false;
-    final userText = messages[lastUserIndex].text.toLowerCase();
+    final userText = parseUserComposerParts(messages[lastUserIndex].text).speech
+        .trim()
+        .toLowerCase();
     if (RegExp(
-      r'(不要|不想|拒绝|取消|别).{0,12}(任务|委托|quest|クエスト)|\b(no|not|don.t)\b.{0,20}\bquest\b',
+      r'(不要|不想|拒绝|取消|别).{0,12}(任务|委托|quest|クエスト|依頼)|\b(no|not|don.t)\b.{0,20}\b(quest|task|commission)\b|(?:依頼|クエスト).{0,12}(?:いらない|要らない|断る|キャンセル)',
       caseSensitive: false,
     ).hasMatch(userText)) {
       return false;
     }
     final mentionsQuest = RegExp(
-      r'任务|委托|委託|クエスト|\bquest\b',
+      r'任务|委托|委託|クエスト|依頼|\b(?:quest|commission|task)\b',
       caseSensitive: false,
     ).hasMatch(userText);
     final requestsCreation = RegExp(
@@ -1827,7 +1855,7 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
     );
     if (previousAssistant < 0) return false;
     return RegExp(
-      r'任务|委托|委託|クエスト|\bquest\b',
+      r'任务|委托|委託|クエスト|依頼|\b(?:quest|commission|task)\b',
       caseSensitive: false,
     ).hasMatch(priorMessages[previousAssistant].text);
   }
@@ -2546,6 +2574,14 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
   };
 
   Map<String, dynamic> _exportGameState() => {
+    'roleSettings': {
+      'userProfile': exportData()['userProfile'],
+      'settingsSlots': _settingsSlotsJson,
+      'characterPersona': characterPersona,
+      'worldSetting': worldSetting,
+      'characterPersonaInjectionEnabled': characterPersonaInjectionEnabled,
+      'worldSettingInjectionEnabled': worldSettingInjectionEnabled,
+    },
     'format': 'agent-atelier-r-game-save',
     'version': 1,
     'messages': messages.map((message) => message.toJson()).toList(),
@@ -2595,6 +2631,7 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
             return null;
           }
           return LocalSaveSlot(
+            name: data['name'] as String? ?? '',
             index: index,
             savedAt: savedAt,
             location: data['location'] as String? ?? '',
@@ -2622,6 +2659,7 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
       'messageCount': messages.length,
       'preview': preview.length > 80 ? '${preview.substring(0, 80)}…' : preview,
       'snapshot': _exportGameState(),
+      'name': localSaveSlots[index]?.name ?? '',
     };
     final saved = await _preferences.setString(
       '$_localSaveSlotPrefix$index',
@@ -2644,6 +2682,79 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
       throw const FormatException('存档格式无效');
     }
     await _importGameState(data['snapshot'] as Map<String, dynamic>);
+  }
+
+  Map<String, dynamic> exportLocalSlot(int index) {
+    if (index < 0 || index >= localSaveSlotCount) {
+      throw RangeError.index(index, localSaveSlots);
+    }
+    final raw = _preferences.getString('$_localSaveSlotPrefix$index');
+    if (raw == null) throw const FormatException('存档槽位为空');
+    return jsonDecode(raw) as Map<String, dynamic>;
+  }
+
+  Future<void> renameLocalSlot(int index, String name) async {
+    final data = exportLocalSlot(index);
+    data['name'] = name.trim().substring(0, name.trim().length.clamp(0, 60));
+    if (!await _preferences.setString(
+      '$_localSaveSlotPrefix$index',
+      jsonEncode(data),
+    )) {
+      throw StateError('存档写入失败');
+    }
+    notifyListeners();
+  }
+
+  Future<void> importLocalSlot(int index, Map<String, dynamic> data) async {
+    if (index < 0 || index >= localSaveSlotCount) {
+      throw RangeError.index(index, localSaveSlots);
+    }
+    if (data['format'] != 'agent-atelier-r-save-slot' ||
+        data['version'] != 1 ||
+        data['snapshot'] is! Map<String, dynamic> ||
+        data['savedAt'] is! String ||
+        DateTime.tryParse(data['savedAt']) == null ||
+        (data['name'] != null && data['name'] is! String)) {
+      throw const FormatException('存档文件格式无效');
+    }
+    final candidate = AppController._(
+      _preferences,
+      characterCatalog,
+      worldTravelCatalog,
+    );
+    try {
+      candidate._applyImportedData(exportData());
+      candidate._applyGameState(data['snapshot'] as Map<String, dynamic>);
+      final snapshot = candidate._exportGameState();
+      if (!(data['snapshot'] as Map).containsKey('roleSettings')) {
+        snapshot.remove('roleSettings');
+      }
+      final normalized = <String, dynamic>{
+        'format': 'agent-atelier-r-save-slot',
+        'version': 1,
+        'savedAt': data['savedAt'],
+        'name': (data['name'] as String? ?? '').trim(),
+        'location':
+            '${candidate.selectedAreaName} / ${candidate.selectedStageName}',
+        'messageCount': candidate.messages.length,
+        'preview': candidate.messages.isEmpty
+            ? ''
+            : candidate.messages.last.text.substring(
+                0,
+                candidate.messages.last.text.length.clamp(0, 80),
+              ),
+        'snapshot': snapshot,
+      };
+      if (!await _preferences.setString(
+        '$_localSaveSlotPrefix$index',
+        jsonEncode(normalized),
+      )) {
+        throw StateError('存档写入失败');
+      }
+    } finally {
+      candidate.dispose();
+    }
+    notifyListeners();
   }
 
   Future<void> deleteLocalSlot(int index) async {
@@ -2703,6 +2814,28 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
     if (!supportedFormats.contains(data['format']) || data['version'] != 1) {
       throw const FormatException('存档快照格式无效');
     }
+    if (data.containsKey('roleSettings') &&
+        data['roleSettings'] is! Map<String, dynamic>) {
+      throw const FormatException('角色设定格式无效');
+    }
+    if (data['roleSettings'] case final Map<String, dynamic> settings) {
+      final merged = exportData();
+      merged['userProfile'] = settings['userProfile'];
+      merged['settingsSlots'] = settings['settingsSlots'];
+      final preferences = Map<String, dynamic>.from(
+        merged['preferences'] as Map,
+      );
+      for (final key in [
+        'characterPersona',
+        'worldSetting',
+        'characterPersonaInjectionEnabled',
+        'worldSettingInjectionEnabled',
+      ]) {
+        if (settings.containsKey(key)) preferences[key] = settings[key];
+      }
+      merged['preferences'] = preferences;
+      _applyImportedData(merged);
+    }
     final importedMessages = (data['messages'] as List<dynamic>? ?? [])
         .whereType<Map<String, dynamic>>()
         .map(ChatMessage.fromJson)
@@ -2711,7 +2844,7 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
               message.text.isNotEmpty || message.attachments.isNotEmpty,
         )
         .toList();
-    if (importedMessages.isNotEmpty) {
+    if (data.containsKey('messages')) {
       messages = importedMessages.length <= 60
           ? importedMessages
           : importedMessages.sublist(importedMessages.length - 60);

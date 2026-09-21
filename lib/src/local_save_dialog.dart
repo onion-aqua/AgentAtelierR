@@ -1,5 +1,10 @@
 import 'package:flutter/material.dart';
 
+import 'dart:convert';
+import 'dart:typed_data';
+
+import 'package:file_picker/file_picker.dart';
+
 import 'app_controller.dart';
 import 'app_localization.dart';
 import 'glass_ui.dart';
@@ -26,6 +31,89 @@ class _LocalSaveDialog extends StatefulWidget {
 
 class _LocalSaveDialogState extends State<_LocalSaveDialog> {
   bool _busy = false;
+
+  Future<void> _manage(int index, String action) async {
+    if (_busy) return;
+    setState(() => _busy = true);
+    try {
+      if (action == 'rename') {
+        final input = TextEditingController(
+          text: widget.controller.localSaveSlots[index]?.name ?? '',
+        );
+        final name = await showDialog<String>(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: Text(_text('重命名存档', 'Rename save', 'セーブ名の変更')),
+            content: TextField(
+              controller: input,
+              maxLength: 60,
+              autofocus: true,
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: Text(_text('取消', 'Cancel', 'キャンセル')),
+              ),
+              TextButton(
+                onPressed: () => Navigator.pop(context, input.text),
+                child: Text(_text('保存', 'Save', '保存')),
+              ),
+            ],
+          ),
+        );
+        // Let the dialog finish its closing transition before releasing its controller.
+        await Future<void>.delayed(const Duration(milliseconds: 300));
+        input.dispose();
+        if (name != null) await widget.controller.renameLocalSlot(index, name);
+      } else if (action == 'export') {
+        await FilePicker.saveFile(
+          fileName:
+              'AgentAtelierR-save-${index + 1}-${DateTime.now().millisecondsSinceEpoch}.json',
+          bytes: Uint8List.fromList(
+            utf8.encode(
+              const JsonEncoder.withIndent('  ')
+                  .convert(widget.controller.exportLocalSlot(index)),
+            ),
+          ),
+          mimeType: 'application/json',
+        );
+      } else if (action == 'import') {
+        final file = await FilePicker.pickFile(
+          type: FileType.custom,
+          allowedExtensions: const ['json'],
+        );
+        if (file == null || !mounted) return;
+        final data = jsonDecode(
+          utf8.decode(await file.readAsBytes()),
+        ) as Map<String, dynamic>;
+        if (!mounted) return;
+        if (widget.controller.localSaveSlots[index] != null &&
+            !await _confirm(
+              title: _text('覆盖存档？', 'Overwrite save?', '上書きしますか？'),
+              body: _text(
+                '导入将替换此槽位，不改变当前游戏。',
+                'Import replaces this slot, not the current game.',
+                'このスロットのみ置換し、現在のゲームは変更しません。',
+              ),
+            )) {
+          return;
+        }
+        await widget.controller.importLocalSlot(index, data);
+      }
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              '${_text('操作失败', 'Operation failed', '操作失敗')}: $error',
+            ),
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
 
   String _text(String zh, String en, String ja) =>
       widget.controller.interfaceLanguage.text(zh, en, ja);
@@ -205,62 +293,129 @@ class _LocalSaveDialogState extends State<_LocalSaveDialog> {
                     return Material(
                       color: Colors.black.withValues(alpha: 0.18),
                       borderRadius: BorderRadius.circular(8),
-                      child: ListTile(
-                        contentPadding: const EdgeInsets.fromLTRB(14, 6, 6, 6),
-                        leading: CircleAvatar(
-                          backgroundColor: Colors.white12,
-                          foregroundColor: Colors.white,
-                          child: Text('${index + 1}'),
-                        ),
-                        title: Text(
-                          slot == null
-                              ? _text('空存档位', 'Empty slot', '空きスロット')
-                              : '${slot.location} · ${_formatTime(slot.savedAt)}',
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                        subtitle: Text(
-                          slot == null
-                              ? _text(
-                                  '点击保存当前进度',
-                                  'Save current progress',
-                                  '現在の進行状況を保存',
-                                )
-                              : '${slot.messageCount} ${_text('条消息', 'messages', '件のメッセージ')}\n${slot.preview}',
-                          maxLines: slot == null ? 1 : 2,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(color: Colors.white60),
-                        ),
-                        isThreeLine: slot != null,
-                        trailing: Row(
-                          mainAxisSize: MainAxisSize.min,
+                      child: Padding(
+                        padding: const EdgeInsets.all(12),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
                           children: [
-                            if (slot != null)
-                              IconButton(
-                                onPressed: _busy ? null : () => _load(index),
-                                tooltip: _text('读取', 'Load', 'ロード'),
-                                color: Colors.white,
-                                icon: const Icon(Icons.download_rounded),
-                              ),
-                            IconButton(
-                              onPressed: _busy
-                                  ? null
-                                  : () => _save(index, slot != null),
-                              tooltip: _text('保存', 'Save', 'セーブ'),
-                              color: Colors.white,
-                              icon: const Icon(Icons.save_rounded),
+                            Row(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                CircleAvatar(
+                                  radius: 16,
+                                  backgroundColor: Colors.white12,
+                                  foregroundColor: Colors.white,
+                                  child: Text('${index + 1}'),
+                                ),
+                                const SizedBox(width: 10),
+                                Expanded(
+                                  child: Text(
+                                    slot == null
+                                        ? _text('空存档位', 'Empty slot', '空きスロット')
+                                        : slot.name.isEmpty
+                                        ? slot.location
+                                        : slot.name,
+                                    style: const TextStyle(
+                                      color: Colors.white,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                ),
+                              ],
                             ),
-                            if (slot != null)
-                              IconButton(
-                                onPressed: _busy ? null : () => _delete(index),
-                                tooltip: _text('删除', 'Delete', '削除'),
-                                color: Colors.white70,
-                                icon: const Icon(Icons.delete_outline_rounded),
+                            const SizedBox(height: 8),
+                            if (slot != null) ...[
+                              Text(
+                                _formatTime(slot.savedAt),
+                                style: const TextStyle(color: Colors.white70),
                               ),
+                              const SizedBox(height: 4),
+                            ],
+                            Text(
+                              slot == null
+                                  ? _text(
+                                      '点击保存当前进度',
+                                      'Save current progress',
+                                      '現在の進行状況を保存',
+                                    )
+                                  : '${slot.messageCount} ${_text('条消息', 'messages', '件のメッセージ')}\n${slot.preview}',
+                              maxLines: slot == null ? null : 3,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(color: Colors.white60),
+                            ),
+                            const SizedBox(height: 6),
+                            Wrap(
+                              alignment: WrapAlignment.end,
+                              crossAxisAlignment: WrapCrossAlignment.center,
+                              spacing: 8,
+                              children: [
+                                if (slot != null)
+                                  TextButton.icon(
+                                    onPressed: _busy
+                                        ? null
+                                        : () => _load(index),
+                                    label: Text(_text('读取', 'Load', 'ロード')),
+                                    style: TextButton.styleFrom(
+                                      foregroundColor: Colors.white,
+                                    ),
+                                    icon: const Icon(Icons.download_rounded),
+                                  ),
+                                TextButton.icon(
+                                  onPressed: _busy
+                                      ? null
+                                      : () => _save(index, slot != null),
+                                  label: Text(_text('保存', 'Save', 'セーブ')),
+                                  style: TextButton.styleFrom(
+                                    foregroundColor: Colors.white,
+                                  ),
+                                  icon: const Icon(Icons.save_rounded),
+                                ),
+                                PopupMenuButton<String>(
+                                  enabled: !_busy,
+                                  tooltip: _text(
+                                    '更多操作',
+                                    'More actions',
+                                    'その他の操作',
+                                  ),
+                                  icon: const Icon(
+                                    Icons.more_vert,
+                                    color: Colors.white70,
+                                  ),
+                                  onSelected: (action) => action == 'delete'
+                                      ? _delete(index)
+                                      : _manage(index, action),
+                                  itemBuilder: (_) => [
+                                    if (slot != null)
+                                      PopupMenuItem(
+                                        value: 'rename',
+                                        child: Text(
+                                          _text('重命名', 'Rename', '名前変更'),
+                                        ),
+                                      ),
+                                    if (slot != null)
+                                      PopupMenuItem(
+                                        value: 'export',
+                                        child: Text(
+                                          _text('导出', 'Export', 'エクスポート'),
+                                        ),
+                                      ),
+                                    PopupMenuItem(
+                                      value: 'import',
+                                      child: Text(
+                                        _text('导入', 'Import', 'インポート'),
+                                      ),
+                                    ),
+                                    if (slot != null)
+                                      PopupMenuItem(
+                                        value: 'delete',
+                                        child: Text(
+                                          _text('删除', 'Delete', '削除'),
+                                        ),
+                                      ),
+                                  ],
+                                ),
+                              ],
+                            ),
                           ],
                         ),
                       ),
