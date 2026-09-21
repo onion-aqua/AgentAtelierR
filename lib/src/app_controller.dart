@@ -698,6 +698,12 @@ class AppController extends ChangeNotifier {
       NpcInteractionFrequency.normal;
   bool fishTtsEnabled = false;
   bool independentSpeechPerformance = true;
+  bool backgroundVoicePlayback = true;
+
+  void setBackgroundVoicePlayback(bool value) {
+    backgroundVoicePlayback = value;
+    _changed();
+  }
 
   void setIndependentSpeechPerformance(bool value) {
     if (independentSpeechPerformance == value) return;
@@ -777,6 +783,7 @@ class AppController extends ChangeNotifier {
   AppAccentTheme accentTheme = AppAccentTheme.jade;
   AppAccentTheme? textColorTheme;
   bool translationOnly = false;
+  bool independentTranslation = true;
   AppLanguage interfaceLanguage = AppLanguage.chinese;
   AppLanguage narratorLanguage = AppLanguage.chinese;
   AppLanguage characterReplyLanguage = AppLanguage.chinese;
@@ -910,6 +917,8 @@ class AppController extends ChangeNotifier {
       orElse: () => NpcInteractionFrequency.normal,
     );
     fishTtsEnabled = _preferences.getBool('fish_tts_enabled') ?? false;
+    backgroundVoicePlayback =
+        _preferences.getBool('background_voice_playback') ?? true;
     independentSpeechPerformance =
         _preferences.getBool('independent_speech_performance') ?? true;
     ttsProvider = TtsProvider.values.firstWhere(
@@ -1042,6 +1051,8 @@ class AppController extends ChangeNotifier {
       orElse: () => AppFrameRateMode.adaptive,
     );
     translationOnly = _preferences.getBool('translation_only') ?? false;
+    independentTranslation =
+        _preferences.getBool('independent_translation') ?? true;
     preferCustomUserProfile =
         _preferences.getBool('prefer_custom_user_profile') ?? false;
     textColorTheme = AppAccentTheme.values
@@ -1309,11 +1320,18 @@ class AppController extends ChangeNotifier {
           ? '未设置'
           : userInteractionBoundaries.trim(),
     });
-    const translationRule = '不要输出译文行。翻译由应用的独立翻译模块完成，你只输出原文台词、旁白和表演标签。';
+    final inlineTranslation =
+        !independentTranslation &&
+        translationLanguage != TranslationLanguage.none;
+    final translationRule = inlineTranslation
+        ? '每条莱莎及其他角色台词之后紧跟一行“译文：”，使用${translationLanguage.promptLabel}忠实翻译该台词；保留原文，不翻译表演标签，不将旁白当作台词。'
+        : '不要输出译文行。${independentTranslation ? '翻译由应用的独立翻译模块完成。' : ''}只输出原文台词、旁白和表演标签。';
     final languageContract = jsonEncode({
       'narratorBodyLanguage': narratorLanguage.promptLabel,
       'ryzaSpeechLanguage': characterReplyLanguage.promptLabel,
-      'translationLanguage': 'DISABLED',
+      'translationLanguage': inlineTranslation
+          ? translationLanguage.promptLabel
+          : 'DISABLED',
     });
     final appearance = characterAppearanceById(selectedCharacterAppearanceId);
     final candidates = characterCatalog.encountersFor(selectedStageId);
@@ -1331,7 +1349,7 @@ class AppController extends ChangeNotifier {
           );
     if (independentPerformance) {
       return '''你扮演莱莎，自然回应用户，不代替用户行动，不编造未知事实。
-每个非空行以“旁白：”“莱莎：”或“角色[角色ID]：”开头。优先写一条简短旁白，随后角色台词。不要输出译文、face/action/posture控制标签或资源编号，表演由独立模块处理。
+每个非空行以“旁白：”“莱莎：”“角色[角色ID]：”${inlineTranslation ? '或“译文：”' : ''}开头。优先写一条简短旁白，随后角色台词。不要输出face/action/posture控制标签或资源编号，表演由独立模块处理。$translationRule
 角色台词使用 ${characterReplyLanguage.promptLabel}，旁白使用 ${narratorLanguage.promptLabel}，不随历史或用户输入语言改变。
 当前姿态：${performanceContext?.posture ?? '未知'}。动作描述保持合理，不承诺复杂或不可能的身体动作。
 ${characterPersonaInjectionEnabled ? _promptDataBlock('persona', characterPersona.isEmpty ? compactCharacterPersona : _boundedPromptText(characterPersona, llmContextCompatibility ? 900 : 4000)) : '人物设定注入已关闭。'}
@@ -2451,6 +2469,7 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
     'accentTheme': accentTheme.name,
     'textColorTheme': textColorTheme?.name,
     'translationOnly': translationOnly,
+    'independentTranslation': independentTranslation,
     'preferCustomUserProfile': preferCustomUserProfile,
     'interfaceLanguage': interfaceLanguage.name,
     'narratorLanguage': narratorLanguage.name,
@@ -2496,6 +2515,7 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
       'npcInteractionFrequency': npcInteractionFrequency.name,
       'fishTtsEnabled': fishTtsEnabled,
       'independentSpeechPerformance': independentSpeechPerformance,
+      'backgroundVoicePlayback': backgroundVoicePlayback,
       'ttsProvider': ttsProvider.name,
       'fishAudioModel': fishAudioModel,
       'fishAudioBaseUrl': fishAudioBaseUrl,
@@ -2829,6 +2849,7 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
       orElse: () => AppThemePreference.system,
     );
     translationOnly = data['translationOnly'] == true;
+    independentTranslation = data['independentTranslation'] != false;
     textColorTheme = AppAccentTheme.values
         .where((value) => value.name == data['textColorTheme'])
         .firstOrNull;
@@ -2932,6 +2953,8 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
     fishTtsEnabled = preferences['fishTtsEnabled'] as bool? ?? false;
     independentSpeechPerformance =
         preferences['independentSpeechPerformance'] as bool? ?? true;
+    backgroundVoicePlayback =
+        preferences['backgroundVoicePlayback'] as bool? ?? true;
     ttsProvider = TtsProvider.values.firstWhere(
       (value) => value.name == preferences['ttsProvider'],
       orElse: () => TtsProvider.fishAudio,
@@ -3663,6 +3686,11 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
     _changed();
   }
 
+  void setIndependentTranslation(bool value) {
+    independentTranslation = value;
+    _changed();
+  }
+
   void setPreferCustomUserProfile(bool value) {
     preferCustomUserProfile = value;
     _changed();
@@ -3789,6 +3817,11 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
       _preferences.setString('accent_theme', accentTheme.name),
       _preferences.setString('text_color_theme', textColorTheme?.name ?? ''),
       _preferences.setBool('translation_only', translationOnly),
+      _preferences.setBool(
+        'background_voice_playback',
+        backgroundVoicePlayback,
+      ),
+      _preferences.setBool('independent_translation', independentTranslation),
       _preferences.setBool(
         'prefer_custom_user_profile',
         preferCustomUserProfile,

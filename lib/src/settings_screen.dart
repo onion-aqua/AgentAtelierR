@@ -926,6 +926,24 @@ class SettingsScreenState extends State<SettingsScreen> {
                   value: controller.independentSpeechPerformance,
                   onChanged: controller.setIndependentSpeechPerformance,
                 ),
+                SwitchListTile(
+                  title: Text(
+                    language.text(
+                      '后台语音播放',
+                      'Background voice playback',
+                      'バックグラウンド音声再生',
+                    ),
+                  ),
+                  subtitle: Text(
+                    language.text(
+                      '开启后，进入设置、地图等应用内页面时继续播放 TTS。关闭后，离开聊天页面停止播放。',
+                      'Keep TTS playing on settings, maps and other in-app pages. When off, leaving chat stops playback.',
+                      '設定やマップなどアプリ内の別ページでもTTSを再生します。オフでは会話画面を離れると停止します。',
+                    ),
+                  ),
+                  value: controller.backgroundVoicePlayback,
+                  onChanged: controller.setBackgroundVoicePlayback,
+                ),
                 for (final provider in TtsProvider.values)
                   ListTile(
                     key: ValueKey('tts-settings-${provider.name}'),
@@ -1097,6 +1115,7 @@ class SettingsScreenState extends State<SettingsScreen> {
         characterReplyLanguage: controller.characterReplyLanguage,
         translationLanguage: controller.translationLanguage,
         translationOnly: controller.translationOnly,
+        independentTranslation: controller.independentTranslation,
       ),
     );
     if (result == null) return;
@@ -1107,6 +1126,7 @@ class SettingsScreenState extends State<SettingsScreen> {
       translation: result.translationLanguage,
     );
     controller.setTranslationOnly(result.translationOnly);
+    controller.setIndependentTranslation(result.independentTranslation);
   }
 
   Future<void> _confirmClearHistory(BuildContext context) async {
@@ -2651,6 +2671,7 @@ class _ThemeSettingsDialog extends StatelessWidget {
 
 class _LanguageSettingsDraft {
   const _LanguageSettingsDraft({
+    required this.independentTranslation,
     required this.interfaceLanguage,
     required this.narratorLanguage,
     required this.characterReplyLanguage,
@@ -2663,10 +2684,12 @@ class _LanguageSettingsDraft {
   final AppLanguage characterReplyLanguage;
   final TranslationLanguage translationLanguage;
   final bool translationOnly;
+  final bool independentTranslation;
 }
 
 class _LanguageSettingsDialog extends StatefulWidget {
   const _LanguageSettingsDialog({
+    required this.independentTranslation,
     required this.interfaceLanguage,
     required this.narratorLanguage,
     required this.characterReplyLanguage,
@@ -2679,6 +2702,7 @@ class _LanguageSettingsDialog extends StatefulWidget {
   final AppLanguage characterReplyLanguage;
   final TranslationLanguage translationLanguage;
   final bool translationOnly;
+  final bool independentTranslation;
 
   @override
   State<_LanguageSettingsDialog> createState() =>
@@ -2691,6 +2715,7 @@ class _LanguageSettingsDialogState extends State<_LanguageSettingsDialog> {
   late AppLanguage _characterReplyLanguage;
   late TranslationLanguage _translationLanguage;
   late bool _translationOnly;
+  late bool _independentTranslation;
 
   @override
   void initState() {
@@ -2700,6 +2725,7 @@ class _LanguageSettingsDialogState extends State<_LanguageSettingsDialog> {
     _characterReplyLanguage = widget.characterReplyLanguage;
     _translationLanguage = widget.translationLanguage;
     _translationOnly = widget.translationOnly;
+    _independentTranslation = widget.independentTranslation;
   }
 
   @override
@@ -2775,6 +2801,21 @@ class _LanguageSettingsDialogState extends State<_LanguageSettingsDialog> {
                 value: _translationOnly,
                 onChanged: (value) => setState(() => _translationOnly = value),
               ),
+              SwitchListTile(
+                title: Text(
+                  language.text('独立翻译', 'Independent translation', '独立翻訳'),
+                ),
+                subtitle: Text(
+                  language.text(
+                    '开启：回复后单独请求翻译。关闭：由主模型同时输出原文与译文。保存后对新回复生效；选择“不翻译”时均不翻译。',
+                    'On: translate in a separate request. Off: include translation in the main reply. Applies to new replies after saving; None disables both.',
+                    'オン：返信後に個別翻訳。オフ：主モデルが原文と訳文を出力。保存後の返信に適用。「翻訳しない」では両方無効。',
+                  ),
+                ),
+                value: _independentTranslation,
+                onChanged: (value) =>
+                    setState(() => _independentTranslation = value),
+              ),
               Align(
                 alignment: Alignment.centerLeft,
                 child: Text(
@@ -2806,6 +2847,7 @@ class _LanguageSettingsDialogState extends State<_LanguageSettingsDialog> {
               characterReplyLanguage: _characterReplyLanguage,
               translationLanguage: _translationLanguage,
               translationOnly: _translationOnly,
+              independentTranslation: _independentTranslation,
             ),
           ),
           child: Text(language.text('保存', 'Save', '保存')),

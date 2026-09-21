@@ -194,6 +194,7 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
                   : _destination.index,
               children: [
                 ChatScreen(
+                  pageActive: _destination == AppDestination.chat,
                   controller: widget.controller,
                   onMenuPressed: _openMenu,
                   hideUi: _chatUiHidden || overlayDestination,

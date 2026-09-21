@@ -116,6 +116,7 @@ double conversationPanelFractionForText({
 
 class ChatScreen extends StatefulWidget {
   const ChatScreen({
+    this.pageActive = true,
     super.key,
     required this.controller,
     required this.onMenuPressed,
@@ -125,6 +126,7 @@ class ChatScreen extends StatefulWidget {
   final AppController controller;
   final VoidCallback onMenuPressed;
   final bool hideUi;
+  final bool pageActive;
 
   @override
   State<ChatScreen> createState() => _ChatScreenState();
@@ -394,6 +396,7 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   void _handleControllerChange({bool forceAppearanceReload = false}) {
+    _syncBackgroundVoicePolicy();
     if (_observedDataRevision != widget.controller.dataRevision) {
       _observedDataRevision = widget.controller.dataRevision;
       _resetConversationWorkForDataReplacement();
@@ -2249,6 +2252,8 @@ class _ChatScreenState extends State<ChatScreen> {
     final requestProvider = widget.controller.llmProvider;
     final requestBaseUrl = widget.controller.activeLlmBaseUrl;
     final requestModel = widget.controller.activeLlmModel;
+    final requestIndependentTranslation =
+        widget.controller.independentTranslation;
     final apiKey = await _secretStore.readLlmKey(
       requestProvider,
       openAiSlot: widget.controller.activeOpenAiSlot,
@@ -2317,7 +2322,8 @@ class _ChatScreenState extends State<ChatScreen> {
       if (generation != _replyGeneration) return;
       final reply = widget.controller.messages.last.text;
       widget.controller.finishAssistantStream();
-      if (widget.controller.messages.isNotEmpty &&
+      if (requestIndependentTranslation &&
+          widget.controller.messages.isNotEmpty &&
           widget.controller.messages.last.text == reply &&
           reply.trim().isNotEmpty) {
         unawaited(
@@ -2656,6 +2662,7 @@ class _ChatScreenState extends State<ChatScreen> {
     String text, {
     String? displaySource,
   }) async {
+    if (!_mayPlayVoice) return;
     if (text.trim().isEmpty) {
       _stopSpeakingAnimation();
       return;
@@ -2724,7 +2731,9 @@ class _ChatScreenState extends State<ChatScreen> {
       );
       for (var index = 0; index < segments.length; index++) {
         final prepared = await pending;
-        if (!mounted || generation != _speechPlaybackGeneration) {
+        if (!mounted ||
+            !_mayPlayVoice ||
+            generation != _speechPlaybackGeneration) {
           unawaited(_deleteTemporarySpeech(prepared.path));
           return;
         }
@@ -2958,6 +2967,7 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _replayLastSpeech() async {
+    if (!_mayPlayVoice) return;
     if (_lastSpeech.isEmpty || _isReplying) return;
     final segments = List<_CachedSpeechSegment>.of(_lastSpeech);
     final generation = ++_speechPlaybackGeneration;
@@ -3039,6 +3049,26 @@ class _ChatScreenState extends State<ChatScreen> {
     _showAssistantSegment(null, Duration.zero);
   }
 
+  bool get _mayPlayVoice =>
+      widget.pageActive || widget.controller.backgroundVoicePlayback;
+
+  void _syncBackgroundVoicePolicy() {
+    if (!_mayPlayVoice &&
+        (_isCharacterSpeaking || _speechCancellation != null)) {
+      _cancelSpeechPlayback();
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant ChatScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.pageActive != widget.pageActive) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _syncBackgroundVoicePolicy();
+      });
+    }
+  }
+
   Duration _readingDurationFor(String text) => Duration(
     milliseconds: (stripLeadingTtsCues(text).length * 70)
         .clamp(3000, 10000)
@@ -3086,7 +3116,10 @@ class _ChatScreenState extends State<ChatScreen> {
     required String model,
   }) async {
     final language = widget.controller.translationLanguage;
-    if (language == TranslationLanguage.none) return;
+    if (language == TranslationLanguage.none ||
+        !widget.controller.independentTranslation) {
+      return;
+    }
     final revision = widget.controller.dataRevision;
     try {
       final translated = await DialogueTranslator().translate(
@@ -3103,6 +3136,7 @@ class _ChatScreenState extends State<ChatScreen> {
       );
       if (!mounted ||
           revision != widget.controller.dataRevision ||
+          !widget.controller.independentTranslation ||
           language != widget.controller.translationLanguage) {
         return;
       }
