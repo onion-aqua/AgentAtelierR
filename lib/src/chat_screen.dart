@@ -144,6 +144,7 @@ class _PreparedSpeech {
 
 class _CachedSpeechSegment {
   const _CachedSpeechSegment({
+    this.text = '',
     this.expressionIntensity = 'normal',
     required this.path,
     required this.envelope,
@@ -154,6 +155,7 @@ class _CachedSpeechSegment {
   });
 
   final String path;
+  final String text;
   final String expressionIntensity;
   final AudioAmplitudeEnvelope? envelope;
   final CharacterExpression? expression;
@@ -445,6 +447,7 @@ class _ChatScreenState extends State<ChatScreen> {
   // Start at the same minimum as the drag handle, regardless of saved text.
   // Sending a new message still restores automatic sizing below.
   double? _manualPanelFraction = 0.22;
+  double? _lockedPanelFraction;
   double? _stableBottomSafeInset;
   double? _stableBodyHeight;
   Size? _lastChatViewport;
@@ -2474,7 +2477,7 @@ class _ChatScreenState extends State<ChatScreen> {
           _startSpeakingAnimation();
         }
         widget.controller.appendAssistantDelta(delta);
-        _scrollToBottom();
+        _showLatestAssistantFromStartIfOverflow();
       }
       if (generation != _replyGeneration) return;
       final reply = widget.controller.messages.last.text;
@@ -2942,6 +2945,9 @@ class _ChatScreenState extends State<ChatScreen> {
         }
         completedSegments.add(
           _CachedSpeechSegment(
+            text: displayTextForAssistantSegment(
+              ChatSegment(speaker: ChatSpeaker.ryza, text: segment.speechText),
+            ),
             path: prepared.path,
             envelope: prepared.envelope,
             expression: segment.expression,
@@ -2964,6 +2970,7 @@ class _ChatScreenState extends State<ChatScreen> {
           await store.cacheVoice(
             collectionMessage.collectionKey,
             completedSegments.map((s) => s.path).toList(),
+            texts: completedSegments.map((s) => s.text).toList(),
           );
         } catch (error) {
           RuntimeLog.instance.warning('TTS', '语音缓存保存失败：$error');
@@ -3197,9 +3204,62 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _replayLastSpeech() async {
+    await _playCachedSpeech(_lastSpeech);
+  }
+
+  Future<void> _playMessageSpeech(ChatMessage message, String text) async {
+    if (_isReplying || !_mayPlayVoice) return;
+    try {
+      final store = await ConversationCollectionStore.open();
+      final entries = await store.voiceSegments(message.collectionKey);
+      final normalized = text.replaceAll(RegExp(r'\s+'), '');
+      final index = entries.indexWhere(
+        (e) => e.text.replaceAll(RegExp(r'\s+'), '') == normalized,
+      );
+      if (index < 0) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                widget.controller.interfaceLanguage.text(
+                  '此段没有可定位的缓存语音',
+                  'No mapped audio for this passage',
+                  'この台詞に対応する音声がありません',
+                ),
+              ),
+            ),
+          );
+        }
+        return;
+      }
+      final entry = entries[index];
+      final bytes = await File(entry.path).readAsBytes();
+      final envelope = await loadSpeechEnvelope(entry.path, bytes);
+      if (!mounted || _isReplying) return;
+      await _playCachedSpeech([
+        _CachedSpeechSegment(
+          path: entry.path,
+          text: entry.text,
+          envelope: envelope,
+          expression: null,
+          action: null,
+        ),
+      ], highlightLatest: false);
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('$error')));
+      }
+    }
+  }
+
+  Future<void> _playCachedSpeech(
+    List<_CachedSpeechSegment> source, {
+    bool highlightLatest = true,
+  }) async {
     if (!_mayPlayVoice) return;
-    if (_lastSpeech.isEmpty || _isReplying) return;
-    final segments = List<_CachedSpeechSegment>.of(_lastSpeech);
+    if (source.isEmpty || _isReplying) return;
+    final segments = List<_CachedSpeechSegment>.of(source);
     final generation = ++_speechPlaybackGeneration;
     final previousCancellation = _speechCancellation;
     if (previousCancellation != null && !previousCancellation.isCompleted) {
@@ -3217,7 +3277,7 @@ class _ChatScreenState extends State<ChatScreen> {
             )
             .lastOrNull
             ?.text;
-        if (latestResponse != null) {
+        if (latestResponse != null && highlightLatest) {
           _showAssistantSegment(
             _displayIndexForRyzaSegment(latestResponse, index),
             const Duration(seconds: 6),
@@ -3253,7 +3313,7 @@ class _ChatScreenState extends State<ChatScreen> {
       if (!mounted || generation != _speechPlaybackGeneration) return;
       ScaffoldMessenger.of(context)
           .showSnackBar(const SnackBar(content: Text('上一条语音文件已失效，请重新生成回复')));
-      await _clearLastSpeech();
+      if (highlightLatest) await _clearLastSpeech();
     } finally {
       if (generation == _speechPlaybackGeneration) _stopSpeakingAnimation();
       _showAssistantSegment(null, Duration.zero);
@@ -3557,12 +3617,6 @@ class _ChatScreenState extends State<ChatScreen> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final context = _latestAssistantMessageKey.currentContext;
       if (!mounted || context == null || !_scrollController.hasClients) return;
-      final renderBox = context.findRenderObject() as RenderBox?;
-      if (renderBox == null ||
-          renderBox.size.height <=
-              _scrollController.position.viewportDimension - 12) {
-        return;
-      }
       Scrollable.ensureVisible(
         context,
         alignment: 0.04,
@@ -4071,7 +4125,8 @@ class _ChatScreenState extends State<ChatScreen> {
       constraints.maxWidth,
       isWide,
     );
-    final panelFraction = _manualPanelFraction ?? automaticFraction;
+    final panelFraction =
+        _lockedPanelFraction ?? _manualPanelFraction ?? automaticFraction;
     final panelHeight = _conversationFullscreen
         ? constraints.maxHeight
         : (constraints.maxHeight * panelFraction).clamp(
@@ -4168,6 +4223,7 @@ class _ChatScreenState extends State<ChatScreen> {
               onSuggestReply: _suggestUserReply,
               onUndo: _undoLastMessage,
               onReplay: _replayLastSpeech,
+              onPlaySpeech: _playMessageSpeech,
               speechProgress: VoicePlaybackProgress(player: _audioPlayer),
               onRegenerateSpeech: _regenerateLastSpeech,
               regeneratingSpeech: _regeneratingSpeech,
@@ -4198,7 +4254,9 @@ class _ChatScreenState extends State<ChatScreen> {
                 });
               },
               onDragUpdate: (delta) {
-                if (_conversationFullscreen) return;
+                if (_conversationFullscreen || _lockedPanelFraction != null) {
+                  return;
+                }
                 setState(() {
                   _manualPanelFraction =
                       (panelFraction - delta / constraints.maxHeight).clamp(
@@ -4207,6 +4265,15 @@ class _ChatScreenState extends State<ChatScreen> {
                       );
                 });
               },
+              panelLocked: _lockedPanelFraction != null,
+              onTogglePanelLock: () => setState(() {
+                if (_lockedPanelFraction == null) {
+                  _lockedPanelFraction = panelFraction;
+                } else {
+                  _manualPanelFraction = _lockedPanelFraction;
+                  _lockedPanelFraction = null;
+                }
+              }),
             ),
           ),
       ],
@@ -5845,6 +5912,7 @@ class _LiquidGlassConversation extends StatelessWidget {
     required this.onSuggestReply,
     required this.onUndo,
     required this.onReplay,
+    required this.onPlaySpeech,
     required this.speechProgress,
     required this.onRegenerateSpeech,
     required this.regeneratingSpeech,
@@ -5853,6 +5921,8 @@ class _LiquidGlassConversation extends StatelessWidget {
     required this.conversationFullscreen,
     required this.onToggleFullscreen,
     required this.onDragUpdate,
+    required this.panelLocked,
+    required this.onTogglePanelLock,
   });
 
   final AppLanguage language;
@@ -5898,6 +5968,7 @@ class _LiquidGlassConversation extends StatelessWidget {
   final VoidCallback onSuggestReply;
   final VoidCallback onUndo;
   final VoidCallback onReplay;
+  final void Function(ChatMessage, String) onPlaySpeech;
   final Widget speechProgress;
   final VoidCallback onRegenerateSpeech;
   final bool regeneratingSpeech;
@@ -5906,6 +5977,8 @@ class _LiquidGlassConversation extends StatelessWidget {
   final bool conversationFullscreen;
   final VoidCallback onToggleFullscreen;
   final ValueChanged<double> onDragUpdate;
+  final bool panelLocked;
+  final VoidCallback onTogglePanelLock;
 
   @override
   Widget build(BuildContext context) {
@@ -5922,27 +5995,24 @@ class _LiquidGlassConversation extends StatelessWidget {
                   child: Stack(
                     children: [
                       Positioned.fill(
-                        child: selectingCollection
-                            ? _CollectionMessageSelector(
-                                messages: messages,
-                                language: language,
-                                selection: collectionSelection,
-                                availableVoices: availableCollectionVoices,
-                                onChanged: onSelectCollection,
-                                enabled: !savingCollection,
-                              )
-                            : _GlassMessageList(
-                                language: language,
-                                messages: messages,
-                                controller: scrollController,
-                                activeAssistantSegmentIndex:
-                                    activeAssistantSegmentIndex,
-                                activeSegmentDisplayDuration:
-                                    activeSegmentDisplayDuration,
-                                latestAssistantMessageKey:
-                                    latestAssistantMessageKey,
-                                translationOnly: translationOnly,
-                              ),
+                        child: _GlassMessageList(
+                          selecting: selectingCollection,
+                          selection: collectionSelection,
+                          availableVoices: availableCollectionVoices,
+                          onSelectionChanged: savingCollection
+                              ? null
+                              : onSelectCollection,
+                          onPlaySpeech: onPlaySpeech,
+                          language: language,
+                          messages: messages,
+                          controller: scrollController,
+                          activeAssistantSegmentIndex:
+                              activeAssistantSegmentIndex,
+                          activeSegmentDisplayDuration:
+                              activeSegmentDisplayDuration,
+                          latestAssistantMessageKey: latestAssistantMessageKey,
+                          translationOnly: translationOnly,
+                        ),
                       ),
                       if (showScrollToBottomIndicator)
                         Positioned(
@@ -6095,11 +6165,23 @@ class _LiquidGlassConversation extends StatelessWidget {
           right: 12,
           top: 0,
           child: Semantics(
-            label: '拖动调整对话框高度',
+            label: language.text(
+              panelLocked ? '高度已锁定，长按解锁' : '拖动调整高度，长按锁定',
+              panelLocked
+                  ? 'Height locked; hold to unlock'
+                  : 'Drag to resize; hold to lock',
+              panelLocked ? '高さ固定中・長押しで解除' : 'ドラッグで高さ変更・長押しで固定',
+            ),
             child: GestureDetector(
               behavior: HitTestBehavior.opaque,
-              onVerticalDragUpdate: (details) => onDragUpdate(details.delta.dy),
-              child: _GlassDragHandle(liquidGlass: liquidGlass),
+              onLongPress: onTogglePanelLock,
+              onVerticalDragUpdate: panelLocked
+                  ? null
+                  : (details) => onDragUpdate(details.delta.dy),
+              child: _GlassDragHandle(
+                liquidGlass: liquidGlass,
+                locked: panelLocked,
+              ),
             ),
           ),
         ),
@@ -6146,9 +6228,10 @@ class _LiquidGlassSurface extends StatelessWidget {
 }
 
 class _GlassDragHandle extends StatelessWidget {
-  const _GlassDragHandle({required this.liquidGlass});
+  const _GlassDragHandle({required this.liquidGlass, required this.locked});
 
   final bool liquidGlass;
+  final bool locked;
 
   @override
   Widget build(BuildContext context) {
@@ -6158,10 +6241,10 @@ class _GlassDragHandle extends StatelessWidget {
       borderRadius: BorderRadius.circular(22),
       fallbackColor: Colors.white.withValues(alpha: 0.82),
       boxShadow: const [BoxShadow(color: Color(0x33000000), blurRadius: 10)],
-      child: const SizedBox.square(
+      child: SizedBox.square(
         dimension: 44,
         child: Icon(
-          Icons.unfold_more_rounded,
+          locked ? Icons.lock_rounded : Icons.unfold_more_rounded,
           size: 23,
           color: Color(0xFF4A2F28),
         ),
@@ -6170,65 +6253,13 @@ class _GlassDragHandle extends StatelessWidget {
   }
 }
 
-class _CollectionMessageSelector extends StatelessWidget {
-  const _CollectionMessageSelector({
-    required this.messages,
-    required this.language,
-    required this.selection,
-    required this.availableVoices,
-    required this.onChanged,
-    required this.enabled,
-  });
-  final List<ChatMessage> messages;
-  final AppLanguage language;
-  final Map<String, Set<String>> selection;
-  final Set<String> availableVoices;
-  final void Function(String, String, bool) onChanged;
-  final bool enabled;
-
-  @override
-  Widget build(BuildContext context) => ListView.separated(
-    reverse: true,
-    padding: const EdgeInsets.fromLTRB(4, 32, 14, 8),
-    itemCount: messages.length,
-    separatorBuilder: (_, _) =>
-        Divider(height: 1, color: Colors.white.withValues(alpha: 0.2)),
-    itemBuilder: (context, index) {
-      final message = messages[messages.length - 1 - index];
-      final key = message.collectionKey;
-      final choices = selection[key] ?? const <String>{};
-      final voiceAvailable = !message.isUser && availableVoices.contains(key);
-      return Padding(
-        padding: const EdgeInsets.symmetric(vertical: 8),
-        child: SwipeCollectionSelection(
-          key: ValueKey(key),
-          selected: choices.contains('text'),
-          selectedLabel: language.text('已选择', 'Selected', '選択済み'),
-          onChanged: enabled
-              ? (value) {
-                  onChanged(key, 'text', value);
-                  onChanged(key, 'voice', value && voiceAvailable);
-                }
-              : null,
-          child: message.isUser
-              ? _UserComposerBody(text: message.displayText, glass: true)
-              : _SeparatedAssistantMessage(
-                  response: message.displayText,
-                  translationOnly: false,
-                  language: language,
-                  attachments: message.attachments,
-                  glass: true,
-                  activeSegmentIndex: null,
-                  activeSegmentDisplayDuration: Duration.zero,
-                ),
-        ),
-      );
-    },
-  );
-}
-
 class _GlassMessageList extends StatelessWidget {
   const _GlassMessageList({
+    required this.selecting,
+    required this.selection,
+    required this.availableVoices,
+    required this.onSelectionChanged,
+    required this.onPlaySpeech,
     required this.language,
     required this.messages,
     required this.controller,
@@ -6239,12 +6270,17 @@ class _GlassMessageList extends StatelessWidget {
   });
 
   final AppLanguage language;
+  final void Function(ChatMessage, String) onPlaySpeech;
   final List<ChatMessage> messages;
   final ScrollController controller;
   final int? activeAssistantSegmentIndex;
   final Duration activeSegmentDisplayDuration;
   final GlobalKey latestAssistantMessageKey;
   final bool translationOnly;
+  final bool selecting;
+  final Map<String, Set<String>> selection;
+  final Set<String> availableVoices;
+  final void Function(String, String, bool)? onSelectionChanged;
 
   @override
   Widget build(BuildContext context) {
@@ -6261,102 +6297,131 @@ class _GlassMessageList extends StatelessWidget {
       itemBuilder: (context, index) {
         final messageIndex = visibleMessages.length - 1 - index;
         final message = visibleMessages[messageIndex];
-        if (!message.isUser) {
+        Widget buildMessage() {
+          if (!message.isUser) {
+            return Padding(
+              key: index == 0 ? latestAssistantMessageKey : null,
+              padding: const EdgeInsets.symmetric(vertical: 10),
+              child: _SeparatedAssistantMessage(
+                onSpeechText: selecting
+                    ? null
+                    : (text) => onPlaySpeech(message, text),
+                response: message.displayText,
+                translationOnly: translationOnly,
+                language: language,
+                attachments: message.attachments,
+                glass: true,
+                activeSegmentIndex: index == 0
+                    ? activeAssistantSegmentIndex
+                    : null,
+                activeSegmentDisplayDuration: activeSegmentDisplayDuration,
+              ),
+            );
+          }
+          final userParts = parseUserComposerParts(message.text);
+          final avatar = Container(
+            width: 28,
+            height: 28,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: Colors.white.withValues(alpha: 0.16),
+              border: Border.all(color: Colors.white.withValues(alpha: 0.24)),
+            ),
+            child: Icon(
+              Icons.person_outline_rounded,
+              size: 16,
+              color: Colors.white,
+            ),
+          );
+          final body = Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                Text(
+                  language.text('你', 'You', 'あなた'),
+                  textAlign: TextAlign.right,
+                  style: const TextStyle(
+                    color: Colors.white70,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                _UserComposerBody(text: userParts.speech, glass: true),
+                if (message.attachments.isNotEmpty) ...[
+                  const SizedBox(height: 7),
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: _SentAttachmentLabels(
+                      attachments: message.attachments,
+                      glass: true,
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          );
           return Padding(
-            key: index == 0 ? latestAssistantMessageKey : null,
             padding: const EdgeInsets.symmetric(vertical: 10),
-            child: _SeparatedAssistantMessage(
-              response: message.displayText,
-              translationOnly: translationOnly,
-              language: language,
-              attachments: message.attachments,
-              glass: true,
-              activeSegmentIndex: index == 0
-                  ? activeAssistantSegmentIndex
-                  : null,
-              activeSegmentDisplayDuration: activeSegmentDisplayDuration,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                if (userParts.narration.isNotEmpty)
+                  _NarratorRun(
+                    segments: [
+                      ChatSegment(
+                        speaker: ChatSpeaker.narrator,
+                        text: userParts.narration,
+                      ),
+                    ],
+                    glass: true,
+                  ),
+                if (userParts.narration.isNotEmpty &&
+                    userParts.speech.isNotEmpty)
+                  const SizedBox(height: 10),
+                if (userParts.speech.isNotEmpty ||
+                    message.attachments.isNotEmpty)
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [body, const SizedBox(width: 10), avatar],
+                  ),
+                if (userParts.bottomNarration.isNotEmpty) ...[
+                  const SizedBox(height: 10),
+                  _NarratorRun(
+                    segments: [
+                      ChatSegment(
+                        speaker: ChatSpeaker.narrator,
+                        text: userParts.bottomNarration,
+                      ),
+                    ],
+                    glass: true,
+                  ),
+                ],
+              ],
             ),
           );
         }
-        final userParts = parseUserComposerParts(message.text);
-        final avatar = Container(
-          width: 28,
-          height: 28,
-          decoration: BoxDecoration(
-            shape: BoxShape.circle,
-            color: Colors.white.withValues(alpha: 0.16),
-            border: Border.all(color: Colors.white.withValues(alpha: 0.24)),
-          ),
-          child: Icon(
-            Icons.person_outline_rounded,
-            size: 16,
-            color: Colors.white,
-          ),
-        );
-        final body = Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.end,
-            children: [
-              Text(
-                language.text('你', 'You', 'あなた'),
-                textAlign: TextAlign.right,
-                style: const TextStyle(
-                  color: Colors.white70,
-                  fontSize: 11,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-              const SizedBox(height: 2),
-              _UserComposerBody(text: userParts.speech, glass: true),
-              if (message.attachments.isNotEmpty) ...[
-                const SizedBox(height: 7),
-                Align(
-                  alignment: Alignment.centerRight,
-                  child: _SentAttachmentLabels(
-                    attachments: message.attachments,
-                    glass: true,
-                  ),
-                ),
-              ],
-            ],
-          ),
-        );
-        return Padding(
-          padding: const EdgeInsets.symmetric(vertical: 10),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              if (userParts.narration.isNotEmpty)
-                _NarratorRun(
-                  segments: [
-                    ChatSegment(
-                      speaker: ChatSpeaker.narrator,
-                      text: userParts.narration,
-                    ),
-                  ],
-                  glass: true,
-                ),
-              if (userParts.narration.isNotEmpty && userParts.speech.isNotEmpty)
-                const SizedBox(height: 10),
-              if (userParts.speech.isNotEmpty || message.attachments.isNotEmpty)
-                Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [body, const SizedBox(width: 10), avatar],
-                ),
-              if (userParts.bottomNarration.isNotEmpty) ...[
-                const SizedBox(height: 10),
-                _NarratorRun(
-                  segments: [
-                    ChatSegment(
-                      speaker: ChatSpeaker.narrator,
-                      text: userParts.bottomNarration,
-                    ),
-                  ],
-                  glass: true,
-                ),
-              ],
-            ],
-          ),
+
+        final content = buildMessage();
+        return SwipeCollectionSelection(
+          key: ValueKey(message.collectionKey),
+          selected:
+              selecting &&
+              (selection[message.collectionKey]?.contains('text') ?? false),
+          selectedLabel: language.text('已选择', 'Selected', '選択済み'),
+          onChanged: !selecting || onSelectionChanged == null
+              ? null
+              : (value) {
+                  onSelectionChanged!(message.collectionKey, 'text', value);
+                  onSelectionChanged!(
+                    message.collectionKey,
+                    'voice',
+                    value &&
+                        !message.isUser &&
+                        availableVoices.contains(message.collectionKey),
+                  );
+                },
+          child: content,
         );
       },
     );
@@ -6454,6 +6519,7 @@ class _UserComposerBody extends StatelessWidget {
 
 class _SeparatedAssistantMessage extends StatelessWidget {
   const _SeparatedAssistantMessage({
+    this.onSpeechText,
     required this.response,
     required this.translationOnly,
     required this.language,
@@ -6464,6 +6530,7 @@ class _SeparatedAssistantMessage extends StatelessWidget {
   });
 
   final String response;
+  final ValueChanged<String>? onSpeechText;
   final bool translationOnly;
   final AppLanguage language;
   final List<ChatAttachment> attachments;
@@ -6508,6 +6575,7 @@ class _SeparatedAssistantMessage extends StatelessWidget {
       } else {
         children.add(
           _RyzaRun(
+            onSpeechText: onSpeechText,
             segments: run,
             language: language,
             glass: glass,
@@ -6588,6 +6656,7 @@ class _NarratorRun extends StatelessWidget {
 
 class _RyzaRun extends StatelessWidget {
   const _RyzaRun({
+    this.onSpeechText,
     required this.segments,
     required this.language,
     required this.glass,
@@ -6597,6 +6666,7 @@ class _RyzaRun extends StatelessWidget {
   });
 
   final List<ChatSegment> segments;
+  final ValueChanged<String>? onSpeechText;
   final AppLanguage language;
   final bool glass;
   final bool translationOnly;
@@ -6651,6 +6721,7 @@ class _RyzaRun extends StatelessWidget {
               ),
               const SizedBox(height: 2),
               _DialogueSegmentBody(
+                onSpeechText: onSpeechText,
                 segments: segments,
                 translationOnly: translationOnly,
                 glass: glass,
@@ -6761,6 +6832,7 @@ class _CharacterRun extends StatelessWidget {
 
 class _DialogueSegmentBody extends StatelessWidget {
   const _DialogueSegmentBody({
+    this.onSpeechText,
     required this.segments,
     required this.glass,
     this.translationOnly = false,
@@ -6769,6 +6841,7 @@ class _DialogueSegmentBody extends StatelessWidget {
   });
 
   final List<ChatSegment> segments;
+  final ValueChanged<String>? onSpeechText;
   final bool glass;
   final bool translationOnly;
   final int? activeSegmentIndex;
@@ -6796,17 +6869,30 @@ class _DialogueSegmentBody extends StatelessWidget {
           _AutoVisibleDialogueSegment(
             active: activeSegmentIndex == index,
             displayDuration: activeSegmentDisplayDuration,
-            child: Text(
-              '${segments[index].speaker == ChatSpeaker.translation ? '译文：' : ''}'
-              '${displayTextForAssistantSegment(segments[index])}',
-              style: TextStyle(
-                color:
-                    appearance?.textColor ??
-                    (glass
-                        ? Colors.white
-                        : Theme.of(context).colorScheme.onSurface),
-                fontSize: 14,
-                height: 1.4,
+            child: GestureDetector(
+              onTap: onSpeechText == null
+                  ? null
+                  : () {
+                      final original = segments
+                          .take(index + 1)
+                          .where((s) => s.speaker == ChatSpeaker.ryza)
+                          .lastOrNull;
+                      if (original != null) {
+                        onSpeechText!(displayTextForAssistantSegment(original));
+                      }
+                    },
+              child: Text(
+                '${segments[index].speaker == ChatSpeaker.translation ? '译文：' : ''}'
+                '${displayTextForAssistantSegment(segments[index])}',
+                style: TextStyle(
+                  color:
+                      appearance?.textColor ??
+                      (glass
+                          ? Colors.white
+                          : Theme.of(context).colorScheme.onSurface),
+                  fontSize: 14,
+                  height: 1.4,
+                ),
               ),
             ),
           ),

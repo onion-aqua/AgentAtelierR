@@ -126,7 +126,11 @@ class ConversationCollectionStore {
     }
   }
 
-  Future<void> cacheVoice(String key, List<String> paths) => _locked(() async {
+  Future<void> cacheVoice(
+    String key,
+    List<String> paths, {
+    List<String> texts = const [],
+  }) => _locked(() async {
     if (paths.isEmpty) return;
     final records = await _read('voice_cache');
     final files = await _copyAudio(
@@ -135,7 +139,11 @@ class ConversationCollectionStore {
     );
     final removed = records.where((r) => r['key'] == key).toList();
     records.removeWhere((r) => r['key'] == key);
-    records.add({'key': key, 'audio': files});
+    records.add({
+      'key': key,
+      'audio': files,
+      if (texts.length == paths.length) 'texts': texts,
+    });
     while (records.length > 50) {
       removed.add(records.removeAt(0));
     }
@@ -157,6 +165,20 @@ class ConversationCollectionStore {
     }
     return result;
   });
+  Future<List<({String text, String path})>> voiceSegments(String key) =>
+      _locked(() async {
+        final entry = (await _read('voice_cache'))
+            .where((r) => r['key'] == key)
+            .firstOrNull;
+        if (entry == null || entry['texts'] is! List) return [];
+        final audio = entry['audio'] as List;
+        final texts = entry['texts'] as List;
+        if (audio.length != texts.length) return [];
+        return [
+          for (var i = 0; i < audio.length; i++)
+            (text: texts[i] as String, path: path(audio[i] as String)),
+        ];
+      });
 
   Future<List<Map<String, dynamic>>> cards() =>
       _locked(() => _read('favorites'));
@@ -171,12 +193,23 @@ class ConversationCollectionStore {
     final sources = <String>[];
     for (final selection in selections) {
       final indexes = <int>[];
+      final speech = <Map<String, dynamic>>[];
       if (selection['saveVoice'] == true) {
         final entry = cache
             .where((r) => r['key'] == selection['key'])
             .firstOrNull;
         if (entry == null) throw StateError('所选语音已过期，请重新选择');
         for (final audio in entry['audio'] as List) {
+          final localIndex = indexes.length;
+          if (selection['saveText'] == true &&
+              entry['texts'] is List &&
+              (entry['texts'] as List).length ==
+                  (entry['audio'] as List).length) {
+            speech.add({
+              'text': (entry['texts'] as List)[localIndex],
+              'audioIndex': sources.length,
+            });
+          }
           indexes.add(sources.length);
           sources.add(path(audio as String));
         }
@@ -191,6 +224,7 @@ class ConversationCollectionStore {
         'text': selection['saveText'] == true ? selection['text'] : '',
         'isUser': selection['isUser'],
         'audioIndexes': indexes,
+        'speech': speech,
       });
     }
     if (items.isEmpty) return;

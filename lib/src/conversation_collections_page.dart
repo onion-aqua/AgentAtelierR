@@ -90,18 +90,19 @@ class _CollectionsState extends State<ConversationCollectionsPage> {
     }
   }
 
-  Future<void> _play(Map<String, dynamic> card) async {
+  Future<void> _play(Map<String, dynamic> card, {int? audioIndex}) async {
     final generation = ++_generation;
     _cancelPlayback();
     final cancellation = Completer<void>();
     _cancel = cancellation;
-    final stop = _playing == card['id'];
+    final stop = audioIndex == null && _playing == card['id'];
     setState(() => _playing = stop ? null : card['id'] as String);
     await _player.stop();
     if (stop) return;
     try {
       final store = await ConversationCollectionStore.open();
-      for (final audio in card['audio'] as List) {
+      final files = card['audio'] as List;
+      for (final audio in audioIndex == null ? files : [files[audioIndex]]) {
         if (!mounted || generation != _generation) return;
         final complete = Completer<void>();
         final subscription = _player.onPlayerComplete.listen((_) {
@@ -342,6 +343,25 @@ class _CollectionsState extends State<ConversationCollectionsPage> {
                               ),
                               if ((item['text'] as String).isNotEmpty)
                                 SelectableText(item['text'] as String),
+                              for (final speech
+                                  in item['speech'] as List? ?? [])
+                                TextButton.icon(
+                                  onPressed: _busy
+                                      ? null
+                                      : () => _play(
+                                          card,
+                                          audioIndex:
+                                              speech['audioIndex'] as int,
+                                        ),
+                                  icon: const Icon(
+                                    Icons.play_arrow_rounded,
+                                    size: 18,
+                                  ),
+                                  label: Text(
+                                    speech['text'] as String,
+                                    textAlign: TextAlign.start,
+                                  ),
+                                ),
                               if ((item['audioIndexes'] as List).isNotEmpty)
                                 Text('♫ ${_t('已收藏语音', 'Saved audio', '保存音声')}'),
                             ],

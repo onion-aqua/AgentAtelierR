@@ -18,6 +18,41 @@ void main() {
     audio = await File('${root.path}/source.wav').writeAsBytes([1, 2, 3, 4]);
   });
   tearDown(() async => root.delete(recursive: true));
+  test(
+    'speech mappings survive collection, export and cache eviction',
+    () async {
+      await store.cacheVoice(
+        'mapped',
+        [audio.path, audio.path],
+        texts: ['第一段', '第二段'],
+      );
+      final mapped = await store.voiceSegments('mapped');
+      expect(mapped.map((s) => s.text), ['第一段', '第二段']);
+      await store.collect([
+        {
+          'key': 'mapped',
+          'text': '第一段\n第二段',
+          'isUser': false,
+          'saveText': true,
+          'saveVoice': true,
+        },
+      ]);
+      final card = (await store.cards()).single;
+      expect((card['items'] as List).single['speech'], [
+        {'text': '第一段', 'audioIndex': 0},
+        {'text': '第二段', 'audioIndex': 1},
+      ]);
+      final archive = ZipDecoder().decodeBytes(
+        await store.export(card['id'] as String),
+      );
+      final exported = jsonDecode(
+        utf8.decode(archive.findFile('collection.json')!.content),
+      );
+      expect(exported['items'][0]['speech'][1]['audioIndex'], 1);
+      await store.cacheVoice('legacy', [audio.path]);
+      expect(await store.voiceSegments('legacy'), isEmpty);
+    },
+  );
 
   Map<String, dynamic> selection(
     String key, {

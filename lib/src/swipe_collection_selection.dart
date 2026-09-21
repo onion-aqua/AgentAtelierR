@@ -37,6 +37,14 @@ class _SwipeSelectionState extends State<SwipeCollectionSelection>
   }
 
   @override
+  void didUpdateWidget(covariant SwipeCollectionSelection oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.onChanged == null || oldWidget.selected != widget.selected) {
+      _slide.value = widget.selected && widget.onChanged != null ? 1 : 0;
+    }
+  }
+
+  @override
   void dispose() {
     _slide.dispose();
     super.dispose();
