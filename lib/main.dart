@@ -183,12 +183,16 @@ class AgentAtelierRApp extends StatelessWidget {
           controller.textColorTheme,
           controller.translationOnly &&
               controller.translationLanguage.name != 'none',
+          controller.dialogueFontScale,
+          controller.textColorChoice,
         ),
         darkTheme: withDialogueAppearance(
           atelierTheme(controller.accentTheme, Brightness.dark),
           controller.textColorTheme,
           controller.translationOnly &&
               controller.translationLanguage.name != 'none',
+          controller.dialogueFontScale,
+          controller.textColorChoice,
         ),
         themeMode: switch (controller.themePreference) {
           AppThemePreference.system => ThemeMode.system,

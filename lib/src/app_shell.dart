@@ -68,6 +68,7 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
   final _worldMapKey = GlobalKey<WorldMapScreenState>();
   bool _menuOpen = false;
   bool _chatUiHidden = false;
+  bool _chatFullscreen = false;
   bool _alwaysOnTop = false;
   bool _borderless = false;
   final Set<int> _activePointers = <int>{};
@@ -198,6 +199,10 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
                   controller: widget.controller,
                   onMenuPressed: _openMenu,
                   hideUi: _chatUiHidden || overlayDestination,
+                  onFullscreenChanged: (value) => setState(() {
+                    _chatFullscreen = value;
+                    if (value) _menuOpen = false;
+                  }),
                 ),
                 WorldMapScreen(
                   key: _worldMapKey,
@@ -239,6 +244,7 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
             if (!didPop) _handleBack();
           },
           child: Scaffold(
+            resizeToAvoidBottomInset: false,
             key: _scaffoldKey,
             body: Column(
               children: [
@@ -252,7 +258,9 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
                     child: Stack(
                       children: [
                         content,
-                        if (!_chatUiHidden)
+                        if (!_chatUiHidden &&
+                            !(_chatFullscreen &&
+                                _destination == AppDestination.chat))
                           Positioned(
                             left: 16,
                             top: safeTop + 8,
@@ -270,7 +278,8 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
                               onPressed: _openMenu,
                             ),
                           ),
-                        if (_destination == AppDestination.chat)
+                        if (_destination == AppDestination.chat &&
+                            !_chatFullscreen)
                           Positioned(
                             left: 72,
                             top: safeTop + 8,

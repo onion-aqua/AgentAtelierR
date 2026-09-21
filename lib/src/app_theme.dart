@@ -4,6 +4,8 @@ import 'app_localization.dart';
 
 enum AppAccentTheme { jade, amber, ocean, lavender, rose, champagne, graphite }
 
+enum AppTextColor { theme, black, white }
+
 extension AppAccentThemeData on AppAccentTheme {
   String label(AppLanguage language) => switch (this) {
     AppAccentTheme.jade => language.text('翡翠绿', 'Jade', '翡翠'),
@@ -29,7 +31,12 @@ extension AppAccentThemeData on AppAccentTheme {
 final _themes = <(AppAccentTheme, Brightness), ThemeData>{};
 
 class DialogueAppearance extends ThemeExtension<DialogueAppearance> {
-  const DialogueAppearance({this.translationOnly = false, this.textColor});
+  const DialogueAppearance({
+    this.translationOnly = false,
+    this.textColor,
+    this.fontScale = 1,
+  });
+  final double fontScale;
   final bool translationOnly;
   final Color? textColor;
   @override
@@ -37,6 +44,7 @@ class DialogueAppearance extends ThemeExtension<DialogueAppearance> {
       DialogueAppearance(
         translationOnly: translationOnly ?? this.translationOnly,
         textColor: textColor ?? this.textColor,
+        fontScale: fontScale,
       );
   @override
   DialogueAppearance lerp(covariant DialogueAppearance? other, double t) =>
@@ -45,15 +53,22 @@ class DialogueAppearance extends ThemeExtension<DialogueAppearance> {
       : DialogueAppearance(
           translationOnly: other.translationOnly,
           textColor: Color.lerp(textColor, other.textColor, t),
+          fontScale: fontScale + (other.fontScale - fontScale) * t,
         );
 }
 
 ThemeData withDialogueAppearance(
   ThemeData theme,
   AppAccentTheme? text,
-  bool translationOnly,
-) {
-  final color = text == null
+  bool translationOnly, [
+  double fontScale = 1.0,
+  AppTextColor textChoice = AppTextColor.theme,
+]) {
+  final color = textChoice == AppTextColor.black
+      ? Colors.black
+      : textChoice == AppTextColor.white
+      ? Colors.white
+      : text == null
       ? null
       : theme.brightness == Brightness.dark
       ? Color.lerp(text.color, Colors.white, 0.65)!
@@ -70,7 +85,11 @@ ThemeData withDialogueAppearance(
         : theme.textTheme.apply(bodyColor: color, displayColor: color),
     extensions: [
       ...theme.extensions.values,
-      DialogueAppearance(translationOnly: translationOnly, textColor: color),
+      DialogueAppearance(
+        translationOnly: translationOnly,
+        textColor: color,
+        fontScale: fontScale,
+      ),
     ],
   );
 }

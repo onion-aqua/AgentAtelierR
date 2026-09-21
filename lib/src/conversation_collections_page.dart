@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'app_controller.dart';
 import 'app_localization.dart';
 import 'conversation_collection_store.dart';
+import 'collection_text_parts.dart';
 import 'glass_ui.dart';
 import 'settings_detail_page.dart';
 import 'voice_playback_progress.dart';
@@ -341,27 +342,33 @@ class _CollectionsState extends State<ConversationCollectionsPage> {
                                     : _t('角色回复', 'Reply', '返答'),
                                 style: Theme.of(context).textTheme.labelSmall,
                               ),
-                              if ((item['text'] as String).isNotEmpty)
-                                SelectableText(item['text'] as String),
-                              for (final speech
-                                  in item['speech'] as List? ?? [])
-                                TextButton.icon(
-                                  onPressed: _busy
-                                      ? null
-                                      : () => _play(
-                                          card,
-                                          audioIndex:
-                                              speech['audioIndex'] as int,
-                                        ),
-                                  icon: const Icon(
-                                    Icons.play_arrow_rounded,
-                                    size: 18,
+                              for (final part in collectionTextParts(
+                                item['text'] as String,
+                                item['speech'] as List? ?? [],
+                                (card['audio'] as List).length,
+                              ))
+                                if (part.audioIndex == null)
+                                  if (part.text.trim().isNotEmpty)
+                                    SelectableText(part.text.trim())
+                                  else
+                                    const SizedBox.shrink()
+                                else
+                                  TextButton.icon(
+                                    onPressed: _busy
+                                        ? null
+                                        : () => _play(
+                                            card,
+                                            audioIndex: part.audioIndex!,
+                                          ),
+                                    icon: const Icon(
+                                      Icons.play_arrow_rounded,
+                                      size: 18,
+                                    ),
+                                    label: Text(
+                                      part.text,
+                                      textAlign: TextAlign.start,
+                                    ),
                                   ),
-                                  label: Text(
-                                    speech['text'] as String,
-                                    textAlign: TextAlign.start,
-                                  ),
-                                ),
                               if ((item['audioIndexes'] as List).isNotEmpty)
                                 Text('♫ ${_t('已收藏语音', 'Saved audio', '保存音声')}'),
                             ],

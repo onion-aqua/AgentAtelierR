@@ -791,6 +791,8 @@ class AppController extends ChangeNotifier {
   AppThemePreference themePreference = AppThemePreference.system;
   AppAccentTheme accentTheme = AppAccentTheme.jade;
   AppAccentTheme? textColorTheme;
+  AppTextColor textColorChoice = AppTextColor.theme;
+  double dialogueFontScale = 1.0;
   bool translationOnly = false;
   bool independentTranslation = true;
   AppLanguage interfaceLanguage = AppLanguage.chinese;
@@ -1069,6 +1071,12 @@ class AppController extends ChangeNotifier {
           (value) => value.name == _preferences.getString('text_color_theme'),
         )
         .firstOrNull;
+    textColorChoice = AppTextColor.values.firstWhere(
+      (value) => value.name == _preferences.getString('text_color_choice'),
+      orElse: () => AppTextColor.theme,
+    );
+    dialogueFontScale = (_preferences.getDouble('dialogue_font_scale') ?? 1.0)
+        .clamp(0.85, 1.35);
     themePreference = AppThemePreference.values.firstWhere(
       (value) => value.name == _preferences.getString('theme_preference'),
       orElse: () => AppThemePreference.system,
@@ -2496,6 +2504,8 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
     'themePreference': themePreference.name,
     'accentTheme': accentTheme.name,
     'textColorTheme': textColorTheme?.name,
+    'textColorChoice': textColorChoice.name,
+    'dialogueFontScale': dialogueFontScale,
     'translationOnly': translationOnly,
     'independentTranslation': independentTranslation,
     'preferCustomUserProfile': preferCustomUserProfile,
@@ -2986,6 +2996,14 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
     textColorTheme = AppAccentTheme.values
         .where((value) => value.name == data['textColorTheme'])
         .firstOrNull;
+    textColorChoice = AppTextColor.values.firstWhere(
+      (value) => value.name == data['textColorChoice'],
+      orElse: () => AppTextColor.theme,
+    );
+    final importedFontScale = data['dialogueFontScale'];
+    dialogueFontScale = importedFontScale is num && importedFontScale.isFinite
+        ? importedFontScale.toDouble().clamp(.85, 1.35)
+        : 1.0;
     accentTheme = AppAccentTheme.values.firstWhere(
       (v) => v.name == data['accentTheme'],
       orElse: () => AppAccentTheme.jade,
@@ -3810,7 +3828,19 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
   }
 
   void setTextColorTheme(AppAccentTheme? value) {
+    textColorChoice = AppTextColor.theme;
     textColorTheme = value;
+    _changed();
+  }
+
+  void setTextColorChoice(AppTextColor value) {
+    if (value == AppTextColor.theme) textColorTheme = null;
+    textColorChoice = value;
+    _changed();
+  }
+
+  void setDialogueFontScale(double value) {
+    dialogueFontScale = value.clamp(0.85, 1.35);
     _changed();
   }
 
@@ -3949,6 +3979,8 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
     await Future.wait<void>([
       _preferences.setString('accent_theme', accentTheme.name),
       _preferences.setString('text_color_theme', textColorTheme?.name ?? ''),
+      _preferences.setString('text_color_choice', textColorChoice.name),
+      _preferences.setDouble('dialogue_font_scale', dialogueFontScale),
       _preferences.setBool('translation_only', translationOnly),
       _preferences.setBool(
         'background_voice_playback',

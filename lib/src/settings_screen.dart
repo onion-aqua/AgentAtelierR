@@ -91,7 +91,7 @@ extension on _SettingsCategory {
       'Memory, local import, export and chat history',
       '長期記憶、データの読み込み・書き出し、会話履歴',
     ),
-    _SettingsCategory.about => 'AgentAtelierR · 1.0.2',
+    _SettingsCategory.about => 'AgentAtelierR · 1.0.3',
   };
 
   IconData get icon => switch (this) {
@@ -1067,9 +1067,9 @@ class SettingsScreenState extends State<SettingsScreen> {
                   title: const Text('AgentAtelierR'),
                   subtitle: Text(
                     language.text(
-                      '版本 1.0.2 正式版',
-                      'Version 1.0.2',
-                      'バージョン 1.0.2',
+                      '版本 1.0.3 正式版',
+                      'Version 1.0.3',
+                      'バージョン 1.0.3',
                     ),
                   ),
                 ),
@@ -1234,23 +1234,70 @@ class SettingsScreenState extends State<SettingsScreen> {
                   const Divider(),
                   Text(language.text('文字颜色', 'Text color', '文字色')),
                   ListTile(
+                    contentPadding: EdgeInsets.zero,
                     title: Text(
-                      language.text('跟随主题', 'Follow theme', 'テーマに合わせる'),
+                      language.text('对话字号', 'Dialogue text size', '会話の文字サイズ'),
                     ),
-                    selected: controller.textColorTheme == null,
-                    onTap: () => controller.setTextColorTheme(null),
+                    subtitle: Slider(
+                      value: controller.dialogueFontScale,
+                      min: .85,
+                      max: 1.35,
+                      divisions: 10,
+                      label: '${(controller.dialogueFontScale * 100).round()}%',
+                      onChanged: controller.setDialogueFontScale,
+                    ),
                   ),
+                  for (final choice in AppTextColor.values)
+                    ListTile(
+                      key: ValueKey('text-choice-${choice.name}'),
+                      leading: CircleAvatar(
+                        backgroundColor: choice == AppTextColor.black
+                            ? Colors.black
+                            : choice == AppTextColor.white
+                            ? Colors.white
+                            : Theme.of(context).colorScheme.primary,
+                        child:
+                            controller.textColorChoice == choice &&
+                                (choice != AppTextColor.theme ||
+                                    controller.textColorTheme == null)
+                            ? Icon(
+                                Icons.check,
+                                color: choice == AppTextColor.white
+                                    ? Colors.black
+                                    : Colors.white,
+                              )
+                            : null,
+                      ),
+                      title: Text(switch (choice) {
+                        AppTextColor.theme => language.text(
+                          '跟随主题',
+                          'Follow theme',
+                          'テーマに合わせる',
+                        ),
+                        AppTextColor.black => language.text('黑色', 'Black', '黒'),
+                        AppTextColor.white => language.text('白色', 'White', '白'),
+                      }),
+                      selected:
+                          controller.textColorChoice == choice &&
+                          (choice != AppTextColor.theme ||
+                              controller.textColorTheme == null),
+                      onTap: () => controller.setTextColorChoice(choice),
+                    ),
                   for (final color in AppAccentTheme.values)
                     ListTile(
                       key: ValueKey('text-color-${color.name}'),
                       leading: CircleAvatar(
                         backgroundColor: color.color,
-                        child: controller.textColorTheme == color
+                        child:
+                            controller.textColorChoice == AppTextColor.theme &&
+                                controller.textColorTheme == color
                             ? const Icon(Icons.check, color: Colors.white)
                             : null,
                       ),
                       title: Text(color.label(language)),
-                      selected: controller.textColorTheme == color,
+                      selected:
+                          controller.textColorChoice == AppTextColor.theme &&
+                          controller.textColorTheme == color,
                       onTap: () => controller.setTextColorTheme(color),
                     ),
                 ],

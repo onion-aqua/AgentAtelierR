@@ -4,6 +4,38 @@ import 'package:ryza_chat_mvp/src/app_theme.dart';
 import 'package:ryza_chat_mvp/src/chat_segments.dart';
 
 void main() {
+  originalAppearanceTests();
+  test('black and white stay exact in both brightness modes', () {
+    for (final brightness in Brightness.values) {
+      for (final choice in [AppTextColor.black, AppTextColor.white]) {
+        final theme = withDialogueAppearance(
+          atelierTheme(AppAccentTheme.jade, brightness),
+          AppAccentTheme.rose,
+          false,
+          1.35,
+          choice,
+        );
+        final color = choice == AppTextColor.black
+            ? Colors.black
+            : Colors.white;
+        expect(theme.extension<DialogueAppearance>()!.textColor, color);
+        expect(theme.textTheme.bodyMedium!.color, color);
+        expect(theme.extension<DialogueAppearance>()!.fontScale, 1.35);
+      }
+    }
+  });
+  test('default text color still retains adjustable dialogue size', () {
+    final theme = withDialogueAppearance(
+      atelierTheme(AppAccentTheme.jade, Brightness.light),
+      null,
+      false,
+      .85,
+    );
+    expect(theme.extension<DialogueAppearance>()!.fontScale, .85);
+    expect(theme.extension<DialogueAppearance>()!.textColor, isNull);
+  });
+}
+void originalAppearanceTests() {
   test(
     'translation display preserves original segments and playback indices',
     () {

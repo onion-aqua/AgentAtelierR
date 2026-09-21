@@ -19,6 +19,7 @@ import 'app_controller.dart';
 import 'conversation_collection_store.dart';
 import 'swipe_collection_selection.dart';
 import 'voice_playback_progress.dart';
+import 'narration_composer_fields.dart';
 import 'app_theme.dart';
 import 'app_localization.dart';
 import 'attachment_thumbnail_store.dart';
@@ -87,6 +88,36 @@ String _mimeTypeForFile(String name) {
   };
 }
 
+Rect conversationPanelBounds({
+  required Size viewport,
+  required double keyboardInset,
+  required double fraction,
+  bool fullscreen = false,
+}) {
+  final width = max(0.0, viewport.width);
+  final height = max(0.0, viewport.height);
+  final inset = keyboardInset.clamp(0.0, height).toDouble();
+  final margin = fullscreen ? 0.0 : min(8.0, (height - inset) / 4);
+  final available = max(0.0, height - inset - margin);
+  final compact = width < 360 || height < 500;
+  final maxHeight = min(available, height * (compact ? 0.85 : 0.68));
+  final panelHeight = fullscreen
+      ? available
+      : (height * fraction).clamp(min(176.0, maxHeight), maxHeight).toDouble();
+  final side = fullscreen
+      ? 0.0
+      : (width >= 720 ? 18.0 : (compact ? 6.0 : 10.0));
+  final panelWidth = fullscreen
+      ? width
+      : min(width >= 720 ? 540.0 : width, max(0.0, width - side * 2));
+  return Rect.fromLTWH(
+    width - side - panelWidth,
+    height - inset - margin - panelHeight,
+    panelWidth,
+    panelHeight,
+  );
+}
+
 double conversationPanelFractionForText({
   required String text,
   required double viewportWidth,
@@ -124,11 +155,13 @@ class ChatScreen extends StatefulWidget {
     required this.controller,
     required this.onMenuPressed,
     required this.hideUi,
+    this.onFullscreenChanged,
   });
 
   final AppController controller;
   final VoidCallback onMenuPressed;
   final bool hideUi;
+  final ValueChanged<bool>? onFullscreenChanged;
   final bool pageActive;
 
   @override
@@ -448,8 +481,6 @@ class _ChatScreenState extends State<ChatScreen> {
   // Sending a new message still restores automatic sizing below.
   double? _manualPanelFraction = 0.22;
   double? _lockedPanelFraction;
-  double? _stableBottomSafeInset;
-  double? _stableBodyHeight;
   Size? _lastChatViewport;
   final List<ChatAttachment> _pendingAttachments = [];
   bool _characterToolsExpanded = false;
@@ -3646,7 +3677,7 @@ class _ChatScreenState extends State<ChatScreen> {
                 offset: Offset(0, 14),
               ),
             ],
-            child: Padding(
+            child: SingleChildScrollView(
               padding: const EdgeInsets.fromLTRB(20, 18, 12, 18),
               child: Column(
                 mainAxisSize: MainAxisSize.min,
@@ -3677,39 +3708,60 @@ class _ChatScreenState extends State<ChatScreen> {
                     ],
                   ),
                   const Divider(color: Colors.white24),
-                  _CharacterStatusRow(
-                    icon: Icons.mood_outlined,
-                    label: language.text('心情', 'Mood', '気分'),
-                    value: widget.controller.characterState.summary(language),
-                  ),
-                  if (widget.controller.characterState.reason.isNotEmpty)
-                    _CharacterStatusRow(
-                      icon: Icons.history,
-                      label: language.text('最近变化', 'Last change', '最近の変化'),
-                      value:
-                          '${widget.controller.characterState.reason}\n${widget.controller.characterState.updatedAt?.toLocal().toString().split('.').first ?? ''}',
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        _CharacterStatusRow(
+                          icon: Icons.mood_outlined,
+                          label: language.text('心情', 'Mood', '気分'),
+                          value: widget.controller.characterState.summary(
+                            language,
+                          ),
+                        ),
+                        if (widget.controller.characterState.reason.isNotEmpty)
+                          _CharacterStatusRow(
+                            icon: Icons.history,
+                            label: language.text(
+                              '最近变化',
+                              'Last change',
+                              '最近の変化',
+                            ),
+                            value:
+                                '${widget.controller.characterState.reason}\n${widget.controller.characterState.updatedAt?.toLocal().toString().split('.').first ?? ''}',
+                          ),
+                      ],
                     ),
-                  _CharacterStatusRow(
-                    icon: Icons.favorite_rounded,
-                    label: language.text('关系点数', 'Bond', '親密度'),
-                    value: '${widget.controller.relationshipPoints}',
                   ),
-                  _CharacterStatusRow(
-                    icon: Icons.checkroom_outlined,
-                    label: language.text('服装姿态', 'Outfit', '衣装と姿勢'),
-                    value: _appearance.label,
-                  ),
-                  _CharacterStatusRow(
-                    icon: widget.controller.sceneTime.icon,
-                    label: language.text('场景时间', 'Scene time', 'シーン時間'),
-                    value: widget.controller.sceneTime.label,
-                  ),
-                  _CharacterStatusRow(
-                    icon: Icons.psychology_alt_outlined,
-                    label: language.text('长期记忆', 'Memory', '長期記憶'),
-                    value: widget.controller.longTermMemoryEnabled
-                        ? language.text('启用', 'Enabled', '有効')
-                        : language.text('关闭', 'Disabled', '無効'),
+                  const SizedBox(height: 8),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 4,
+                    children: [
+                      _CharacterStatusRow(
+                        icon: Icons.favorite_rounded,
+                        label: language.text('关系点数', 'Bond', '親密度'),
+                        value: '${widget.controller.relationshipPoints}',
+                      ),
+                      _CharacterStatusRow(
+                        icon: Icons.checkroom_outlined,
+                        label: language.text('服装姿态', 'Outfit', '衣装と姿勢'),
+                        value: _appearance.label,
+                      ),
+                      _CharacterStatusRow(
+                        icon: widget.controller.sceneTime.icon,
+                        label: language.text('场景时间', 'Scene time', 'シーン時間'),
+                        value: widget.controller.sceneTime.label,
+                      ),
+                      _CharacterStatusRow(
+                        icon: Icons.psychology_alt_outlined,
+                        label: language.text('长期记忆', 'Memory', '長期記憶'),
+                        value: widget.controller.longTermMemoryEnabled
+                            ? language.text('启用', 'Enabled', '有効')
+                            : language.text('关闭', 'Disabled', '無効'),
+                      ),
+                    ],
                   ),
                 ],
               ),
@@ -3718,6 +3770,97 @@ class _ChatScreenState extends State<ChatScreen> {
         ),
       ),
     );
+  }
+
+  Future<void> _openFullscreenComposer() async {
+    if (!widget.controller.splitNarrationComposer) return;
+    FocusManager.instance.primaryFocus?.unfocus();
+    final language = widget.controller.interfaceLanguage;
+    final send = await showGeneralDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      barrierColor: Colors.black45,
+      transitionDuration: const Duration(milliseconds: 200),
+      pageBuilder: (context, animation, secondaryAnimation) => Scaffold(
+        backgroundColor: Colors.transparent,
+        resizeToAvoidBottomInset: true,
+        body: SafeArea(
+          child: GlassSurface(
+            liquidGlass: widget.controller.liquidGlassChatUi,
+            fallbackColor: const Color(0xE62A2A2A),
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                children: [
+                  Expanded(
+                    child: NarrationComposerFields(
+                      controllers: [
+                        _narrationInputController,
+                        _inputController,
+                        _narrationBottomInputController,
+                      ],
+                      hints: [
+                        language.text(
+                          '旁白（环境、动作、神态）',
+                          'Opening narration',
+                          '上部ナレーション',
+                        ),
+                        language.text(
+                          '你想说的话',
+                          'What you want to say',
+                          'あなたが話す内容',
+                        ),
+                        language.text(
+                          '下方旁白（反应、收尾、气氛）',
+                          'Closing narration',
+                          '下部ナレーション',
+                        ),
+                      ],
+                      expanded: true,
+                      onToggleExpanded: () => Navigator.pop(context, false),
+                      expandLabel: language.text(
+                        '收起输入框',
+                        'Collapse input',
+                        '入力欄を縮小',
+                      ),
+                      readOnly:
+                          _isReplying &&
+                          !widget.controller.unlockInputWhileReplying,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.end,
+                    children: [
+                      TextButton(
+                        onPressed: () => Navigator.pop(context, false),
+                        child: Text(
+                          language.text(
+                            '返回（保留草稿）',
+                            'Back (keep draft)',
+                            '戻る（下書きを保持）',
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      FilledButton.icon(
+                        onPressed: _isReplying
+                            ? null
+                            : () => Navigator.pop(context, true),
+                        icon: const Icon(Icons.arrow_upward_rounded),
+                        label: Text(language.text('发送', 'Send', '送信')),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    if (!mounted) return;
+    if (send == true && !_isReplying) await _sendMessage();
   }
 
   Future<void> _takePhoto() async {
@@ -4017,49 +4160,23 @@ class _ChatScreenState extends State<ChatScreen> {
     final isWide = MediaQuery.sizeOf(context).width >= 720;
     final usesLiquidGlass = widget.controller.liquidGlassChatUi;
     final mediaQuery = MediaQuery.of(context);
-    final isDesktop =
-        Platform.isWindows || Platform.isLinux || Platform.isMacOS;
-    final currentBottomSafeInset =
-        mediaQuery.padding.bottom < mediaQuery.viewPadding.bottom
-        ? mediaQuery.padding.bottom
-        : mediaQuery.viewPadding.bottom;
-    if (isDesktop) _stableBottomSafeInset = currentBottomSafeInset;
-    _stableBottomSafeInset ??= currentBottomSafeInset;
-    final stableBottomSafeInset = _stableBottomSafeInset!;
-    final animatedBottomInset =
-        mediaQuery.padding.bottom > mediaQuery.viewPadding.bottom
-        ? mediaQuery.padding.bottom
-        : mediaQuery.viewPadding.bottom;
-    final paddingKeyboardInset = (animatedBottomInset - stableBottomSafeInset)
-        .clamp(0.0, double.infinity);
-    final mediaKeyboardInset =
-        mediaQuery.viewInsets.bottom > paddingKeyboardInset
-        ? mediaQuery.viewInsets.bottom
-        : paddingKeyboardInset;
-    final liquidContentHeight =
-        mediaQuery.size.height -
-        mediaQuery.viewPadding.top -
-        stableBottomSafeInset;
 
     return Scaffold(
       resizeToAvoidBottomInset: false,
       body: LayoutBuilder(
         builder: (context, viewportConstraints) {
-          // Desktop resizing is not a keyboard opening: never accumulate the
-          // largest window height as a synthetic keyboard inset.
-          if (isDesktop ||
-              _stableBodyHeight == null ||
-              viewportConstraints.maxHeight > _stableBodyHeight!) {
-            _stableBodyHeight = viewportConstraints.maxHeight;
-          }
-          final bodyKeyboardInset =
-              (isDesktop
-                      ? 0.0
-                      : _stableBodyHeight! - viewportConstraints.maxHeight)
-                  .clamp(0.0, double.infinity);
-          final keyboardInset = mediaKeyboardInset > bodyKeyboardInset
-              ? mediaKeyboardInset
-              : bodyKeyboardInset;
+          // A resized Android floating window is not a keyboard inset.
+          final bottomSafeInset = mediaQuery.viewPadding.bottom;
+          final liquidContentHeight = max(
+            0.0,
+            viewportConstraints.maxHeight -
+                mediaQuery.viewPadding.top -
+                bottomSafeInset,
+          );
+          final keyboardInset = max(
+            0.0,
+            mediaQuery.viewInsets.bottom - bottomSafeInset,
+          );
           return Stack(
             fit: StackFit.expand,
             clipBehavior: Clip.none,
@@ -4068,7 +4185,7 @@ class _ChatScreenState extends State<ChatScreen> {
                 top: 0,
                 left: 0,
                 right: 0,
-                height: mediaQuery.size.height,
+                height: viewportConstraints.maxHeight,
                 child: _SceneBackground(
                   sceneTime: widget.controller.sceneTime,
                   stageId: widget.controller.selectedStageId,
@@ -4123,32 +4240,26 @@ class _ChatScreenState extends State<ChatScreen> {
     _lastChatViewport = viewport;
     final automaticFraction = _automaticPanelFraction(
       constraints.maxWidth,
+      constraints.maxHeight,
       isWide,
     );
     final panelFraction =
         _lockedPanelFraction ?? _manualPanelFraction ?? automaticFraction;
-    final panelHeight = _conversationFullscreen
-        ? constraints.maxHeight
-        : (constraints.maxHeight * panelFraction).clamp(
-            176.0,
-            constraints.maxHeight * 0.68,
-          );
-    final panelWidth = isWide ? 540.0 : constraints.maxWidth - 20;
+    final panelBounds = conversationPanelBounds(
+      viewport: viewport,
+      keyboardInset: keyboardInset,
+      fraction: widget.controller.splitNarrationComposer
+          ? max(panelFraction, 290 / max(1.0, viewport.height))
+          : panelFraction,
+      fullscreen: _conversationFullscreen,
+    );
     return Stack(
       fit: StackFit.expand,
       clipBehavior: Clip.none,
       children: [
         Column(
           children: [
-            if (!widget.hideUi)
-              _TopBar(
-                language: widget.controller.interfaceLanguage,
-                liquidGlass: liquidGlass,
-                sceneTime: widget.controller.sceneTime,
-                onSceneChanged: widget.controller.setSceneTime,
-                onMenuPressed: widget.onMenuPressed,
-                onStatusPressed: _showCharacterStatus,
-              ),
+            if (!widget.hideUi) const SizedBox(height: 60),
             Expanded(
               child: ConstrainedBox(
                 constraints: const BoxConstraints(maxWidth: 1120),
@@ -4158,15 +4269,29 @@ class _ChatScreenState extends State<ChatScreen> {
           ],
         ),
         if (!widget.hideUi)
+          Positioned(
+            top: 0,
+            left: 0,
+            right: 0,
+            child: _TopBar(
+              language: widget.controller.interfaceLanguage,
+              liquidGlass: liquidGlass,
+              sceneTime: widget.controller.sceneTime,
+              onSceneChanged: widget.controller.setSceneTime,
+              onMenuPressed: widget.onMenuPressed,
+              onStatusPressed: _showCharacterStatus,
+            ),
+          ),
+        if (!widget.hideUi)
           AnimatedPositioned(
             duration: viewportChanged
                 ? Duration.zero
                 : const Duration(milliseconds: 480),
-            curve: Curves.easeOutBack,
-            right: isWide ? 18 : 10,
-            bottom: _conversationFullscreen ? 0 : 8 + keyboardInset,
-            width: panelWidth,
-            height: panelHeight,
+            curve: Curves.easeOutCubic,
+            left: panelBounds.left,
+            top: panelBounds.top,
+            width: panelBounds.width,
+            height: panelBounds.height,
             child: _LiquidGlassConversation(
               language: widget.controller.interfaceLanguage,
               liquidGlass: liquidGlass,
@@ -4198,6 +4323,8 @@ class _ChatScreenState extends State<ChatScreen> {
               onSubmitted: (_) => _sendMessage(),
               onSend: _sendMessage,
               onCancel: _cancelReply,
+              expanded: false,
+              onToggleExpanded: _openFullscreenComposer,
               canUndo: widget.controller.messages.any(
                 (message) => message.isUser,
               ),
@@ -4252,6 +4379,7 @@ class _ChatScreenState extends State<ChatScreen> {
                   _conversationFullscreen = !_conversationFullscreen;
                   if (_conversationFullscreen) _manualPanelFraction = 0.68;
                 });
+                widget.onFullscreenChanged?.call(_conversationFullscreen);
               },
               onDragUpdate: (delta) {
                 if (_conversationFullscreen || _lockedPanelFraction != null) {
@@ -4259,10 +4387,8 @@ class _ChatScreenState extends State<ChatScreen> {
                 }
                 setState(() {
                   _manualPanelFraction =
-                      (panelFraction - delta / constraints.maxHeight).clamp(
-                        0.22,
-                        0.68,
-                      );
+                      (panelFraction - delta / max(1.0, constraints.maxHeight))
+                          .clamp(0.22, 0.68);
                 });
               },
               panelLocked: _lockedPanelFraction != null,
@@ -4280,7 +4406,11 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
-  double _automaticPanelFraction(double viewportWidth, bool isWide) {
+  double _automaticPanelFraction(
+    double viewportWidth,
+    double viewportHeight,
+    bool isWide,
+  ) {
     final latest = widget.controller.messages.isEmpty
         ? null
         : widget.controller.messages.last;
@@ -4297,7 +4427,7 @@ class _ChatScreenState extends State<ChatScreen> {
     return conversationPanelFractionForText(
       text: text,
       viewportWidth: viewportWidth,
-      viewportHeight: _stableBodyHeight ?? 720,
+      viewportHeight: viewportHeight,
       isWide: isWide,
       segmentCount: max(1, segmentCount),
       hasAttachments: latest?.attachments.isNotEmpty == true,
@@ -4671,26 +4801,30 @@ class _TopBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
-      child: Row(
-        children: [
-          const SizedBox(width: 58),
-          const Spacer(),
-          _SceneTimeMenu(
-            liquidGlass: liquidGlass,
-            language: language,
-            sceneTime: sceneTime,
-            onSceneChanged: onSceneChanged,
-          ),
-          const SizedBox(width: 8),
-          _RoundIcon(
-            liquidGlass: liquidGlass,
-            icon: Icons.favorite_border_rounded,
-            tooltip: language.text('角色状态', 'Character status', 'キャラクター状態'),
-            onPressed: onStatusPressed,
-          ),
-        ],
+    return Material(
+      color: Colors.black.withValues(alpha: .16),
+      type: MaterialType.transparency,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
+        child: Row(
+          children: [
+            const SizedBox(width: 58),
+            const Spacer(),
+            _SceneTimeMenu(
+              liquidGlass: liquidGlass,
+              language: language,
+              sceneTime: sceneTime,
+              onSceneChanged: onSceneChanged,
+            ),
+            const SizedBox(width: 8),
+            _RoundIcon(
+              liquidGlass: liquidGlass,
+              icon: Icons.favorite_border_rounded,
+              tooltip: language.text('角色状态', 'Character status', 'キャラクター状態'),
+              onPressed: onStatusPressed,
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -5686,25 +5820,38 @@ class _CharacterStatusRow extends StatelessWidget {
   Widget build(BuildContext context) {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 8),
-      child: Row(
-        children: [
-          Icon(icon, color: Colors.white70, size: 21),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Text(label, style: const TextStyle(color: Colors.white70)),
-          ),
-          const SizedBox(width: 12),
-          Flexible(
-            child: Text(
+      child: SizedBox(
+        width: icon == Icons.mood_outlined || icon == Icons.history
+            ? double.infinity
+            : max(
+                80.0,
+                (min(380.0, MediaQuery.sizeOf(context).width - 48) - 40) / 2,
+              ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(icon, color: Colors.white70, size: 18),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    label,
+                    style: const TextStyle(color: Colors.white70),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            Text(
               value,
-              textAlign: TextAlign.end,
               style: const TextStyle(
                 color: Colors.white,
                 fontWeight: FontWeight.w600,
               ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -5896,6 +6043,8 @@ class _LiquidGlassConversation extends StatelessWidget {
     required this.onSubmitted,
     required this.onSend,
     required this.onCancel,
+    required this.expanded,
+    required this.onToggleExpanded,
     required this.canUndo,
     required this.canReplay,
     required this.canContinue,
@@ -5979,227 +6128,260 @@ class _LiquidGlassConversation extends StatelessWidget {
   final ValueChanged<double> onDragUpdate;
   final bool panelLocked;
   final VoidCallback onTogglePanelLock;
+  final bool expanded;
+  final VoidCallback onToggleExpanded;
 
   @override
   Widget build(BuildContext context) {
-    return Stack(
-      clipBehavior: Clip.none,
-      children: [
-        Positioned.fill(
-          top: 18,
-          child: _LiquidGlassSurface(
-            liquidGlass: liquidGlass,
-            child: Column(
-              children: [
-                Expanded(
-                  child: Stack(
-                    children: [
-                      Positioned.fill(
-                        child: _GlassMessageList(
-                          selecting: selectingCollection,
-                          selection: collectionSelection,
-                          availableVoices: availableCollectionVoices,
-                          onSelectionChanged: savingCollection
-                              ? null
-                              : onSelectCollection,
-                          onPlaySpeech: onPlaySpeech,
-                          language: language,
-                          messages: messages,
-                          controller: scrollController,
-                          activeAssistantSegmentIndex:
-                              activeAssistantSegmentIndex,
-                          activeSegmentDisplayDuration:
-                              activeSegmentDisplayDuration,
-                          latestAssistantMessageKey: latestAssistantMessageKey,
-                          translationOnly: translationOnly,
-                        ),
-                      ),
-                      if (showScrollToBottomIndicator)
-                        Positioned(
-                          right: 8,
-                          bottom: 5,
-                          child: _BouncingScrollIndicator(
-                            onPressed: onScrollToBottom,
+    return LayoutBuilder(
+      builder: (context, constraints) => Stack(
+        clipBehavior: Clip.none,
+        children: [
+          Positioned.fill(
+            top: 18,
+            child: _LiquidGlassSurface(
+              liquidGlass: liquidGlass,
+              child: Column(
+                children: [
+                  Expanded(
+                    child: Stack(
+                      children: [
+                        Positioned.fill(
+                          child: MediaQuery(
+                            data: MediaQuery.of(context).copyWith(
+                              textScaler: TextScaler.linear(
+                                MediaQuery.textScalerOf(context).scale(14) /
+                                    14 *
+                                    (Theme.of(context)
+                                            .extension<DialogueAppearance>()
+                                            ?.fontScale ??
+                                        1),
+                              ),
+                            ),
+                            child: _GlassMessageList(
+                              selecting: selectingCollection,
+                              selection: collectionSelection,
+                              availableVoices: availableCollectionVoices,
+                              onSelectionChanged: savingCollection
+                                  ? null
+                                  : onSelectCollection,
+                              onPlaySpeech: onPlaySpeech,
+                              language: language,
+                              messages: messages,
+                              controller: scrollController,
+                              activeAssistantSegmentIndex:
+                                  activeAssistantSegmentIndex,
+                              activeSegmentDisplayDuration:
+                                  activeSegmentDisplayDuration,
+                              latestAssistantMessageKey:
+                                  latestAssistantMessageKey,
+                              translationOnly: translationOnly,
+                            ),
                           ),
                         ),
-                    ],
+                        if (showScrollToBottomIndicator)
+                          Positioned(
+                            right: 8,
+                            bottom: 5,
+                            child: _BouncingScrollIndicator(
+                              onPressed: onScrollToBottom,
+                            ),
+                          ),
+                      ],
+                    ),
                   ),
-                ),
-                Container(
-                  height: 1,
-                  color: Colors.white.withValues(alpha: 0.2),
-                ),
-                speechProgress,
-                IgnorePointer(
-                  ignoring: selectingCollection,
-                  child: _GlassComposer(
-                    language: language,
-                    controller: inputController,
-                    narrationController: narrationController,
-                    bottomNarrationController: bottomNarrationController,
-                    splitNarration: splitNarration,
-                    onToggleNarration: onToggleNarration,
-                    isReplying: isReplying,
-                    showMicrophone: showMicrophone,
-                    unlockInputWhileReplying: unlockInputWhileReplying,
-                    attachments: attachments,
-                    liquidGlass: liquidGlass,
-                    onTakePhoto: onTakePhoto,
-                    onPickImage: onPickImage,
-                    onPickFile: onPickFile,
-                    onRemoveAttachment: onRemoveAttachment,
-                    onSubmitted: onSubmitted,
-                    onSend: onSend,
-                    onCancel: onCancel,
+                  Container(
+                    height: 1,
+                    color: Colors.white.withValues(alpha: 0.2),
                   ),
-                ),
-              ],
-            ),
-          ),
-        ),
-        Positioned(
-          left: 12,
-          right: showFullscreenButton ? 116 : 64,
-          top: 0,
-          child: FittedBox(
-            fit: BoxFit.scaleDown,
-            alignment: Alignment.centerLeft,
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                _SuggestionQuotaButton(
-                  language: language,
-                  liquidGlass: liquidGlass,
-                  isSuggesting: isSuggestingReply,
-                  remaining: suggestionUsesRemaining,
-                  progress: suggestionRefreshProgress,
-                  wait: suggestionRefreshWait,
-                  onPressed:
-                      !isReplying &&
-                          !selectingCollection &&
-                          !isSuggestingReply &&
-                          suggestionUsesRemaining > 0
-                      ? onSuggestReply
-                      : null,
-                ),
-                const SizedBox(width: 7),
-                GlassIconButton(
-                  liquidGlass: liquidGlass,
-                  icon: Icons.undo_rounded,
-                  tooltip: language.text(
-                    '撤回上一条消息',
-                    'Undo last message',
-                    '直前のメッセージを取り消す',
+                  speechProgress,
+                  ConstrainedBox(
+                    constraints: BoxConstraints(
+                      maxHeight: min(
+                        MediaQuery.sizeOf(context).height * .5,
+                        max(0.0, constraints.maxHeight - 90),
+                      ),
+                    ),
+                    child: SingleChildScrollView(
+                      child: IgnorePointer(
+                        ignoring: selectingCollection,
+                        child: _GlassComposer(
+                          availableHeight: min(
+                            MediaQuery.sizeOf(context).height * .5,
+                            max(0.0, constraints.maxHeight - 90),
+                          ),
+                          language: language,
+                          controller: inputController,
+                          narrationController: narrationController,
+                          bottomNarrationController: bottomNarrationController,
+                          splitNarration: splitNarration,
+                          onToggleNarration: onToggleNarration,
+                          isReplying: isReplying,
+                          showMicrophone: showMicrophone,
+                          unlockInputWhileReplying: unlockInputWhileReplying,
+                          attachments: attachments,
+                          liquidGlass: liquidGlass,
+                          onTakePhoto: onTakePhoto,
+                          onPickImage: onPickImage,
+                          onPickFile: onPickFile,
+                          onRemoveAttachment: onRemoveAttachment,
+                          onSubmitted: onSubmitted,
+                          onSend: onSend,
+                          onCancel: onCancel,
+                          expanded: expanded,
+                          onToggleExpanded: onToggleExpanded,
+                        ),
+                      ),
+                    ),
                   ),
-                  onPressed: canUndo && !selectingCollection ? onUndo : null,
-                  size: 36,
-                ),
-                const SizedBox(width: 7),
-                GlassIconButton(
-                  liquidGlass: liquidGlass,
-                  icon: isContinuing
-                      ? Icons.autorenew_rounded
-                      : Icons.double_arrow_rounded,
-                  iconWidget: isContinuing
-                      ? const _RotatingIcon(Icons.autorenew_rounded)
-                      : null,
-                  tooltip: language.text(
-                    '让莱莎继续对话',
-                    'Let Ryza continue',
-                    'ライザに会話を続けてもらう',
-                  ),
-                  onPressed:
-                      canContinue && !isContinuing && !selectingCollection
-                      ? onContinue
-                      : null,
-                  size: 36,
-                ),
-                const SizedBox(width: 7),
-                GlassIconButton(
-                  liquidGlass: liquidGlass,
-                  icon: Icons.replay_rounded,
-                  iconWidget: regeneratingSpeech
-                      ? const _RotatingIcon(Icons.autorenew_rounded)
-                      : null,
-                  onLongPress:
-                      !isReplying &&
-                          !selectingCollection &&
-                          messages.any(
-                            (m) => !m.isUser && m.text.trim().isNotEmpty,
-                          )
-                      ? onRegenerateSpeech
-                      : null,
-                  tooltip: language.text(
-                    '点击重播语音，长按重新生成',
-                    'Tap to replay; hold to regenerate speech',
-                    'タップで再生、長押しで音声を再生成',
-                  ),
-                  onPressed: canReplay && !selectingCollection
-                      ? onReplay
-                      : null,
-                  size: 36,
-                ),
-                const SizedBox(width: 7),
-                GlassIconButton(
-                  liquidGlass: liquidGlass,
-                  icon: selectingCollection
-                      ? Icons.bookmark_add_rounded
-                      : Icons.checklist_rounded,
-                  tooltip: language.text(
-                    selectingCollection ? '保存收藏（未选择则退出）' : '多选收藏文字或语音',
-                    selectingCollection
-                        ? 'Save collection (empty selection exits)'
-                        : 'Select text or audio',
-                    selectingCollection ? 'お気に入りを保存（未選択で終了）' : 'テキスト・音声を選択',
-                  ),
-                  onPressed: isReplying || savingCollection
-                      ? null
-                      : onToggleCollection,
-                  size: 36,
-                ),
-              ],
-            ),
-          ),
-        ),
-        Positioned(
-          right: 12,
-          top: 0,
-          child: Semantics(
-            label: language.text(
-              panelLocked ? '高度已锁定，长按解锁' : '拖动调整高度，长按锁定',
-              panelLocked
-                  ? 'Height locked; hold to unlock'
-                  : 'Drag to resize; hold to lock',
-              panelLocked ? '高さ固定中・長押しで解除' : 'ドラッグで高さ変更・長押しで固定',
-            ),
-            child: GestureDetector(
-              behavior: HitTestBehavior.opaque,
-              onLongPress: onTogglePanelLock,
-              onVerticalDragUpdate: panelLocked
-                  ? null
-                  : (details) => onDragUpdate(details.delta.dy),
-              child: _GlassDragHandle(
-                liquidGlass: liquidGlass,
-                locked: panelLocked,
+                ],
               ),
             ),
           ),
-        ),
-        if (showFullscreenButton)
           Positioned(
-            right: 64,
+            left: 12,
+            right: showFullscreenButton ? 116 : 64,
             top: 0,
-            child: GlassIconButton(
-              liquidGlass: liquidGlass,
-              size: 44,
-              icon: conversationFullscreen
-                  ? Icons.fullscreen_exit_rounded
-                  : Icons.fullscreen_rounded,
-              tooltip: conversationFullscreen ? '退出全屏对话' : '全屏对话',
-              onPressed: onToggleFullscreen,
+            child: FittedBox(
+              fit: BoxFit.scaleDown,
+              alignment: Alignment.centerLeft,
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  _SuggestionQuotaButton(
+                    language: language,
+                    liquidGlass: liquidGlass,
+                    isSuggesting: isSuggestingReply,
+                    remaining: suggestionUsesRemaining,
+                    progress: suggestionRefreshProgress,
+                    wait: suggestionRefreshWait,
+                    onPressed:
+                        !isReplying &&
+                            !selectingCollection &&
+                            !isSuggestingReply &&
+                            suggestionUsesRemaining > 0
+                        ? onSuggestReply
+                        : null,
+                  ),
+                  const SizedBox(width: 7),
+                  GlassIconButton(
+                    liquidGlass: liquidGlass,
+                    icon: Icons.undo_rounded,
+                    tooltip: language.text(
+                      '撤回上一条消息',
+                      'Undo last message',
+                      '直前のメッセージを取り消す',
+                    ),
+                    onPressed: canUndo && !selectingCollection ? onUndo : null,
+                    size: 36,
+                  ),
+                  const SizedBox(width: 7),
+                  GlassIconButton(
+                    liquidGlass: liquidGlass,
+                    icon: isContinuing
+                        ? Icons.autorenew_rounded
+                        : Icons.double_arrow_rounded,
+                    iconWidget: isContinuing
+                        ? const _RotatingIcon(Icons.autorenew_rounded)
+                        : null,
+                    tooltip: language.text(
+                      '让莱莎继续对话',
+                      'Let Ryza continue',
+                      'ライザに会話を続けてもらう',
+                    ),
+                    onPressed:
+                        canContinue && !isContinuing && !selectingCollection
+                        ? onContinue
+                        : null,
+                    size: 36,
+                  ),
+                  const SizedBox(width: 7),
+                  GlassIconButton(
+                    liquidGlass: liquidGlass,
+                    icon: Icons.replay_rounded,
+                    iconWidget: regeneratingSpeech
+                        ? const _RotatingIcon(Icons.autorenew_rounded)
+                        : null,
+                    onLongPress:
+                        !isReplying &&
+                            !selectingCollection &&
+                            messages.any(
+                              (m) => !m.isUser && m.text.trim().isNotEmpty,
+                            )
+                        ? onRegenerateSpeech
+                        : null,
+                    tooltip: language.text(
+                      '点击重播语音，长按重新生成',
+                      'Tap to replay; hold to regenerate speech',
+                      'タップで再生、長押しで音声を再生成',
+                    ),
+                    onPressed: canReplay && !selectingCollection
+                        ? onReplay
+                        : null,
+                    size: 36,
+                  ),
+                  const SizedBox(width: 7),
+                  GlassIconButton(
+                    liquidGlass: liquidGlass,
+                    icon: selectingCollection
+                        ? Icons.bookmark_add_rounded
+                        : Icons.checklist_rounded,
+                    tooltip: language.text(
+                      selectingCollection ? '保存收藏（未选择则退出）' : '多选收藏文字或语音',
+                      selectingCollection
+                          ? 'Save collection (empty selection exits)'
+                          : 'Select text or audio',
+                      selectingCollection ? 'お気に入りを保存（未選択で終了）' : 'テキスト・音声を選択',
+                    ),
+                    onPressed: isReplying || savingCollection
+                        ? null
+                        : onToggleCollection,
+                    size: 36,
+                  ),
+                ],
+              ),
             ),
           ),
-      ],
+          Positioned(
+            right: 12,
+            top: 0,
+            child: Semantics(
+              label: language.text(
+                panelLocked ? '高度已锁定，长按解锁' : '拖动调整高度，长按锁定',
+                panelLocked
+                    ? 'Height locked; hold to unlock'
+                    : 'Drag to resize; hold to lock',
+                panelLocked ? '高さ固定中・長押しで解除' : 'ドラッグで高さ変更・長押しで固定',
+              ),
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onLongPress: onTogglePanelLock,
+                onVerticalDragUpdate: panelLocked
+                    ? null
+                    : (details) => onDragUpdate(details.delta.dy),
+                child: _GlassDragHandle(
+                  liquidGlass: liquidGlass,
+                  locked: panelLocked,
+                ),
+              ),
+            ),
+          ),
+          if (showFullscreenButton)
+            Positioned(
+              right: 64,
+              top: 0,
+              child: GlassIconButton(
+                liquidGlass: liquidGlass,
+                size: 44,
+                icon: conversationFullscreen
+                    ? Icons.fullscreen_exit_rounded
+                    : Icons.fullscreen_rounded,
+                tooltip: conversationFullscreen ? '退出全屏对话' : '全屏对话',
+                onPressed: onToggleFullscreen,
+              ),
+            ),
+        ],
+      ),
     );
   }
 }
@@ -7205,6 +7387,7 @@ class _AttachmentThumbnail extends StatelessWidget {
 
 class _GlassComposer extends StatelessWidget {
   const _GlassComposer({
+    required this.availableHeight,
     required this.language,
     required this.controller,
     required this.narrationController,
@@ -7223,6 +7406,8 @@ class _GlassComposer extends StatelessWidget {
     required this.onSubmitted,
     required this.onSend,
     required this.onCancel,
+    required this.expanded,
+    required this.onToggleExpanded,
   });
 
   final AppLanguage language;
@@ -7243,11 +7428,15 @@ class _GlassComposer extends StatelessWidget {
   final ValueChanged<String> onSubmitted;
   final VoidCallback onSend;
   final VoidCallback onCancel;
+  final bool expanded;
+  final double availableHeight;
+  final VoidCallback onToggleExpanded;
 
   @override
   Widget build(BuildContext context) {
     return SafeArea(
       top: false,
+      bottom: false,
       minimum: const EdgeInsets.fromLTRB(10, 8, 10, 10),
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -7289,9 +7478,20 @@ class _GlassComposer extends StatelessWidget {
               ],
               Expanded(
                 child: Container(
-                  constraints: const BoxConstraints(
+                  height: splitNarration
+                      ? min(
+                          expanded ? availableHeight : 174.0,
+                          max(
+                            28.0,
+                            availableHeight -
+                                18 -
+                                (attachments.isNotEmpty ? 108 : 0),
+                          ),
+                        )
+                      : null,
+                  constraints: BoxConstraints(
                     minHeight: 46,
-                    maxHeight: 96,
+                    maxHeight: splitNarration ? double.infinity : 96,
                   ),
                   padding: const EdgeInsets.only(left: 14),
                   decoration: BoxDecoration(
@@ -7302,84 +7502,43 @@ class _GlassComposer extends StatelessWidget {
                     ),
                   ),
                   child: splitNarration
-                      ? Column(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            TextField(
-                              controller: narrationController,
-                              minLines: 1,
-                              maxLines: 2,
-                              style: const TextStyle(
-                                color: Colors.white70,
-                                fontSize: 13,
-                              ),
-                              decoration: InputDecoration(
-                                isDense: true,
-                                hintText: language.text(
-                                  '旁白（环境、动作、神态）',
-                                  'Narration (scene, action, expression)',
-                                  'ナレーション（環境・動作・表情）',
-                                ),
-                                hintStyle: const TextStyle(
-                                  color: Colors.white54,
-                                  fontSize: 12,
-                                ),
-                                border: InputBorder.none,
-                              ),
+                      ? NarrationComposerFields(
+                          controllers: [
+                            narrationController,
+                            controller,
+                            bottomNarrationController,
+                          ],
+                          hints: [
+                            language.text(
+                              '旁白（环境、动作、神态）',
+                              'Opening narration',
+                              '上部ナレーション',
                             ),
-                            Divider(
-                              height: 1,
-                              color: Colors.white.withValues(alpha: .25),
+                            language.text(
+                              '你想说的话',
+                              'What you want to say',
+                              'あなたが話す内容',
                             ),
-                            TextField(
-                              controller: controller,
-                              readOnly: isReplying && !unlockInputWhileReplying,
-                              minLines: 1,
-                              maxLines: 2,
-                              textInputAction: TextInputAction.send,
-                              onSubmitted: isReplying ? null : onSubmitted,
-                              style: const TextStyle(color: Colors.white),
-                              decoration: InputDecoration(
-                                isDense: true,
-                                hintText: language.text(
-                                  '你想说的话',
-                                  'What you want to say',
-                                  'あなたが話す内容',
-                                ),
-                                hintStyle: const TextStyle(
-                                  color: Colors.white60,
-                                  fontSize: 12,
-                                ),
-                                border: InputBorder.none,
-                              ),
-                            ),
-                            Divider(
-                              height: 1,
-                              color: Colors.white.withValues(alpha: .25),
-                            ),
-                            TextField(
-                              controller: bottomNarrationController,
-                              minLines: 1,
-                              maxLines: 2,
-                              style: const TextStyle(
-                                color: Colors.white70,
-                                fontSize: 13,
-                              ),
-                              decoration: InputDecoration(
-                                isDense: true,
-                                hintText: language.text(
-                                  '下方旁白（反应、收尾、气氛）',
-                                  'Bottom narration (reaction, ending, mood)',
-                                  '下部ナレーション（反応・余韻・雰囲気）',
-                                ),
-                                hintStyle: const TextStyle(
-                                  color: Colors.white54,
-                                  fontSize: 12,
-                                ),
-                                border: InputBorder.none,
-                              ),
+                            language.text(
+                              '下方旁白（反应、收尾、气氛）',
+                              'Closing narration',
+                              '下部ナレーション',
                             ),
                           ],
+                          expanded: expanded,
+                          onToggleExpanded: onToggleExpanded,
+                          expandLabel: expanded
+                              ? language.text(
+                                  '收起输入框',
+                                  'Collapse input',
+                                  '入力欄を縮小',
+                                )
+                              : language.text(
+                                  '放大输入框',
+                                  'Enlarge input',
+                                  '入力欄を拡大',
+                                ),
+                          readOnly: isReplying && !unlockInputWhileReplying,
                         )
                       : TextField(
                           controller: controller,
