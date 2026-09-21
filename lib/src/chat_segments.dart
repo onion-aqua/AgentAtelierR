@@ -160,8 +160,8 @@ final RegExp _metadataLine = RegExp(
   final speech = <String>[];
   var isNarration = false;
   for (final line in text.replaceAll('\r\n', '\n').split('\n')) {
-    final prefix = RegExp(r'^\s*(旁白|发言)\s*[：:]\s*').firstMatch(line);
-    if (prefix != null) isNarration = prefix.group(1) == '旁白';
+    final prefix = RegExp(r'^\s*(旁白(?:上|下)?|发言)\s*[：:]\s*').firstMatch(line);
+    if (prefix != null) isNarration = prefix.group(1) != '发言';
     (isNarration ? narration : speech).add(
       prefix == null ? line : line.substring(prefix.end),
     );
