@@ -46,6 +46,12 @@ class SoundscapeController {
     AppController controller, {
     required bool worldMapVisible,
   }) async {
+    if (controller.continuousAsmr) {
+      await _bgmPlayer.stop();
+      await _ambientPlayer.stop();
+      invalidate();
+      return;
+    }
     final nextBgmAsset = worldMapVisible
         ? StageEnvironmentCatalog.worldMapBgmAsset
         : await _chatBgmAssetFor(controller.selectedStageId);

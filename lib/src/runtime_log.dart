@@ -6,6 +6,44 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 enum RuntimeLogLevel { info, warning, error }
 
+enum RuntimeLogModule {
+  llm,
+  tts,
+  expression,
+  action,
+  speech,
+  memory,
+  translation,
+  character,
+  storage,
+  system;
+
+  static RuntimeLogModule forSource(String source) {
+    final name = source.trim().toLowerCase();
+    if (name == 'plan_character_expression') return expression;
+    if (name == 'plan_character_action' || name == 'actionplanner') {
+      return action;
+    }
+    if (name == 'speechplanner') return speech;
+    if (name == 'memory') return memory;
+    if (name == 'translation') return translation;
+    if (name == 'llm' || name == 'ai' || name.startsWith('ai ')) return llm;
+    if (name.contains('tts') || name.contains('fish audio')) return tts;
+    if (name.startsWith('character') ||
+        name == 'lipsync' ||
+        name == 'skinimport') {
+      return character;
+    }
+    if (name == 'persistence' ||
+        name.contains('data import') ||
+        name.contains('data conversion')) {
+      return storage;
+    }
+    // New sources remain visible rather than silently disappearing.
+    return system;
+  }
+}
+
 extension RuntimeLogLevelLabel on RuntimeLogLevel {
   String get label => switch (this) {
     RuntimeLogLevel.info => 'INFO',
@@ -40,6 +78,8 @@ class RuntimeLogEntry {
   final RuntimeLogLevel level;
   final String source;
   final String message;
+  RuntimeLogModule get module => RuntimeLogModule.forSource(source);
+  String get displayMessage => RuntimeLog.prettyMessage(message);
 
   Map<String, dynamic> toJson() => {
     'timestamp': timestamp.toIso8601String(),
@@ -50,7 +90,7 @@ class RuntimeLogEntry {
 
   String get formatted {
     final local = timestamp.toLocal().toIso8601String().replaceFirst('T', ' ');
-    return '[$local] [${level.label}] [$source] $message';
+    return '[$local] [${level.label}] [$source]\n$displayMessage';
   }
 }
 
@@ -77,18 +117,15 @@ class RuntimeLog extends ChangeNotifier {
     _entries
       ..clear()
       ..addAll(
-        stored
-            .map((value) {
-              try {
-                return RuntimeLogEntry.fromJson(
-                  jsonDecode(value) as Map<String, dynamic>,
-                );
-              } on Object {
-                return null;
-              }
-            })
-            .whereType<RuntimeLogEntry>()
-            .where((entry) => _isRelevantSource(entry.source)),
+        stored.map((value) {
+          try {
+            return RuntimeLogEntry.fromJson(
+              jsonDecode(value) as Map<String, dynamic>,
+            );
+          } on Object {
+            return null;
+          }
+        }).whereType<RuntimeLogEntry>(),
       );
     if (_entries.length > maxEntries) {
       _entries.removeRange(0, _entries.length - maxEntries);
@@ -116,7 +153,6 @@ class RuntimeLog extends ChangeNotifier {
     String message, {
     bool preserveFormatting = false,
   }) {
-    if (!_isRelevantSource(source)) return;
     _entries.add(
       RuntimeLogEntry(
         timestamp: DateTime.now(),
@@ -124,7 +160,7 @@ class RuntimeLog extends ChangeNotifier {
         source: sanitize(source, maxLength: 80),
         message: preserveFormatting
             ? _sanitizeFormatted(message)
-            : sanitize(message),
+            : prettyMessage(message),
       ),
     );
     if (_entries.length > maxEntries) {
@@ -163,32 +199,48 @@ class RuntimeLog extends ChangeNotifier {
     return lines.map((line) => sanitize(line, maxLength: 12000)).join('\n');
   }
 
-  static bool _isRelevantSource(String source) {
-    final normalized = source.trim().toLowerCase();
-    return normalized == 'llm' ||
-        normalized == 'tts' ||
-        normalized == 'ai' ||
-        normalized == 'memory' ||
-        normalized == 'translation' ||
-        normalized.contains('fish audio') ||
-        normalized.contains('qwen-tts') ||
-        normalized.contains('通用 tts') ||
-        normalized == 'test';
+  static String prettyMessage(String message) {
+    try {
+      final decoded = jsonDecode(message);
+      if (decoded is Map || decoded is List) {
+        return const JsonEncoder.withIndent('  ')
+            .convert(_redactStructured(decoded));
+      }
+    } on FormatException {
+      // Text, truncated JSON and streaming fragments remain readable.
+    }
+    return _sanitizeFormatted(message);
   }
 
-  static Object? _redactStructured(Object? value) {
+  static Object? _redactStructured(Object? value, [int depth = 0]) {
     if (value is Map) {
       return {
         for (final entry in value.entries)
           '${entry.key}': _isSensitiveField('${entry.key}')
               ? '[REDACTED]'
-              : _redactStructured(entry.value),
+              : _redactStructured(entry.value, depth + 1),
       };
     }
     if (value is Iterable) {
-      return value.map(_redactStructured).toList(growable: false);
+      return value
+          .map((item) => _redactStructured(item, depth + 1))
+          .toList(growable: false);
     }
-    if (value is String) return sanitize(value, maxLength: 12000);
+    if (value is String) {
+      if (depth < 12 &&
+          (value.trimLeft().startsWith('{') ||
+              value.trimLeft().startsWith('['))) {
+        try {
+          final decoded = jsonDecode(value);
+          if (decoded is Map || decoded is List) {
+            return _redactStructured(decoded, depth + 1);
+          }
+        } on FormatException {
+          /* Plain text is retained below. */
+        }
+      }
+      return _sanitizeFormatted(value);
+    }
     return value;
   }
 
@@ -214,9 +266,12 @@ class RuntimeLog extends ChangeNotifier {
   Future<void> clear() async {
     _entries.clear();
     notifyListeners();
-    await (_preferences ??= await SharedPreferences.getInstance()).remove(
-      _storageKey,
-    );
+    _writeQueue = _writeQueue.then((_) async {
+      await (_preferences ??= await SharedPreferences.getInstance()).remove(
+        _storageKey,
+      );
+    });
+    await _writeQueue;
   }
 
   static String sanitize(String value, {int maxLength = 2000}) {

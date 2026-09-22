@@ -106,7 +106,7 @@ void main() {
           },
         ],
       });
-      expect(result.lines[1], '[happy]你好[breathy]😀。[short pause]');
+      expect(result.lines[1], '[happy]你好[breathy]😀。');
       expect(
         displayTextForAssistantResponse(result.apply(source)),
         displayTextForAssistantResponse(source),

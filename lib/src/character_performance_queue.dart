@@ -23,21 +23,46 @@ class QueuedPerformance {
 
 /// Short-lived intentions, never a backlog of obsolete conversation gestures.
 class CharacterPerformanceQueue {
+  CharacterPerformanceQueue({this.onDiagnostic});
+  final void Function(String)? onDiagnostic;
   final _items = <QueuedPerformance>[];
-  void clear() => _items.clear();
+  String _id(QueuedPerformance item) => item.motionGroupId ?? item.action.name;
+  void clear() {
+    if (_items.isNotEmpty) {
+      onDiagnostic?.call('清空待播动作：${_items.map(_id).join(',')}');
+    }
+    _items.clear();
+  }
+
+  void _expire(DateTime now) {
+    _items.removeWhere((item) {
+      final expired = !item.expiresAt.isAfter(now);
+      if (expired) onDiagnostic?.call('过期丢弃：${_id(item)}；超过5秒等待期限');
+      return expired;
+    });
+  }
+
+  void _makeRoom() {
+    if (_items.length >= 2) {
+      onDiagnostic?.call('队列已满，移除：${_id(_items.removeAt(0))}');
+    }
+  }
+
   void add(
     CharacterAction action,
     CharacterExpression expression,
     DateTime now,
   ) {
-    _items.removeWhere((item) => !item.expiresAt.isAfter(now));
+    _expire(now);
     if (action == CharacterAction.none) return;
     if (_items.any(
       (item) => item.action == action && item.expression == expression,
     )) {
+      onDiagnostic?.call('队列去重：${action.name}');
       return;
     }
-    if (_items.length >= 2) _items.removeAt(0);
+    _makeRoom();
+    onDiagnostic?.call('入队：${action.name}');
     _items.add(
       QueuedPerformance(
         action,
@@ -54,9 +79,13 @@ class CharacterPerformanceQueue {
   ) {
     final normalized = motionGroupId.trim().toLowerCase();
     if (normalized.isEmpty) return;
-    _items.removeWhere((item) => !item.expiresAt.isAfter(now));
-    if (_items.any((item) => item.motionGroupId == normalized)) return;
-    if (_items.length >= 2) _items.removeAt(0);
+    _expire(now);
+    if (_items.any((item) => item.motionGroupId == normalized)) {
+      onDiagnostic?.call('队列去重：$normalized');
+      return;
+    }
+    _makeRoom();
+    onDiagnostic?.call('入队：$normalized');
     _items.add(
       QueuedPerformance.motion(
         normalized,
@@ -67,8 +96,11 @@ class CharacterPerformanceQueue {
   }
 
   QueuedPerformance? take(DateTime now) {
-    _items.removeWhere((item) => !item.expiresAt.isAfter(now));
-    return _items.isEmpty ? null : _items.removeAt(0);
+    _expire(now);
+    if (_items.isEmpty) return null;
+    final item = _items.removeAt(0);
+    onDiagnostic?.call('出队：${_id(item)}');
+    return item;
   }
 
   bool get isNotEmpty => _items.isNotEmpty;

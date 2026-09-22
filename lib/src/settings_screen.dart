@@ -13,6 +13,7 @@ import 'character_prompt_editor.dart';
 import 'chat_segments.dart';
 import 'frame_rate_controller.dart';
 import 'runtime_log.dart';
+export 'runtime_log_screen.dart';
 import 'platform_slider.dart';
 import 'glass_ui.dart';
 import 'mimo_tts_settings.dart';
@@ -91,7 +92,7 @@ extension on _SettingsCategory {
       'Memory, local import, export and chat history',
       '長期記憶、データの読み込み・書き出し、会話履歴',
     ),
-    _SettingsCategory.about => 'AgentAtelierR · 1.0.3',
+    _SettingsCategory.about => 'AgentAtelierR · 1.0.3 beta1',
   };
 
   IconData get icon => switch (this) {
@@ -1067,9 +1068,9 @@ class SettingsScreenState extends State<SettingsScreen> {
                   title: const Text('AgentAtelierR'),
                   subtitle: Text(
                     language.text(
-                      '版本 1.0.3 正式版',
-                      'Version 1.0.3',
-                      'バージョン 1.0.3',
+                      '版本 1.0.3 beta1 测试版',
+                      'Version 1.0.3 beta1',
+                      'バージョン 1.0.3 beta1',
                     ),
                   ),
                 ),
@@ -3384,120 +3385,6 @@ class _UserProfileDialogState extends State<_UserProfileDialog> {
           child: const Text('保存并使用'),
         ),
       ],
-    );
-  }
-}
-
-class RuntimeLogScreen extends StatelessWidget {
-  const RuntimeLogScreen({
-    super.key,
-    required this.language,
-    this.liquidGlass = false,
-    required this.onMenuPressed,
-  });
-
-  final AppLanguage language;
-  final bool liquidGlass;
-  final VoidCallback onMenuPressed;
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: Theme.of(context).scaffoldBackgroundColor,
-      appBar: AppBar(
-        automaticallyImplyLeading: false,
-        title: Padding(
-          padding: const EdgeInsets.only(left: 58),
-          child: Text(language.text('运行日志', 'Runtime logs', '実行ログ')),
-        ),
-        actions: [
-          AnimatedBuilder(
-            animation: RuntimeLog.instance,
-            builder: (context, _) => IconButton(
-              onPressed: RuntimeLog.instance.entries.isEmpty
-                  ? null
-                  : () => RuntimeLog.instance.clear(),
-              tooltip: language.text('清空日志', 'Clear logs', 'ログを消去'),
-              icon: const Icon(Icons.delete_outline),
-            ),
-          ),
-          AnimatedBuilder(
-            animation: RuntimeLog.instance,
-            builder: (context, _) => IconButton(
-              onPressed: RuntimeLog.instance.entries.isEmpty
-                  ? null
-                  : () async {
-                      await Clipboard.setData(
-                        ClipboardData(text: RuntimeLog.instance.formattedText),
-                      );
-                    },
-              tooltip: language.text('复制日志', 'Copy logs', 'ログをコピー'),
-              icon: const Icon(Icons.copy_outlined),
-            ),
-          ),
-        ],
-      ),
-      body: AnimatedBuilder(
-        animation: RuntimeLog.instance,
-        builder: (context, _) {
-          final entries = RuntimeLog.instance.entries.reversed.toList();
-          return GlassSurface(
-            liquidGlass: liquidGlass,
-            tone: Theme.of(context).brightness == Brightness.dark
-                ? GlassTone.dark
-                : GlassTone.light,
-            fallbackColor: Theme.of(context).brightness == Brightness.dark
-                ? const Color(0xD91C2222)
-                : const Color(0xB8EEF2F0),
-            borderRadius: BorderRadius.zero,
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    '记录 LLM/TTS 的结构化请求与响应；API Key、令牌和授权信息会自动脱敏，音频二进制不会记录。',
-                    style: TextStyle(
-                      color: Theme.of(context).colorScheme.onSurfaceVariant,
-                      fontSize: 13,
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  Expanded(
-                    child: entries.isEmpty
-                        ? const Center(child: Text('暂无运行日志'))
-                        : GlassSurface(
-                            liquidGlass: liquidGlass,
-                            tone:
-                                Theme.of(context).brightness == Brightness.dark
-                                ? GlassTone.dark
-                                : GlassTone.light,
-                            borderRadius: BorderRadius.circular(12),
-                            fallbackColor: Theme.of(context)
-                                .colorScheme
-                                .surfaceContainerHighest,
-                            child: ListView.separated(
-                              padding: const EdgeInsets.all(16),
-                              itemCount: entries.length,
-                              separatorBuilder: (_, _) =>
-                                  const Divider(height: 22),
-                              itemBuilder: (context, index) => SelectableText(
-                                entries[index].formatted,
-                                style: const TextStyle(
-                                  fontFamily: 'monospace',
-                                  fontSize: 12,
-                                  height: 1.5,
-                                ),
-                              ),
-                            ),
-                          ),
-                  ),
-                ],
-              ),
-            ),
-          );
-        },
-      ),
     );
   }
 }

@@ -45,6 +45,7 @@ class SpeechPlanner {
     required TtsCueDensity density,
     required bool asmr,
     required AuxiliaryCompletion complete,
+    Map<String, dynamic> sharedContext = const {},
   }) async {
     final segments = parseAssistantSegments(source);
     final originals = <int, String>{
@@ -61,7 +62,8 @@ class SpeechPlanner {
             '依据上下句语义自然衔接情绪，避免悲伤突然欢快；情绪转折须有内容依据。previous_emotion是上一轮规划情绪，仅供连贯性参考。'
             '只返回JSON：{"segments":[{"id":1,"emotion":"relaxed","cues":[{"offset":0,"tag":"breathy"}]}]}。'
             '完整覆盖所有台词id一次。emotion只选${speechEmotionTags.join(',')}。'
-            'cues只用${speechDeliveryTags.join(',')}，offset是原文UTF-16偏移，不能拆开emoji等代理对；不确定时仅使用0或句首明确位置。'
+            '参考shared_context的旁白、上一轮对话及角色状态：礼貌不等于开心，ASMR不改变情绪类别；没有明确转折时延续前态。'
+            'cues允许发声标签${speechDeliveryTags.join(',')}及情绪标签${speechEmotionTags.join(',')}。情绪标签只用于有语义依据的句内转折，不能连续堆叠相反情绪。offset是原文UTF-16偏移，不能拆开emoji等代理对；不确定时仅使用0或句首明确位置。'
             '标签密度与情感强度独立：${intensity.voiceInstruction} ${density.promptInstruction} '
             '${asmr ? 'ASMR开启：优先轻声、气声、耳语和自然呼吸，避免吼叫；不必每句同一标签。' : 'ASMR关闭，不要无故使用耳语或气声。'}'
             '不要为旁白或NPC分配语音。',
@@ -70,6 +72,7 @@ class SpeechPlanner {
         'role': 'user',
         'content': jsonEncode({
           'previous_emotion': previousEmotion,
+          'shared_context': sharedContext,
           'asmr': asmr,
           'intensity': intensity.name,
           'density': density.name,
@@ -107,6 +110,21 @@ class SpeechPlanner {
         throw const FormatException('Excessive speech cues');
       }
       final insertions = <int, List<String>>{};
+      final sentenceBreaks = RegExp(r'[。！？!?]+|\.(?:\s|$)')
+          .allMatches(text)
+          .map((m) => m.end)
+          .where((end) => end < text.length)
+          .toList();
+      final perSentence = <int, int>{};
+      final seenCues = <String>{};
+      var accepted = 0;
+      final limit = switch (density) {
+        TtsCueDensity.off => 0,
+        TtsCueDensity.sparse => 1,
+        TtsCueDensity.normal => sentenceBreaks.length + 1,
+        TtsCueDensity.frequent ||
+        TtsCueDensity.everySentence => (sentenceBreaks.length + 1) * 2,
+      };
       for (final cue in cues) {
         if (cue is! Map ||
             cue['offset'] is! int ||
@@ -132,7 +150,20 @@ class SpeechPlanner {
         if (density != TtsCueDensity.off &&
             (intensity != TtsEmotionIntensity.off ||
                 !speechEmotionTags.contains(cue['tag']))) {
+          final sentence = sentenceBreaks.where((end) => end <= offset).length;
+          final sentenceLimit =
+              density == TtsCueDensity.normal || density == TtsCueDensity.sparse
+              ? 1
+              : 2;
+          if (accepted >= limit ||
+              (perSentence[sentence] ?? 0) >= sentenceLimit ||
+              !seenCues.add('$offset:${cue['tag']}')) {
+            continue;
+          }
+          if (offset == 0 && cue['tag'] == row['emotion']) continue;
           (insertions[offset] ??= []).add('[${cue['tag']}]');
+          perSentence[sentence] = (perSentence[sentence] ?? 0) + 1;
+          accepted++;
         }
       }
       final result = StringBuffer();

@@ -97,7 +97,7 @@ extension TtsCueDensityLabel on TtsCueDensity {
     TtsCueDensity.sparse => '句内标签尽量少用，每条台词最多选择一个真正必要的重音或停顿。',
     TtsCueDensity.normal => '适量加入句内重音或停顿，每句通常不超过一个。',
     TtsCueDensity.frequent => '可以较频繁地加入句内重音和停顿，每句最多两个。',
-    TtsCueDensity.everySentence => '每句话都可以按语义安排重音或停顿，但仍应避免无意义堆叠。',
+    TtsCueDensity.everySentence => '每句话都可以按语义安排重音或停顿，每句最多两个，避免无意义堆叠。',
   };
 }
 
@@ -574,6 +574,13 @@ class AppController extends ChangeNotifier {
   bool automaticSceneTime = true;
   bool voiceEnabled = true;
   double voiceVolume = 0.85;
+  DateTime lastUiInteraction = DateTime.now();
+  bool continuousAsmr = false;
+  void setContinuousAsmr(bool value) {
+    continuousAsmr = value;
+    notifyListeners();
+  }
+
   bool aiEnabled = false;
   LlmProvider llmProvider = LlmProvider.openAiCompatible;
   String openAiBaseUrl = 'https://api.openai.com/v1';
@@ -1403,6 +1410,7 @@ class AppController extends ChangeNotifier {
           );
     if (independentPerformance) {
       return '''你扮演莱莎，自然回应用户，不代替用户行动，不编造未知事实。
+动作由后续能力校验决定；用户要求精确肢体动作时可以表达接受和准备，不要在未经确认的旁白中宣称已经完成特定抬臂角度、手指交扣或多阶段姿势。保持自然叙述，不讨论程序或动画限制。
 每个非空行以“旁白：”“莱莎：”“角色[角色ID]：”${inlineTranslation ? '或“译文：”' : ''}开头。旁白可出现在台词前或台词后：环境、动作铺垫放前面，反应、收尾和气氛变化放后面；一轮可使用“旁白→台词→旁白”结构，后置旁白要简短且不能重复台词。不要输出face/action/posture控制标签或资源编号，表演由独立模块处理。$translationRule
 角色台词使用 ${characterReplyLanguage.promptLabel}，旁白使用 ${narratorLanguage.promptLabel}，不随历史或用户输入语言改变。
 【应用渲染快照】姿态：${performanceContext?.posture ?? '未知'}；用户手动固定姿态：${performanceContext?.postureManuallySelected ?? false}。这是本轮开始时的显示状态，不是用户的角色设定或保持不动的命令。未手动固定时，可根据疲惫、休息、互动自然调整姿态；具体动画由表演规划器执行。不编造身体能力，不在台词中讨论字段、注入或锁定规则。
@@ -2088,7 +2096,25 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
           ? importance
           : '${b['date']}'.compareTo('${a['date']}');
     });
-    final limited = normalized.take(_memoryEntryLimit).toList();
+    final protectedEntries = normalized
+        .where(
+          (e) =>
+              _protectedMemoryCategories.contains(e['category']) ||
+              ((e['importance'] as num?) ?? 1) >= 5,
+        )
+        .toList();
+    final ordinaryEntries = normalized.where(
+      (e) => !protectedEntries.contains(e),
+    );
+    final limited = [
+      ...protectedEntries,
+      ...ordinaryEntries.take(
+        (_memoryEntryLimit - protectedEntries.length).clamp(
+          0,
+          _memoryEntryLimit,
+        ),
+      ),
+    ];
     var result = jsonEncode({
       'updated_at': (now ?? DateTime.now()).toIso8601String(),
       'entries': limited,

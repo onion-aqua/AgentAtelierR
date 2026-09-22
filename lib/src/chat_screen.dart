@@ -7,13 +7,17 @@ import 'dart:ui' as ui;
 import 'package:audioplayers/audioplayers.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show rootBundle;
 import 'package:image_picker/image_picker.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:spine_flutter/spine_flutter.dart' hide Color;
 
 import 'ai_services.dart';
+import 'continuous_asmr_page.dart';
 import 'auxiliary_llm_tasks.dart';
 import 'performance_planner.dart';
+import 'independent_performance_tools.dart';
+import 'motion_recipe.dart';
 import 'speech_planner.dart';
 import 'app_controller.dart';
 import 'conversation_collection_store.dart';
@@ -302,6 +306,8 @@ class _ChatScreenState extends State<ChatScreen> {
   // 0 base, 1 tap, 2–10 gestures, 11–16 face. Wind never owns pose bones.
   static const _windTrack = 17;
   List<CharacterMotionGroup> _motionGroups = const [];
+  List<MotionRecipe> _motionRecipes = const [];
+  Set<String> _recipeAnimationNames = const {};
   final List<String> _recentAmbientGroupIds = <String>[];
   int _motionLoadGeneration = 0;
   String? _lastPerformanceActionKey;
@@ -527,11 +533,15 @@ class _ChatScreenState extends State<ChatScreen> {
         _positionClock.stop();
       }
     });
+    _inputController.addListener(_recordUserActivity);
+    _narrationInputController.addListener(_recordUserActivity);
+    _narrationBottomInputController.addListener(_recordUserActivity);
     widget.controller.addListener(_handleControllerChange);
     widget.controller.frameRate.addListener(_handleFrameRateChange);
     _scrollController.addListener(_handleConversationScroll);
     _suggestionQuotaTimer = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (mounted) setState(() {});
+      _checkIdleUser();
+      if (mounted && !widget.controller.continuousAsmr) setState(() {});
     });
   }
 
@@ -629,6 +639,8 @@ class _ChatScreenState extends State<ChatScreen> {
       _postureState.reset();
       _lastPostureCue = null;
       _motionGroups = const [];
+      _motionRecipes = const [];
+      _recipeAnimationNames = const {};
       _recentAmbientGroupIds.clear();
       _lastPerformanceActionKey = null;
       _appearanceBundleFuture = ProtectedCharacterAssets.bundleFor(
@@ -640,6 +652,7 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   void _resetConversationWorkForDataReplacement() {
+    _recentDialogueActions.clear();
     _lastConsolidatedUser = null;
     _previousSpeechEmotion = 'relaxed';
     _pendingMemoryRefresh = null;
@@ -680,11 +693,20 @@ class _ChatScreenState extends State<ChatScreen> {
       final source = await bundle.loadString(appearance.gestureAsset);
       final profile = CharacterPerformanceProfile.parse(source);
       final behavior = CharacterResourceBehavior.parse(source);
+      final recipes = MotionRecipe.parse(
+        await rootBundle.loadString('assets/data/motion_recipes.json'),
+      );
       if (!mounted || generation != _motionLoadGeneration) return;
       _motionGroups = groups;
+      _motionRecipes = recipes;
       _performanceDirector = CharacterPerformanceDirector(profile);
       _resourceBehavior = behavior;
       final animations = _spineController?.skeletonData.getAnimations();
+      _recipeAnimationNames = animations?.map((a) => a.getName()).toSet() ?? {};
+      RuntimeLog.instance.info(
+        'ActionPlanner',
+        '组合目录已加载：${recipes.length}；当前姿态可用：${recipes.where(_canPlayRecipe).length}',
+      );
       _windAnimationName = animations
           ?.map((animation) => animation.getName())
           .where((name) => name.startsWith(behavior.windAnimationPrefix))
@@ -696,7 +718,11 @@ class _ChatScreenState extends State<ChatScreen> {
       _scheduleCharacterBlink();
       _scheduleFacialDetailChange();
     } on Object catch (error, stack) {
-      if (generation == _motionLoadGeneration) _motionGroups = const [];
+      if (generation == _motionLoadGeneration) {
+        _motionGroups = const [];
+        _motionRecipes = const [];
+        _recipeAnimationNames = const {};
+      }
       RuntimeLog.instance.error('CharacterMotion', error, stack);
     }
   }
@@ -707,6 +733,7 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   void _scheduleIdleChange() {
+    if (widget.controller.continuousAsmr) return;
     _idleTimer?.cancel();
     // The bundled original rig locks its base pose. Preserve manual pose choice;
     // emotion and conversation are not reasons to randomly cross sitting axes.
@@ -851,7 +878,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
   String _motionPromptDescription(CharacterMotionGroup group) {
     final semantic = switch (group.id) {
-      'grp_b_01' => '转动肩膀，放松伸展',
+      'grp_b_01' => '仅轻微转肩（肩约6至7度），手臂微动；不举臂、不伸懒腰、不做大幅伸展',
       'grp_b_02' => '双手叠放，安静倾听',
       'grp_b_03' => '双手叉腰，自信或佯装不满',
       'grp_b_05' => '双手抱臂，思考或质疑',
@@ -949,6 +976,11 @@ class _ChatScreenState extends State<ChatScreen> {
       if (_isPromptPlayableMotionGroup(group)) {
         motionGroups[group.id] = _motionPromptDescription(group);
       }
+    }
+    for (final recipe in _motionRecipes.where(_canPlayRecipe)) {
+      motionGroups[recipe.id] =
+          '${recipe.name}：${recipe.description}；'
+          '${recipe.stages.length}个阶段，脸部由表情工具独立控制';
     }
 
     return CharacterPerformancePromptContext(
@@ -1101,6 +1133,10 @@ class _ChatScreenState extends State<ChatScreen> {
     }
     longestEntry?.setListener((type, _, _) {
       if (type != EventType.complete || generation != _motionGeneration) return;
+      RuntimeLog.instance.info(
+        'ActionPlanner',
+        '动作完成：${group.id}；generation=$generation',
+      );
       final release = smoothCharacterGestureMix(
         _resourceBehavior.transitions?.groupMix(
               group.id,
@@ -1121,6 +1157,10 @@ class _ChatScreenState extends State<ChatScreen> {
     );
     _motionBusyUntil = DateTime.now().add(motionDuration);
     if (longestEntry != null) {
+      RuntimeLog.instance.info(
+        'ActionPlanner',
+        '动作开始：${group.id}；动画=${animations.map((a) => a.name).join(',')}；轨道=$tracks；时长=${longestDuration.toStringAsFixed(2)}秒；混合=$blend；generation=$generation',
+      );
       widget.controller.frameRate.boost(
         FrameRateActivity.characterMotion,
         duration: motionDuration,
@@ -1130,12 +1170,105 @@ class _ChatScreenState extends State<ChatScreen> {
     return longestEntry != null;
   }
 
+  bool _canPlayRecipe(MotionRecipe recipe) {
+    final controller = _spineController;
+    return _spineReady &&
+        controller != null &&
+        recipe.available(
+          _recipeAnimationNames,
+          _currentIdleAnimation,
+          _sittingId,
+        );
+  }
+
+  void _playRecipeStage(MotionRecipe recipe, int index) {
+    if (!mounted || _tapReactionActive || !_canPlayRecipe(recipe)) {
+      RuntimeLog.instance.warning(
+        'ActionPlanner',
+        '组合阶段拦截：${recipe.id}，阶段=${index + 1}，触碰=$_tapReactionActive，姿态=$_sittingId',
+      );
+      return;
+    }
+    RuntimeLog.instance.info(
+      'ActionPlanner',
+      '组合阶段开始：${recipe.id}；${index + 1}/${recipe.stages.length}',
+    );
+    final controller = _spineController!;
+    final layers = recipe.stages[index];
+    const blend = 0.34;
+    _resetMotionOverlays(
+      mixDuration: blend,
+      replacingTracks: layers.map((layer) => layer.track).toList(),
+    );
+    final generation = _motionGeneration;
+    final state = controller.animationState;
+    if (!layers.any((layer) => layer.track == 1)) {
+      state.setEmptyAnimation(1, blend);
+    }
+    _activeMotionGroupId = recipe.id;
+    TrackEntry? longest;
+    var duration = 0.0;
+    for (final layer in layers) {
+      final entry =
+          transitionCharacterTrack(
+              state,
+              layer.track,
+              layer.name,
+              loop: false,
+              mixDuration: blend,
+            )
+            ..setAlpha(layer.alpha)
+            ..setTimeScale(layer.speed)
+            ..setMixBlend(MixBlend.replace);
+      final seconds = entry.getAnimation().getDuration() / layer.speed;
+      if (longest == null || seconds > duration) {
+        longest = entry;
+        duration = seconds;
+      }
+    }
+    final busy = Duration(milliseconds: ((duration + blend) * 1000).ceil());
+    _motionBusyUntil = DateTime.now().add(busy);
+    widget.controller.frameRate.boost(
+      FrameRateActivity.characterMotion,
+      duration: busy,
+    );
+    longest?.setListener((type, _, _) {
+      if (type != EventType.complete ||
+          !mounted ||
+          generation != _motionGeneration) {
+        return;
+      }
+      if (index + 1 < recipe.stages.length &&
+          _canPlayRecipe(recipe) &&
+          !_tapReactionActive) {
+        _playRecipeStage(recipe, index + 1);
+      } else {
+        RuntimeLog.instance.info(
+          'ActionPlanner',
+          '组合阶段结束：${recipe.id}；${index + 1}/${recipe.stages.length}',
+        );
+        state.setEmptyAnimation(1, blend);
+        _resetMotionOverlays(mixDuration: blend);
+        _motionBusyUntil = DateTime.now().add(
+          const Duration(milliseconds: 340),
+        );
+        _scheduleIdleChange();
+      }
+    });
+  }
+
   void _resetMotionOverlays({
     double mixDuration = 0.28,
     List<int> replacingTracks = const [],
   }) {
     final spineController = _spineController;
     if (!_spineReady || spineController == null) return;
+    if (_activeMotionGroupId != null) {
+      RuntimeLog.instance.info(
+        'ActionPlanner',
+        '释放/替换动作层：$_activeMotionGroupId；混合=$mixDuration；保留轨道=$replacingTracks；generation=$_motionGeneration',
+      );
+    }
     _motionGeneration += 1;
     _motionBusyUntil = null;
     _activeMotionGroupId = null;
@@ -1753,6 +1886,7 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   void _scheduleFacialDetailChange() {
+    if (widget.controller.continuousAsmr) return;
     _facialDetailTimer?.cancel();
     if (!mounted || !_spineReady) return;
     final profile = _resourceEmotion;
@@ -1825,6 +1959,7 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   void _scheduleCharacterBlink() {
+    if (widget.controller.continuousAsmr) return;
     _blinkTimer?.cancel();
     if (!mounted || !_spineReady || !_appearance.animated) return;
     _blinkBeat = chooseCharacterBlink(
@@ -1882,6 +2017,7 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   void _scheduleMicroMotion() {
+    if (widget.controller.continuousAsmr) return;
     _microMotionTimer?.cancel();
     if (!_spineReady || !_appearance.animated) return;
     // Speech retains resource-authored torso beats. Explicit gestures keep
@@ -1989,7 +2125,10 @@ class _ChatScreenState extends State<ChatScreen> {
     if (actions.isEmpty && motionGroupIds.isEmpty) return;
     final key =
         '${actions.map((a) => a.name).join('+')}|${motionGroupIds.join('+')}:${cue.actionCueCount}';
-    if (_lastPerformanceActionKey == key) return;
+    if (_lastPerformanceActionKey == key) {
+      RuntimeLog.instance.info('ActionPlanner', '回复动作去重，跳过：$key');
+      return;
+    }
     _lastPerformanceActionKey = key;
     // Play the first authored gesture immediately; queue the remaining
     // compatible gestures so a line can combine expression, posture and hand
@@ -2011,16 +2150,38 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   void _performMotionGroupIntent(String motionGroupId) {
-    if (!_spineReady || _tapReactionActive) return;
+    RuntimeLog.instance.info(
+      'ActionPlanner',
+      '收到动作：$motionGroupId；皮肤=${_appearance.id}；姿态=$_sittingId；基础动画=$_currentIdleAnimation',
+    );
+    if (!_spineReady || _tapReactionActive) {
+      RuntimeLog.instance.warning(
+        'ActionPlanner',
+        '动作拦截：$motionGroupId；spineReady=$_spineReady，触碰反应=$_tapReactionActive',
+      );
+      return;
+    }
     final normalized = characterMotionGroupIdFromTag(motionGroupId);
-    if (normalized == null) return;
+    if (normalized == null) {
+      RuntimeLog.instance.warning('ActionPlanner', '动作标签格式无效：$motionGroupId');
+      return;
+    }
     final group = _motionGroups.cast<CharacterMotionGroup?>().firstWhere(
       (candidate) =>
           candidate?.id == normalized &&
           _isPromptPlayableMotionGroup(candidate!),
       orElse: () => null,
     );
-    if (group == null) return;
+    final recipe = _motionRecipes
+        .where((r) => r.id == normalized && _canPlayRecipe(r))
+        .firstOrNull;
+    if (group == null && recipe == null) {
+      RuntimeLog.instance.warning(
+        'ActionPlanner',
+        '资源或姿态不兼容：$normalized；基础动画=$_currentIdleAnimation，坐姿=$_sittingId',
+      );
+      return;
+    }
     _performanceQueue.addMotionGroup(
       normalized,
       _currentExpression,
@@ -2029,10 +2190,21 @@ class _ChatScreenState extends State<ChatScreen> {
     _drainPerformanceQueue();
   }
 
-  final _performanceQueue = CharacterPerformanceQueue();
+  final _performanceQueue = CharacterPerformanceQueue(
+    onDiagnostic: (message) =>
+        RuntimeLog.instance.info('ActionPlanner', message),
+  );
+  final List<String> _recentDialogueActions = [];
+  void _rememberDialogueAction(String id) {
+    _recentDialogueActions.add(id);
+    if (_recentDialogueActions.length > 4) _recentDialogueActions.removeAt(0);
+  }
+
+  String? _lastQueueWaitReason;
   Timer? _performanceQueueTimer;
 
   void _clearPerformanceQueue() {
+    _lastQueueWaitReason = null;
     _performanceQueueTimer?.cancel();
     _performanceQueue.clear();
   }
@@ -2040,6 +2212,12 @@ class _ChatScreenState extends State<ChatScreen> {
   void _drainPerformanceQueue() {
     _performanceQueueTimer?.cancel();
     if (!mounted || !_spineReady || _tapReactionActive) {
+      if (_performanceQueue.isNotEmpty) {
+        RuntimeLog.instance.warning(
+          'ActionPlanner',
+          '停止调度：mounted=$mounted，spineReady=$_spineReady，触碰反应=$_tapReactionActive',
+        );
+      }
       _performanceQueue.clear();
       return;
     }
@@ -2049,6 +2227,12 @@ class _ChatScreenState extends State<ChatScreen> {
         now.difference(_lastSemanticActionAt!) < const Duration(seconds: 3);
     if (_motionBusy || coolingDown) {
       if (_performanceQueue.isNotEmpty) {
+        final reason =
+            '等待：当前动作=$_activeMotionGroupId；忙碌=$_motionBusy；冷却=$coolingDown';
+        if (_lastQueueWaitReason != reason) {
+          RuntimeLog.instance.info('ActionPlanner', reason);
+          _lastQueueWaitReason = reason;
+        }
         _performanceQueueTimer = Timer(
           const Duration(milliseconds: 200),
           _drainPerformanceQueue,
@@ -2056,6 +2240,7 @@ class _ChatScreenState extends State<ChatScreen> {
       }
       return;
     }
+    _lastQueueWaitReason = null;
     final cue = _performanceQueue.take(now);
     if (cue == null) return;
     _applyExpression(cue.expression);
@@ -2063,6 +2248,7 @@ class _ChatScreenState extends State<ChatScreen> {
       _playMotionGroupNow(motionGroupId);
     } else {
       _playSemanticActionNow(cue.action);
+      if (_motionBusy) _rememberDialogueAction(cue.action.name);
     }
     if (_performanceQueue.isNotEmpty) {
       _performanceQueueTimer = Timer(
@@ -2073,7 +2259,30 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   void _playMotionGroupNow(String motionGroupId) {
-    if (!_spineReady || _tapReactionActive || _motionBusy) return;
+    if (!_spineReady || _tapReactionActive || _motionBusy) {
+      RuntimeLog.instance.warning(
+        'ActionPlanner',
+        '播放前拦截：$motionGroupId；ready=$_spineReady，触碰=$_tapReactionActive，忙碌=$_motionBusy',
+      );
+      return;
+    }
+    final recipe = _motionRecipes
+        .where((r) => r.id == motionGroupId && _canPlayRecipe(r))
+        .firstOrNull;
+    if (recipe != null) {
+      RuntimeLog.instance.info(
+        'ActionPlanner',
+        '播放组合：${recipe.id} ${recipe.name}（${recipe.stages.length}阶段）',
+      );
+      _playRecipeStage(recipe, 0);
+      _rememberDialogueAction(recipe.id);
+      _lastSemanticActionAt = DateTime.now();
+      _recentAmbientGroupIds
+        ..remove(recipe.id)
+        ..add(recipe.id);
+      if (_recentAmbientGroupIds.length > 5) _recentAmbientGroupIds.removeAt(0);
+      return;
+    }
     final group = _motionGroups.cast<CharacterMotionGroup?>().firstWhere(
       (candidate) =>
           candidate?.id == motionGroupId &&
@@ -2083,7 +2292,13 @@ class _ChatScreenState extends State<ChatScreen> {
     // The model already chose face explicitly. Auto-pairing is for manual
     // previews only; otherwise an action silently replaces the dialogue face.
     if (group != null && _playMotionGroup(group)) {
+      _rememberDialogueAction(group.id);
       _lastSemanticActionAt = DateTime.now();
+    } else {
+      RuntimeLog.instance.warning(
+        'ActionPlanner',
+        '播放失败：$motionGroupId；资源或姿态已变化',
+      );
     }
   }
 
@@ -2397,6 +2612,7 @@ class _ChatScreenState extends State<ChatScreen> {
             '请分析我发送的附件。',
         ].join('\n');
     final isAutomatic = automaticPrompt != null;
+    if (!isAutomatic) _recordUserActivity();
     widget.controller.removeFailedReplies();
 
     _cancelSpeechPlayback();
@@ -2550,6 +2766,28 @@ class _ChatScreenState extends State<ChatScreen> {
         );
       }
       final capabilities = _buildPerformancePromptContext();
+      final recentDialogue = widget.controller.messages
+          .where((m) => m.text != reply)
+          .toList();
+      final sharedContext = <String, dynamic>{
+        'current_reply': reply,
+        'user_intent_text': text,
+        'previous_dialogue': recentDialogue.reversed
+            .take(3)
+            .toList()
+            .reversed
+            .map(
+              (m) => {
+                'speaker': m.isUser ? 'user' : 'assistant',
+                'text': m.text.length > 600 ? m.text.substring(0, 600) : m.text,
+              },
+            )
+            .toList(),
+        'emotion': widget.controller.characterState.emotion,
+        'state': widget.controller.characterState.values,
+        'current_face': _currentExpression.name,
+        'previous_voice_emotion': _previousSpeechEmotion,
+      };
       // Independent of animation planning: run concurrently, never expose
       // the voice tag catalogue to the roleplay request.
       final speechPlanning = _planSpeechForReply(
@@ -2563,26 +2801,46 @@ class _ChatScreenState extends State<ChatScreen> {
           fastPlanning: true,
           messages: messages,
         ),
+        sharedContext: sharedContext,
       );
       var performanceText = PerformancePlanner.withoutControls(reply);
       Map<String, dynamic>? stateProposal;
       final stateRevision = widget.controller.dataRevision;
       final stateTurn = '${DateTime.now().microsecondsSinceEpoch}:$generation';
       try {
-        RuntimeLog.instance.info('AI', '独立表演规划开始（连接3秒，单次生成20秒，总预算30秒；与语音规划并行）');
-        final planned = await PerformancePlanner().plan(
+        RuntimeLog.instance.info('AI', '独立表情工具与动作工具并行规划（各总预算30秒；与语音规划并行）');
+        final planned = await IndependentPerformanceTools().plan(
           userInput: text,
           source: reply,
           capabilities: capabilities,
           currentFace: _currentExpression.name,
           currentIntensity: _expressionIntensity,
+          sharedContext: sharedContext,
+          onMismatch: (reason) {
+            if (!mounted || generation != _replyGeneration) return;
+            RuntimeLog.instance.warning(
+              'ActionPlanner',
+              '旁白/动作一致性检查未通过：$reason；未播放替代动作',
+            );
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text(
+                  widget.controller.interfaceLanguage.text(
+                    '本轮动作无法准确呈现，已跳过。详情见动作日志。',
+                    'This action could not be represented accurately and was skipped. See action logs.',
+                    '動作を正確に再現できないためスキップしました。詳細は動作ログをご確認ください。',
+                  ),
+                ),
+              ),
+            );
+          },
           characterState: {
             'values': widget.controller.characterState.values,
             'emotion': widget.controller.characterState.emotion,
             'reason_language': widget.controller.interfaceLanguage.promptLabel,
           },
           onStateProposal: (proposal) => stateProposal = proposal,
-          recentActions: _recentAmbientGroupIds.take(4).toList(),
+          recentActions: _recentDialogueActions.reversed.toList(),
           complete: (messages) => _aiClient.complete(
             performancePlanning: true,
             provider: requestProvider,
@@ -2760,6 +3018,92 @@ class _ChatScreenState extends State<ChatScreen> {
     setState(() => _manualPanelFraction = null);
   }
 
+  DateTime _lastUserActivity = DateTime.now();
+  bool _idleAsked = false;
+  void _recordUserActivity() {
+    _lastUserActivity = DateTime.now();
+    _idleAsked = false;
+  }
+
+  void _checkIdleUser() {
+    if (!mounted ||
+        !widget.pageActive ||
+        widget.controller.continuousAsmr ||
+        WidgetsBinding.instance.lifecycleState != AppLifecycleState.resumed ||
+        ModalRoute.of(context)?.isCurrent != true ||
+        !widget.controller.aiEnabled) {
+      _lastUserActivity = DateTime.now();
+      return;
+    }
+    if (widget.controller.lastUiInteraction.isAfter(_lastUserActivity)) {
+      _lastUserActivity = widget.controller.lastUiInteraction;
+      _idleAsked = false;
+    }
+    if (_isReplying || _isCharacterSpeaking) {
+      _lastUserActivity = DateTime.now();
+      return;
+    }
+    if (_idleAsked ||
+        _isReplying ||
+        _inputController.text.trim().isNotEmpty ||
+        _narrationInputController.text.trim().isNotEmpty ||
+        _narrationBottomInputController.text.trim().isNotEmpty ||
+        DateTime.now().difference(_lastUserActivity) <
+            const Duration(minutes: 5)) {
+      return;
+    }
+    _idleAsked = true;
+    unawaited(
+      _sendMessage(
+        automaticPrompt:
+            '应用事件：用户约五分钟没有回应。用一句自然、不催促的话关心用户在做什么；不要假装能看到用户，不责怪，不重复上一句。',
+      ),
+    );
+  }
+
+  Future<void> _openContinuousAsmr() async {
+    if (_isReplying) _cancelReply();
+    _cancelSpeechPlayback();
+    _stopSpeakingAnimation();
+    final previous = widget.controller.ttsVoiceMode;
+    if (!widget.controller.setTtsVoiceMode(TtsVoiceMode.asmr)) {
+      _selectTtsVoiceMode(TtsVoiceMode.asmr);
+      return;
+    }
+    widget.controller.setContinuousAsmr(true);
+    _idleTimer?.cancel();
+    _tapReactionTimer?.cancel();
+    _outfitReactionTimer?.cancel();
+    _microMotionTimer?.cancel();
+    _facialDetailTimer?.cancel();
+    _blinkTimer?.cancel();
+    _blinkRestoreTimer?.cancel();
+    await _audioPlayer.stop();
+    await _effectPlayer.stop();
+    if (!mounted) {
+      widget.controller.setContinuousAsmr(false);
+      return;
+    }
+    try {
+      await Navigator.of(context).push<void>(
+        MaterialPageRoute(
+          fullscreenDialog: true,
+          builder: (_) => ContinuousAsmrPage(controller: widget.controller),
+        ),
+      );
+    } finally {
+      widget.controller.setContinuousAsmr(false);
+      widget.controller.setTtsVoiceMode(previous);
+      _recordUserActivity();
+      if (mounted) {
+        _scheduleIdleChange();
+        _scheduleMicroMotion();
+        _scheduleCharacterBlink();
+        _scheduleFacialDetailChange();
+      }
+    }
+  }
+
   void _continueConversation() {
     _sendMessage(
       automaticPrompt:
@@ -2827,8 +3171,9 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Future<SpeechPlan?> _planSpeechForReply(
     String reply,
-    AuxiliaryCompletion complete,
-  ) async {
+    AuxiliaryCompletion complete, {
+    Map<String, dynamic> sharedContext = const {},
+  }) async {
     if (!widget.controller.fishTtsEnabled ||
         !widget.controller.independentSpeechPerformance) {
       return null;
@@ -2842,10 +3187,11 @@ class _ChatScreenState extends State<ChatScreen> {
           .isEmpty) {
         return null;
       }
-      RuntimeLog.instance.info('TTS', '独立语音演出规划开始');
+      RuntimeLog.instance.info('SpeechPlanner', '独立语音演出规划开始');
       final plan = await SpeechPlanner()
           .plan(
             source: reply,
+            sharedContext: sharedContext,
             previousEmotion: previousEmotion,
             intensity: intensity,
             density: density,
@@ -2853,10 +3199,10 @@ class _ChatScreenState extends State<ChatScreen> {
             complete: complete,
           )
           .timeout(const Duration(seconds: 3));
-      RuntimeLog.instance.info('TTS', '独立语音演出规划完成：${plan.lines}');
+      RuntimeLog.instance.info('SpeechPlanner', '独立语音演出规划完成：${plan.lines}');
       return plan;
     } on Object catch (error) {
-      RuntimeLog.instance.warning('TTS', '语音演出规划失败，回退本地规则：$error');
+      RuntimeLog.instance.warning('SpeechPlanner', '语音演出规划失败，回退本地规则：$error');
       return null;
     }
   }
@@ -2868,7 +3214,13 @@ class _ChatScreenState extends State<ChatScreen> {
     final collectionMessage = widget.controller.messages
         .where((m) => !m.isUser && m.text == (displaySource ?? text))
         .lastOrNull;
-    if (!_mayPlayVoice) return;
+    if (!_mayPlayVoice) {
+      RuntimeLog.instance.warning(
+        'ActionPlanner',
+        '演出入口跳过：当前页面/前后台状态不允许语音播放，动作也未执行',
+      );
+      return;
+    }
     if (text.trim().isEmpty) {
       _stopSpeakingAnimation();
       return;
@@ -4091,13 +4443,9 @@ class _ChatScreenState extends State<ChatScreen> {
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
       ),
       builder: (context) => _MotionPickerSheet(
-        appearance: _appearance,
         liquidGlass: widget.controller.liquidGlassChatUi,
-        currentIdleAnimation: _currentIdleAnimation,
-        onIdleSelected: (animation) {
-          _selectPosture('sitting_normal', byUser: true);
-          _playIdleAnimation(animation);
-        },
+        language: widget.controller.interfaceLanguage,
+        recipes: _motionRecipes.where(_canPlayRecipe).toList(),
         postureControls: Wrap(
           spacing: 8,
           children: [
@@ -4145,9 +4493,10 @@ class _ChatScreenState extends State<ChatScreen> {
               ),
           ],
         ),
-        onOneShotSelected: _playOneShotAnimation,
-        onMotionGroupSelected: (group) =>
-            _playMotionGroup(group, pairFace: true),
+        onSelected: (recipe) {
+          _clearPerformanceQueue();
+          _playRecipeStage(recipe, 0);
+        },
       ),
     );
   }
@@ -4567,6 +4916,7 @@ class _ChatScreenState extends State<ChatScreen> {
               liquidGlass: widget.controller.liquidGlassChatUi,
               currentMode: widget.controller.ttsVoiceMode,
               onModeSelected: _selectTtsVoiceMode,
+              onContinuousAsmr: _openContinuousAsmr,
             ),
           ),
         if (!widget.hideUi)
@@ -4861,11 +5211,13 @@ class _TtsVoiceModeMenu extends StatefulWidget {
     required this.liquidGlass,
     required this.currentMode,
     required this.onModeSelected,
+    required this.onContinuousAsmr,
   });
 
   final bool liquidGlass;
   final TtsVoiceMode currentMode;
   final ValueChanged<TtsVoiceMode> onModeSelected;
+  final VoidCallback onContinuousAsmr;
 
   @override
   State<_TtsVoiceModeMenu> createState() => _TtsVoiceModeMenuState();
@@ -4920,6 +5272,12 @@ class _TtsVoiceModeMenuState extends State<_TtsVoiceModeMenu> {
                 label: TtsVoiceMode.values[index].label,
                 selected: TtsVoiceMode.values[index] == widget.currentMode,
                 onPressed: () => _select(TtsVoiceMode.values[index]),
+                onLongPress: TtsVoiceMode.values[index] == TtsVoiceMode.asmr
+                    ? () {
+                        _removeOverlay();
+                        widget.onContinuousAsmr();
+                      }
+                    : null,
               ),
             ],
           ],
@@ -5286,7 +5644,9 @@ class _TimeOptionPill extends StatelessWidget {
 }
 
 class _VoiceModeOptionPill extends StatelessWidget {
+  final VoidCallback? onLongPress;
   const _VoiceModeOptionPill({
+    this.onLongPress,
     required this.liquidGlass,
     required this.icon,
     required this.label,
@@ -5315,6 +5675,7 @@ class _VoiceModeOptionPill extends StatelessWidget {
         child: InkWell(
           borderRadius: BorderRadius.circular(22),
           onTap: onPressed,
+          onLongPress: onLongPress,
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 14),
             child: Row(
@@ -5483,22 +5844,18 @@ class _GlassPickerTile extends StatelessWidget {
 
 class _MotionPickerSheet extends StatelessWidget {
   const _MotionPickerSheet({
-    required this.appearance,
     required this.liquidGlass,
-    required this.currentIdleAnimation,
-    required this.onIdleSelected,
-    required this.onOneShotSelected,
-    required this.onMotionGroupSelected,
+    required this.language,
+    required this.recipes,
+    required this.onSelected,
     required this.postureControls,
   });
 
-  final CharacterAppearance appearance;
-  final Widget postureControls;
   final bool liquidGlass;
-  final String? currentIdleAnimation;
-  final ValueChanged<String> onIdleSelected;
-  final ValueChanged<String> onOneShotSelected;
-  final ValueChanged<CharacterMotionGroup> onMotionGroupSelected;
+  final AppLanguage language;
+  final List<MotionRecipe> recipes;
+  final ValueChanged<MotionRecipe> onSelected;
+  final Widget postureControls;
 
   @override
   Widget build(BuildContext context) {
@@ -5515,10 +5872,10 @@ class _MotionPickerSheet extends StatelessWidget {
               padding: const EdgeInsets.fromLTRB(20, 18, 12, 10),
               child: Row(
                 children: [
-                  const Expanded(
+                  Expanded(
                     child: Text(
-                      '角色动作',
-                      style: TextStyle(
+                      '${language.text('组合动作', 'Motion combinations', '組み合わせ動作')} · ${recipes.length}',
+                      style: const TextStyle(
                         color: Colors.white,
                         fontSize: 19,
                         fontWeight: FontWeight.w700,
@@ -5527,7 +5884,7 @@ class _MotionPickerSheet extends StatelessWidget {
                   ),
                   IconButton(
                     onPressed: () => Navigator.pop(context),
-                    tooltip: '关闭',
+                    tooltip: language.text('关闭', 'Close', '閉じる'),
                     color: Colors.white,
                     icon: const Icon(Icons.close),
                   ),
@@ -5535,149 +5892,50 @@ class _MotionPickerSheet extends StatelessWidget {
               ),
             ),
             Expanded(
-              child: ListView(
-                padding: const EdgeInsets.fromLTRB(12, 0, 12, 18),
-                children: [
-                  _MotionSectionLabel(
-                    title: '闲置姿势',
-                    count: appearance.idleAnimations.length,
-                  ),
-                  for (final animation in appearance.idleAnimations)
-                    _GlassPickerTile(
-                      liquidGlass: liquidGlass,
-                      dense: true,
-                      leading: const Icon(Icons.loop, color: Colors.white70),
-                      title: Text(
-                        motionDisplayName(animation),
-                        style: const TextStyle(color: Colors.white),
+              child: recipes.isEmpty
+                  ? Center(
+                      child: Padding(
+                        padding: const EdgeInsets.all(24),
+                        child: Text(
+                          language.text(
+                            '当前皮肤或姿态暂无可播放的组合动作，请尝试切换为自然坐姿。',
+                            'No combinations are available for this skin or posture. Try sitting normally.',
+                            '現在の衣装・姿勢では再生できる組み合わせがありません。通常座りをお試しください。',
+                          ),
+                          style: const TextStyle(color: Colors.white70),
+                          textAlign: TextAlign.center,
+                        ),
                       ),
-                      subtitle: Text(
-                        animation,
-                        style: const TextStyle(color: Colors.white60),
-                      ),
-                      trailing: animation == currentIdleAnimation
-                          ? const Icon(Icons.check, color: Colors.white)
-                          : const Icon(Icons.play_arrow, color: Colors.white70),
-                      onTap: () {
-                        onIdleSelected(animation);
-                        Navigator.pop(context);
-                      },
-                    ),
-                  const _MotionSectionLabel(title: '一次性动作', count: 12),
-                  for (final animation in characterOneShotAnimations)
-                    _GlassPickerTile(
-                      liquidGlass: liquidGlass,
-                      dense: true,
-                      leading: const Icon(
-                        Icons.motion_photos_on_outlined,
-                        color: Colors.white70,
-                      ),
-                      title: Text(
-                        motionDisplayName(animation),
-                        style: const TextStyle(color: Colors.white),
-                      ),
-                      subtitle: Text(
-                        animation,
-                        style: const TextStyle(color: Colors.white60),
-                      ),
-                      trailing: const Icon(
-                        Icons.play_arrow,
-                        color: Colors.white70,
-                      ),
-                      onTap: () {
-                        onOneShotSelected(animation);
-                        Navigator.pop(context);
-                      },
-                    ),
-                  FutureBuilder<List<CharacterMotionGroup>>(
-                    future: loadCharacterMotionGroups(appearance),
-                    builder: (context, snapshot) {
-                      if (snapshot.hasError) {
+                    )
+                  : ListView.builder(
+                      padding: const EdgeInsets.fromLTRB(12, 0, 12, 18),
+                      itemCount: recipes.length,
+                      itemBuilder: (context, index) {
+                        final recipe = recipes[index];
                         return _GlassPickerTile(
                           liquidGlass: liquidGlass,
+                          dense: true,
                           leading: const Icon(
-                            Icons.error_outline,
+                            Icons.layers_outlined,
                             color: Colors.white70,
                           ),
-                          title: const Text(
-                            '叠加动作配置读取失败',
-                            style: TextStyle(color: Colors.white),
+                          title: Text(
+                            recipe.name.replaceFirst(RegExp(r'^\d+_'), ''),
+                            style: const TextStyle(color: Colors.white),
                           ),
-                          onTap: null,
+                          trailing: const Icon(
+                            Icons.play_arrow,
+                            color: Colors.white70,
+                          ),
+                          onTap: () {
+                            Navigator.pop(context);
+                            onSelected(recipe);
+                          },
                         );
-                      }
-                      final groups = snapshot.data;
-                      if (groups == null) {
-                        return const Padding(
-                          padding: EdgeInsets.all(24),
-                          child: Center(
-                            child: RyzaLoadingIndicator(
-                              size: 76,
-                              semanticsLabel: '正在加载动作',
-                            ),
-                          ),
-                        );
-                      }
-                      return Column(
-                        children: [
-                          _MotionSectionLabel(
-                            title: '组合动作',
-                            count: groups.length,
-                          ),
-                          for (final group in groups)
-                            _GlassPickerTile(
-                              liquidGlass: liquidGlass,
-                              dense: true,
-                              leading: const Icon(
-                                Icons.layers_outlined,
-                                color: Colors.white70,
-                              ),
-                              title: Text(
-                                group.label.isEmpty ? group.id : group.label,
-                                style: const TextStyle(color: Colors.white),
-                              ),
-                              subtitle: Text(
-                                '${group.occupancy} · ${group.animation1}',
-                                style: const TextStyle(color: Colors.white60),
-                              ),
-                              trailing: const Icon(
-                                Icons.play_arrow,
-                                color: Colors.white70,
-                              ),
-                              onTap: () {
-                                onMotionGroupSelected(group);
-                                Navigator.pop(context);
-                              },
-                            ),
-                        ],
-                      );
-                    },
-                  ),
-                ],
-              ),
+                      },
+                    ),
             ),
           ],
-        ),
-      ),
-    );
-  }
-}
-
-class _MotionSectionLabel extends StatelessWidget {
-  const _MotionSectionLabel({required this.title, required this.count});
-
-  final String title;
-  final int count;
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 12, 12, 6),
-      child: Text(
-        '$title · $count',
-        style: TextStyle(
-          color: Theme.of(context).colorScheme.primary,
-          fontWeight: FontWeight.w700,
         ),
       ),
     );

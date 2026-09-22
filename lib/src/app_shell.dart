@@ -157,6 +157,7 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
   }
 
   void _handlePointerDown(PointerDownEvent event) {
+    widget.controller.lastUiInteraction = DateTime.now();
     _activePointers.add(event.pointer);
     widget.controller.frameRate.setActivity(FrameRateActivity.touch, true);
   }
@@ -238,73 +239,80 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
           ],
         );
         final safeTop = MediaQuery.paddingOf(context).top;
-        return PopScope(
-          canPop: !_navigation.canGoBack && !_menuOpen && !_chatUiHidden,
-          onPopInvokedWithResult: (didPop, _) {
-            if (!didPop) _handleBack();
-          },
-          child: Scaffold(
-            resizeToAvoidBottomInset: false,
-            key: _scaffoldKey,
-            body: Column(
-              children: [
-                if (Platform.isWindows && _borderless) _buildWindowControls(),
-                Expanded(
-                  child: Listener(
-                    behavior: HitTestBehavior.translucent,
-                    onPointerDown: _handlePointerDown,
-                    onPointerUp: _handlePointerEnd,
-                    onPointerCancel: _handlePointerEnd,
-                    child: Stack(
-                      children: [
-                        content,
-                        if (!_chatUiHidden &&
-                            !(_chatFullscreen &&
-                                _destination == AppDestination.chat))
-                          Positioned(
-                            left: 16,
-                            top: safeTop + 8,
-                            child: GlassIconButton(
-                              liquidGlass: widget.controller.liquidGlassChatUi,
-                              size: 48,
-                              icon: _menuOpen
-                                  ? Icons.close_rounded
-                                  : Icons.menu_rounded,
-                              tooltip: widget.controller.interfaceLanguage.text(
-                                _menuOpen ? '关闭菜单' : '打开菜单',
-                                _menuOpen ? 'Close menu' : 'Open menu',
-                                _menuOpen ? 'メニューを閉じる' : 'メニューを開く',
+        return TickerMode(
+          enabled: !widget.controller.continuousAsmr,
+          child: PopScope(
+            canPop: !_navigation.canGoBack && !_menuOpen && !_chatUiHidden,
+            onPopInvokedWithResult: (didPop, _) {
+              if (!didPop) _handleBack();
+            },
+            child: Scaffold(
+              resizeToAvoidBottomInset: false,
+              key: _scaffoldKey,
+              body: Column(
+                children: [
+                  if (Platform.isWindows && _borderless) _buildWindowControls(),
+                  Expanded(
+                    child: Listener(
+                      behavior: HitTestBehavior.translucent,
+                      onPointerDown: _handlePointerDown,
+                      onPointerUp: _handlePointerEnd,
+                      onPointerCancel: _handlePointerEnd,
+                      child: Stack(
+                        children: [
+                          content,
+                          if (!_chatUiHidden &&
+                              !(_chatFullscreen &&
+                                  _destination == AppDestination.chat))
+                            Positioned(
+                              left: 16,
+                              top: safeTop + 8,
+                              child: GlassIconButton(
+                                liquidGlass:
+                                    widget.controller.liquidGlassChatUi,
+                                size: 48,
+                                icon: _menuOpen
+                                    ? Icons.close_rounded
+                                    : Icons.menu_rounded,
+                                tooltip: widget.controller.interfaceLanguage
+                                    .text(
+                                      _menuOpen ? '关闭菜单' : '打开菜单',
+                                      _menuOpen ? 'Close menu' : 'Open menu',
+                                      _menuOpen ? 'メニューを閉じる' : 'メニューを開く',
+                                    ),
+                                onPressed: _openMenu,
                               ),
-                              onPressed: _openMenu,
                             ),
-                          ),
-                        if (_destination == AppDestination.chat &&
-                            !_chatFullscreen)
-                          Positioned(
-                            left: 72,
-                            top: safeTop + 8,
-                            child: GlassIconButton(
-                              liquidGlass: widget.controller.liquidGlassChatUi,
-                              size: 48,
-                              icon: _chatUiHidden
-                                  ? Icons.visibility_rounded
-                                  : Icons.visibility_off_rounded,
-                              tooltip: widget.controller.interfaceLanguage.text(
-                                _chatUiHidden ? '恢复界面' : '隐藏界面',
-                                _chatUiHidden
-                                    ? 'Restore interface'
-                                    : 'Hide interface',
-                                _chatUiHidden ? 'UIを表示' : 'UIを隠す',
+                          if (_destination == AppDestination.chat &&
+                              !_chatFullscreen)
+                            Positioned(
+                              left: 72,
+                              top: safeTop + 8,
+                              child: GlassIconButton(
+                                liquidGlass:
+                                    widget.controller.liquidGlassChatUi,
+                                size: 48,
+                                icon: _chatUiHidden
+                                    ? Icons.visibility_rounded
+                                    : Icons.visibility_off_rounded,
+                                tooltip: widget.controller.interfaceLanguage
+                                    .text(
+                                      _chatUiHidden ? '恢复界面' : '隐藏界面',
+                                      _chatUiHidden
+                                          ? 'Restore interface'
+                                          : 'Hide interface',
+                                      _chatUiHidden ? 'UIを表示' : 'UIを隠す',
+                                    ),
+                                onPressed: _toggleChatUiVisibility,
                               ),
-                              onPressed: _toggleChatUiVisibility,
                             ),
-                          ),
-                        _buildFoldMenu(),
-                      ],
+                          _buildFoldMenu(),
+                        ],
+                      ),
                     ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
           ),
         );

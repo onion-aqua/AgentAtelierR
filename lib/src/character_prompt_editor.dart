@@ -39,6 +39,41 @@ class _CharacterPromptEditorState extends State<CharacterPromptEditor> {
 
   void _refreshStats() => setState(() {});
 
+  Future<void> _expandEditor() async {
+    FocusManager.instance.primaryFocus?.unfocus();
+    final language = widget.controller.interfaceLanguage;
+    await pushSettingsPage<void>(
+      context: context,
+      controller: widget.controller,
+      builder: (context) => SettingsDetailPage(
+        controller: widget.controller,
+        title: Text(
+          widget.world
+              ? language.text('世界书', 'World book', 'ワールドブック')
+              : language.text('人物设定', 'Character profile', 'キャラクター設定'),
+        ),
+        scrollable: false,
+        content: TextField(
+          key: const ValueKey('fullscreen-prompt-input'),
+          controller: _text,
+          expands: true,
+          minLines: null,
+          maxLines: null,
+          textAlignVertical: TextAlignVertical.top,
+          decoration: const InputDecoration(border: OutlineInputBorder()),
+        ),
+        actions: [
+          TextButton.icon(
+            onPressed: () => Navigator.pop(context),
+            icon: const Icon(Icons.fullscreen_exit),
+            label: Text(language.text('收起', 'Collapse', '縮小')),
+          ),
+        ],
+      ),
+    );
+    if (mounted) FocusManager.instance.primaryFocus?.unfocus();
+  }
+
   void _stashSlot() {
     final defaultText = widget.world
         ? defaultWorldSetting
@@ -294,6 +329,19 @@ class _CharacterPromptEditorState extends State<CharacterPromptEditor> {
                                 style: theme.textTheme.bodySmall,
                               ),
                               const SizedBox(height: 10),
+                              Align(
+                                alignment: Alignment.centerRight,
+                                child: IconButton(
+                                  key: const ValueKey('expand-prompt-input'),
+                                  tooltip: language.text(
+                                    '全屏编辑',
+                                    'Edit fullscreen',
+                                    '全画面で編集',
+                                  ),
+                                  icon: const Icon(Icons.fullscreen),
+                                  onPressed: _expandEditor,
+                                ),
+                              ),
                               Expanded(
                                 child: TextField(
                                   controller: _text,
