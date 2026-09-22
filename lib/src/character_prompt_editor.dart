@@ -8,20 +8,15 @@ import 'glass_ui.dart';
 import 'world_prompt_defaults.dart';
 import 'settings_slots.dart';
 import 'settings_slot_selector.dart';
-import 'settings_preset_actions.dart';
 
 class CharacterPromptEditor extends StatefulWidget {
   const CharacterPromptEditor({
     super.key,
     required this.controller,
     this.world = false,
-    this.presets = false,
-    this.liveDraft,
   });
   final AppController controller;
   final bool world;
-  final bool presets;
-  final SettingsSlots? liveDraft;
   @override
   State<CharacterPromptEditor> createState() => _CharacterPromptEditorState();
 }
@@ -29,13 +24,11 @@ class CharacterPromptEditor extends StatefulWidget {
 class _CharacterPromptEditorState extends State<CharacterPromptEditor> {
   SettingsSlotKind get _kind =>
       widget.world ? SettingsSlotKind.world : SettingsSlotKind.character;
-  late final _slots = widget.presets
-      ? widget.controller.presetSlots(_kind)
-      : widget.controller.settingsSlots(_kind);
+  late final _slots = widget.controller.settingsSlots(_kind);
   late final _text = TextEditingController(
-    text: (_slots.entries[_slots.active]?['text'] ?? '').isEmpty
-        ? (widget.world ? defaultWorldSetting : defaultCharacterPersona)
-        : _slots.entries[_slots.active]!['text']!,
+    text: widget.world
+        ? widget.controller.editableWorldSetting
+        : widget.controller.editableCharacterPersona,
   );
 
   @override
@@ -51,32 +44,8 @@ class _CharacterPromptEditorState extends State<CharacterPromptEditor> {
         ? defaultWorldSetting
         : defaultCharacterPersona;
     _slots.entries[_slots.active] = {
-      'text': !widget.presets && _text.text.trim() == defaultText.trim()
-          ? ''
-          : _text.text,
+      'text': _text.text.trim() == defaultText.trim() ? '' : _text.text,
     };
-  }
-
-  void _reloadSlot() {
-    final value = _slots.entries[_slots.active]?['text'] ?? '';
-    _text.text = value.isEmpty
-        ? (widget.world ? defaultWorldSetting : defaultCharacterPersona)
-        : value;
-  }
-
-  Future<void> _openPresets() async {
-    _stashSlot();
-    await pushSettingsPage<void>(
-      context: context,
-      controller: widget.controller,
-      builder: (_) => CharacterPromptEditor(
-        controller: widget.controller,
-        world: widget.world,
-        presets: true,
-        liveDraft: _slots,
-      ),
-    );
-    if (mounted) setState(_reloadSlot);
   }
 
   void _selectSlot(int index) {
@@ -154,24 +123,8 @@ class _CharacterPromptEditorState extends State<CharacterPromptEditor> {
       controller: widget.controller,
       scrollable: false,
       contentPadding: EdgeInsets.zero,
-      headerActions: [
-        SettingsPresetActions(
-          controller: widget.controller,
-          kind: _kind,
-          presets: widget.presets,
-          draft: () {
-            _stashSlot();
-            return _slots;
-          },
-          reload: () => setState(_reloadSlot),
-          liveDraft: widget.liveDraft ?? _slots,
-          openPresets: _openPresets,
-        ),
-      ],
       title: Text(
-        widget.presets
-            ? language.text('预设配置', 'Presets', 'プリセット')
-            : widget.world
+        widget.world
             ? language.text('世界书', 'World book', 'ワールドブック')
             : language.text('人物设定', 'Character profile', 'キャラクター設定'),
       ),
@@ -189,7 +142,6 @@ class _CharacterPromptEditorState extends State<CharacterPromptEditor> {
                   children: [
                     SettingsSlotSelector(
                       slots: _slots,
-                      presets: widget.presets,
                       language: language,
                       onSelected: _selectSlot,
                     ),
@@ -396,17 +348,7 @@ class _CharacterPromptEditorState extends State<CharacterPromptEditor> {
                             onPressed: () => _save(context),
                             icon: const Icon(Icons.save_outlined),
                             label: Text(
-                              widget.presets
-                                  ? language.text(
-                                      '保存预设',
-                                      'Save presets',
-                                      'プリセットを保存',
-                                    )
-                                  : language.text(
-                                      '保存并使用',
-                                      'Save & use',
-                                      '保存して使用',
-                                    ),
+                              language.text('保存并使用', 'Save & use', '保存して使用'),
                             ),
                           ),
                         ),
@@ -422,7 +364,7 @@ class _CharacterPromptEditorState extends State<CharacterPromptEditor> {
     );
   }
 
-  Future<void> _save(BuildContext context) async {
+  void _save(BuildContext context) {
     final language = widget.controller.interfaceLanguage;
     if (_text.text.trim().isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -439,19 +381,8 @@ class _CharacterPromptEditorState extends State<CharacterPromptEditor> {
       return;
     }
     _stashSlot();
-    try {
-      if (widget.presets) {
-        await widget.controller.savePresetSlots(_kind, _slots);
-      } else {
-        widget.controller.saveSettingsSlots(_kind, _slots);
-      }
-      if (context.mounted) Navigator.pop(context);
-    } on Object catch (error) {
-      if (context.mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('$error')));
-      }
-    }
+    widget.controller.saveSettingsSlots(_kind, _slots);
+    Navigator.pop(context);
   }
 }
 

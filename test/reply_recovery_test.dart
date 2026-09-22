@@ -3,88 +3,11 @@ import 'dart:convert';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:ryza_chat_mvp/src/app_controller.dart';
-import 'package:ryza_chat_mvp/src/settings_slots.dart';
-import 'package:ryza_chat_mvp/src/settings_preset_actions.dart';
 import 'package:ryza_chat_mvp/src/performance_planner.dart';
 import 'package:ryza_chat_mvp/src/memory_refresh_gate.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
-  test('all three preset banks survive saves/imports/reload without changing active roles', () async {
-    SharedPreferences.setMockInitialValues({});
-    final c = await AppController.load();
-    addTearDown(c.dispose);
-    c.setCharacterPersona('saved role');
-    c.updateMemorySummary('memory at save');
-    await c.saveToLocalSlot(0);
-    final backup = c.exportData();
-    for (final kind in SettingsSlotKind.values) {
-      final bank = c.presetSlots(kind);
-      for (var i = 0; i < 5; i++) {
-        bank.entries[i] = kind == SettingsSlotKind.user
-            ? {
-                'address': 'preset $i',
-                'portrait': 'portrait $i',
-                'preferCustom': 'true',
-              }
-            : {'text': '${kind.name} preset $i'};
-      }
-      bank.active = 4;
-      await c.savePresetSlots(kind, bank);
-      bank.entries[4]!.clear();
-    }
-    expect(c.characterPersona, 'saved role');
-    expect(c.userAddress, isNot('preset 4'));
-    c.updateMemorySummary('later memory');
-    await c.loadFromLocalSlot(0);
-    expect(c.memorySummary, 'memory at save');
-    c.updateMemorySummary('new memory after load');
-    expect(c.memorySummary, 'new memory after load');
-    await c.importData(backup);
-    final reloaded = await AppController.load();
-    addTearDown(reloaded.dispose);
-    for (final kind in SettingsSlotKind.values) {
-      final bank = reloaded.presetSlots(kind);
-      expect(bank.entries.whereType<Map>().length, 5);
-      expect(bank.entries[4], isNotEmpty);
-      expect(bank.active, 4);
-    }
-    expect(jsonEncode(c.exportLocalSlot(0)), isNot(contains('preset 4')));
-  });
-
-  test('configuration JSON roundtrip rejects wrong types and arbitrary application data', () {
-    for (final kind in SettingsSlotKind.values) {
-      final entry = kind == SettingsSlotKind.user
-          ? {'address': '伙伴', 'portrait': '旅人'}
-          : {'text': '设定'};
-      final file = jsonDecode(
-        jsonEncode(SettingsPresetFile.encode(kind, entry)),
-      );
-      expect(SettingsPresetFile.decode(file, kind), entry);
-      final other = kind == SettingsSlotKind.user
-          ? SettingsSlotKind.world
-          : SettingsSlotKind.user;
-      expect(
-        () => SettingsPresetFile.decode(file, other),
-        throwsFormatException,
-      );
-    }
-    expect(
-      () => SettingsPresetFile.decode({'messages': []}, SettingsSlotKind.world),
-      throwsFormatException,
-    );
-    expect(
-      () => SettingsPresetFile.decode(
-        SettingsPresetFile.encode(SettingsSlotKind.world, {
-          'text': 'x',
-          'apiKey': 'invalid',
-        }),
-        SettingsSlotKind.world,
-      ),
-      throwsFormatException,
-    );
-  });
-
   test('continuation retry removes failure without losing previous user or assistant messages', () async {
     SharedPreferences.setMockInitialValues({});
     final c = await AppController.load();

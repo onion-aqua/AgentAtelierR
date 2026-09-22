@@ -54,7 +54,6 @@ class SettingsDetailPage extends StatelessWidget {
     required this.title,
     required this.content,
     this.actions = const [],
-    this.headerActions = const [],
     this.contentPadding = const EdgeInsets.all(16),
     this.scrollable = true,
   });
@@ -63,7 +62,6 @@ class SettingsDetailPage extends StatelessWidget {
   final Widget title;
   final Widget content;
   final List<Widget> actions;
-  final List<Widget> headerActions;
   final EdgeInsetsGeometry contentPadding;
   final bool scrollable;
 
@@ -100,7 +98,6 @@ class SettingsDetailPage extends StatelessWidget {
                 onPressed: () => Navigator.of(context).maybePop(),
               ),
               title: title,
-              actions: headerActions,
             ),
             body: SafeArea(
               top: false,

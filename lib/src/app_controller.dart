@@ -628,32 +628,6 @@ class AppController extends ChangeNotifier {
   String worldSetting = '';
   final Map<SettingsSlotKind, SettingsSlots> _settingsSlots = {};
 
-  // Stored independently: save/load and full-data imports never replace presets.
-  SettingsSlots presetSlots(SettingsSlotKind kind) {
-    try {
-      return SettingsSlots.fromJson(
-        jsonDecode(
-          _preferences.getString('independent_presets_v1_${kind.name}') ?? '{}',
-        ),
-      );
-    } on FormatException {
-      return SettingsSlots();
-    }
-  }
-
-  Future<void> savePresetSlots(
-    SettingsSlotKind kind,
-    SettingsSlots draft,
-  ) async {
-    RangeError.checkValidIndex(draft.active, draft.entries);
-    final saved = await _preferences.setString(
-      'independent_presets_v1_${kind.name}',
-      jsonEncode(draft.copy().toJson()),
-    );
-    if (!saved) throw StateError('Preset storage failed');
-    notifyListeners();
-  }
-
   Map<String, String> get _userProfileSlotData => {
     'address': userAddress,
     'portrait': userPortrait,
@@ -2635,7 +2609,10 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
   Map<String, dynamic> _exportGameState() => {
     'roleSettings': {
       'userProfile': exportData()['userProfile'],
-      'settingsSlots': _settingsSlotsJson,
+      'activeSlots': {
+        for (final kind in SettingsSlotKind.values)
+          kind.name: settingsSlots(kind).active,
+      },
       'characterPersona': characterPersona,
       'worldSetting': worldSetting,
       'characterPersonaInjectionEnabled': characterPersonaInjectionEnabled,
@@ -2880,7 +2857,45 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
     if (data['roleSettings'] case final Map<String, dynamic> settings) {
       final merged = exportData();
       merged['userProfile'] = settings['userProfile'];
-      merged['settingsSlots'] = settings['settingsSlots'];
+      // Keep every inactive local slot, including the one active before loading.
+      // Older saves contain all five slots; only consume their active index.
+      final banks = <String, dynamic>{};
+      for (final kind in SettingsSlotKind.values) {
+        final bank = settingsSlots(kind);
+        final indices = settings['activeSlots'];
+        final legacy = settings['settingsSlots'];
+        final legacyBank = legacy is Map ? legacy[kind.name] : null;
+        final index = indices is Map
+            ? indices[kind.name]
+            : legacyBank is Map
+            ? legacyBank['active']
+            : null;
+        if (index != null &&
+            (index is! int || index < 0 || index >= SettingsSlots.count)) {
+          throw const FormatException('存档中的激活槽位无效');
+        }
+        bank.active = index as int? ?? bank.active;
+        final profile = settings['userProfile'];
+        bank.entries[bank.active] = switch (kind) {
+          SettingsSlotKind.user =>
+            profile is Map
+                ? {
+                    for (final entry in profile.entries)
+                      if (entry.key is String &&
+                          (entry.value is String || entry.value is bool))
+                        entry.key as String: entry.value.toString(),
+                  }
+                : _userProfileSlotData,
+          SettingsSlotKind.character => {
+            'text': settings['characterPersona'] as String? ?? characterPersona,
+          },
+          SettingsSlotKind.world => {
+            'text': settings['worldSetting'] as String? ?? worldSetting,
+          },
+        };
+        banks[kind.name] = bank.toJson();
+      }
+      merged['settingsSlots'] = banks;
       final preferences = Map<String, dynamic>.from(
         merged['preferences'] as Map,
       );
@@ -3031,7 +3046,9 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
     showMicrophoneButton = data['showMicrophoneButton'] as bool? ?? false;
     unlockInputWhileReplying =
         data['unlockInputWhileReplying'] as bool? ?? false;
-    preferCustomUserProfile = data['preferCustomUserProfile'] == true;
+    if (!userProfile.containsKey('preferCustom')) {
+      preferCustomUserProfile = data['preferCustomUserProfile'] == true;
+    }
     frameRateMode = AppFrameRateMode.values.firstWhere(
       (value) => value.name == data['frameRateMode'],
       orElse: () => AppFrameRateMode.adaptive,
