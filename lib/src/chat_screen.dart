@@ -31,6 +31,7 @@ import 'character_motion_dynamics.dart';
 import 'character_track_transition.dart';
 import 'character_idle_behavior.dart';
 import 'character_posture.dart';
+import 'memory_refresh_gate.dart';
 import 'mimo_tts_client.dart';
 import 'protected_character_assets.dart';
 import 'device_agent_tools.dart';
@@ -467,8 +468,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
   int _motionGeneration = 0;
   int _replyGeneration = 0;
-  int _memoryRefreshGeneration = 0;
-  bool _memoryRefreshRunning = false;
+  final _memoryRefreshGate = MemoryRefreshGate();
   Future<void> Function()? _pendingMemoryRefresh;
   ChatMessage? _lastConsolidatedUser;
   String _previousSpeechEmotion = 'relaxed';
@@ -644,7 +644,7 @@ class _ChatScreenState extends State<ChatScreen> {
     _previousSpeechEmotion = 'relaxed';
     _pendingMemoryRefresh = null;
     _replyGeneration += 1;
-    _memoryRefreshGeneration += 1;
+    _memoryRefreshGate.invalidate(afterLoad: true);
     _suggestionGeneration += 1;
     final iterator = _replyIterator;
     _replyIterator = null;
@@ -2189,7 +2189,7 @@ class _ChatScreenState extends State<ChatScreen> {
     _clearPerformanceQueue();
     _outfitReactionTimer?.cancel();
     _replyGeneration += 1;
-    _memoryRefreshGeneration += 1;
+    _memoryRefreshGate.invalidate();
     _suggestionGeneration += 1;
     final replyIterator = _replyIterator;
     _replyIterator = null;
@@ -2397,6 +2397,7 @@ class _ChatScreenState extends State<ChatScreen> {
             '请分析我发送的附件。',
         ].join('\n');
     final isAutomatic = automaticPrompt != null;
+    widget.controller.removeFailedReplies();
 
     _cancelSpeechPlayback();
     if (!isAutomatic) _inputController.clear();
@@ -2530,8 +2531,9 @@ class _ChatScreenState extends State<ChatScreen> {
       _showLatestAssistantFromStartIfOverflow();
       RuntimeLog.instance.info('AI', '流式回复完成，字符数=${reply.length}');
       if (widget.controller.longTermMemoryEnabled &&
-          !isAutomatic &&
-          (widget.controller.userMessageCount % 4 == 0 ||
+          (_memoryRefreshGate.refreshAfterLoad || !isAutomatic) &&
+          (_memoryRefreshGate.refreshAfterLoad ||
+              widget.controller.userMessageCount % 4 == 0 ||
               AppController.shouldRefreshMemoryImmediately(text))) {
         unawaited(
           _refreshLongTermMemory(
@@ -2603,10 +2605,14 @@ class _ChatScreenState extends State<ChatScreen> {
       }
       if (!mounted || generation != _replyGeneration) return;
       if (stateProposal != null) {
-        widget.controller.settleCharacterState(
+        final settled = widget.controller.settleCharacterState(
           stateTurn,
           stateProposal!,
           stateRevision,
+        );
+        RuntimeLog.instance.info(
+          'CharacterState',
+          settled ? '本轮状态已更新' : '状态提议无效或存档已改变，保留原值',
         );
       }
       final speechPlan = await speechPlanning;
@@ -2784,6 +2790,7 @@ class _ChatScreenState extends State<ChatScreen> {
   void _undoLastMessage() {
     if (_isReplying) _cancelReply();
     _cancelSpeechPlayback();
+    if (widget.controller.removeFailedReplies()) return;
     final withdrawn = widget.controller.undoLastUserTurn();
     if (withdrawn == null) {
       ScaffoldMessenger.of(context)
@@ -3530,14 +3537,16 @@ class _ChatScreenState extends State<ChatScreen> {
     List<ChatMessage>? completedMessages,
     int? dataRevision,
   }) async {
-    final snapshot = completedMessages ?? widget.controller.messages.toList();
+    final snapshot = (completedMessages ?? widget.controller.messages)
+        .where((message) => !message.isFailure)
+        .toList();
     final revision = dataRevision ?? widget.controller.dataRevision;
     if (!mounted ||
         revision != widget.controller.dataRevision ||
         !widget.controller.longTermMemoryEnabled) {
       return;
     }
-    if (_memoryRefreshRunning) {
+    if (_memoryRefreshGate.running) {
       _pendingMemoryRefresh = () => _refreshLongTermMemory(
         apiKey,
         provider: provider,
@@ -3549,8 +3558,7 @@ class _ChatScreenState extends State<ChatScreen> {
       RuntimeLog.instance.info('Memory', '整理正在进行，已合并后续请求');
       return;
     }
-    _memoryRefreshRunning = true;
-    final generation = _memoryRefreshGeneration;
+    final generation = _memoryRefreshGate.begin()!;
     final previousMemory = widget.controller.memorySummary;
     final checkpoint = _lastConsolidatedUser == null
         ? -1
@@ -3563,11 +3571,12 @@ class _ChatScreenState extends State<ChatScreen> {
     }
     final pendingMessages = snapshot.skip(start).toList();
     if (pendingMessages.isEmpty) {
-      _memoryRefreshRunning = false;
+      _memoryRefreshGate.finish(generation);
       RuntimeLog.instance.info('Memory', '没有新的完整对话，跳过整理');
       return;
     }
     final lastUser = snapshot.where((message) => message.isUser).lastOrNull;
+    final anchor = snapshot.lastOrNull;
     final dialogue = pendingMessages
         .map(
           (message) => message.isUser
@@ -3581,32 +3590,39 @@ class _ChatScreenState extends State<ChatScreen> {
         '开始独立整理：model=$model，messages=${pendingMessages.length}，characters=${dialogue.length}',
       );
       final now = DateTime.now();
-      final memory = await MemoryConsolidator().consolidate(
-        previousMemory: previousMemory,
-        dialogue: dialogue,
-        now: now,
-        complete: (messages) => _aiClient.complete(
-          lightweight: true,
-          provider: provider,
-          baseUrl: baseUrl,
-          apiKey: apiKey,
-          model: model,
-          messages: messages,
-        ),
-      );
+      final memory = await MemoryConsolidator()
+          .consolidate(
+            previousMemory: previousMemory,
+            dialogue: dialogue,
+            now: now,
+            complete: (messages) => _aiClient.complete(
+              lightweight: true,
+              provider: provider,
+              baseUrl: baseUrl,
+              apiKey: apiKey,
+              model: model,
+              messages: messages,
+            ),
+          )
+          .timeout(const Duration(seconds: 30));
       if (!mounted ||
-          generation != _memoryRefreshGeneration ||
+          !_memoryRefreshGate.owns(generation) ||
           revision != widget.controller.dataRevision ||
           !widget.controller.longTermMemoryEnabled ||
           previousMemory != widget.controller.memorySummary ||
-          lastUser == null ||
-          !widget.controller.messages.contains(lastUser)) {
+          anchor == null ||
+          !widget.controller.messages.any(
+            (message) =>
+                identical(message, anchor) ||
+                (anchor.id.isNotEmpty && message.id == anchor.id),
+          )) {
         RuntimeLog.instance.info('Memory', '丢弃整理结果：记忆、存档、开关或对应对话已改变');
         return;
       }
       if (memory != null) {
         widget.controller.updateMemorySummary(memory);
         _lastConsolidatedUser = lastUser;
+        _memoryRefreshGate.refreshAfterLoad = false;
         RuntimeLog.instance.info('Memory', '长期记忆整理成功，已保存');
       } else {
         RuntimeLog.instance.warning('Memory', '长期记忆整理返回了无效 JSON，已保留旧记忆');
@@ -3615,10 +3631,11 @@ class _ChatScreenState extends State<ChatScreen> {
       RuntimeLog.instance.error('Memory', error, stackTrace);
       // Memory consolidation is best-effort and must not break normal chat.
     } finally {
-      _memoryRefreshRunning = false;
-      final pending = _pendingMemoryRefresh;
-      _pendingMemoryRefresh = null;
-      if (mounted && pending != null) unawaited(pending());
+      if (_memoryRefreshGate.finish(generation)) {
+        final pending = _pendingMemoryRefresh;
+        _pendingMemoryRefresh = null;
+        if (mounted && pending != null) unawaited(pending());
+      }
     }
   }
 
@@ -3660,108 +3677,119 @@ class _ChatScreenState extends State<ChatScreen> {
     showDialog<void>(
       context: context,
       barrierColor: Colors.black38,
-      builder: (dialogContext) => Dialog(
-        backgroundColor: Colors.transparent,
-        surfaceTintColor: Colors.transparent,
-        insetPadding: const EdgeInsets.symmetric(horizontal: 24),
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 380),
-          child: GlassSurface(
-            liquidGlass: widget.controller.liquidGlassChatUi,
-            boxShadow: const [
-              BoxShadow(
-                color: Color(0x66000000),
-                blurRadius: 30,
-                offset: Offset(0, 14),
-              ),
-            ],
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.fromLTRB(20, 18, 12, 18),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Row(
-                    children: [
-                      const Icon(
-                        Icons.favorite_border_rounded,
-                        color: Colors.white,
-                      ),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: Text(
-                          language.text('角色状态', 'Character status', 'キャラクター状態'),
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 18,
-                            fontWeight: FontWeight.w700,
-                          ),
-                        ),
-                      ),
-                      IconButton(
-                        onPressed: () => Navigator.pop(dialogContext),
-                        tooltip: language.text('关闭', 'Close', '閉じる'),
-                        color: Colors.white,
-                        icon: const Icon(Icons.close_rounded),
-                      ),
-                    ],
-                  ),
-                  const Divider(color: Colors.white24),
-                  Align(
-                    alignment: Alignment.centerLeft,
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
+      builder: (dialogContext) => AnimatedBuilder(
+        animation: widget.controller,
+        builder: (context, _) => Dialog(
+          backgroundColor: Colors.transparent,
+          surfaceTintColor: Colors.transparent,
+          insetPadding: const EdgeInsets.symmetric(horizontal: 24),
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 380),
+            child: GlassSurface(
+              liquidGlass: widget.controller.liquidGlassChatUi,
+              boxShadow: const [
+                BoxShadow(
+                  color: Color(0x66000000),
+                  blurRadius: 30,
+                  offset: Offset(0, 14),
+                ),
+              ],
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.fromLTRB(20, 18, 12, 18),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Row(
                       children: [
-                        _CharacterStatusRow(
-                          icon: Icons.mood_outlined,
-                          label: language.text('心情', 'Mood', '気分'),
-                          value: widget.controller.characterState.summary(
-                            language,
+                        const Icon(
+                          Icons.favorite_border_rounded,
+                          color: Colors.white,
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Text(
+                            language.text(
+                              '角色状态',
+                              'Character status',
+                              'キャラクター状態',
+                            ),
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 18,
+                              fontWeight: FontWeight.w700,
+                            ),
                           ),
                         ),
-                        if (widget.controller.characterState.reason.isNotEmpty)
-                          _CharacterStatusRow(
-                            icon: Icons.history,
-                            label: language.text(
-                              '最近变化',
-                              'Last change',
-                              '最近の変化',
-                            ),
-                            value:
-                                '${widget.controller.characterState.reason}\n${widget.controller.characterState.updatedAt?.toLocal().toString().split('.').first ?? ''}',
-                          ),
+                        IconButton(
+                          onPressed: () => Navigator.pop(dialogContext),
+                          tooltip: language.text('关闭', 'Close', '閉じる'),
+                          color: Colors.white,
+                          icon: const Icon(Icons.close_rounded),
+                        ),
                       ],
                     ),
-                  ),
-                  const SizedBox(height: 8),
-                  Wrap(
-                    spacing: 8,
-                    runSpacing: 4,
-                    children: [
-                      _CharacterStatusRow(
-                        icon: Icons.favorite_rounded,
-                        label: language.text('关系点数', 'Bond', '親密度'),
-                        value: '${widget.controller.relationshipPoints}',
+                    const Divider(color: Colors.white24),
+                    Align(
+                      alignment: Alignment.centerLeft,
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          _CharacterStatusRow(
+                            icon: Icons.mood_outlined,
+                            label: language.text('心情', 'Mood', '気分'),
+                            value: widget.controller.characterState.summary(
+                              language,
+                            ),
+                          ),
+                          if (widget
+                              .controller
+                              .characterState
+                              .reason
+                              .isNotEmpty)
+                            _CharacterStatusRow(
+                              icon: Icons.history,
+                              label: language.text(
+                                '最近变化',
+                                'Last change',
+                                '最近の変化',
+                              ),
+                              value:
+                                  '${widget.controller.characterState.reason}\n${widget.controller.characterState.updatedAt?.toLocal().toString().split('.').first ?? ''}',
+                            ),
+                        ],
                       ),
-                      _CharacterStatusRow(
-                        icon: Icons.checkroom_outlined,
-                        label: language.text('服装姿态', 'Outfit', '衣装と姿勢'),
-                        value: _appearance.label,
-                      ),
-                      _CharacterStatusRow(
-                        icon: widget.controller.sceneTime.icon,
-                        label: language.text('场景时间', 'Scene time', 'シーン時間'),
-                        value: widget.controller.sceneTime.label,
-                      ),
-                      _CharacterStatusRow(
-                        icon: Icons.psychology_alt_outlined,
-                        label: language.text('长期记忆', 'Memory', '長期記憶'),
-                        value: widget.controller.longTermMemoryEnabled
-                            ? language.text('启用', 'Enabled', '有効')
-                            : language.text('关闭', 'Disabled', '無効'),
-                      ),
-                    ],
-                  ),
-                ],
+                    ),
+                    const SizedBox(height: 8),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 4,
+                      children: [
+                        _CharacterStatusRow(
+                          icon: Icons.favorite_rounded,
+                          label: language.text('关系点数', 'Bond', '親密度'),
+                          value: '${widget.controller.relationshipPoints}',
+                        ),
+                        _CharacterStatusRow(
+                          icon: Icons.checkroom_outlined,
+                          label: language.text('服装姿态', 'Outfit', '衣装と姿勢'),
+                          value: _appearance.label,
+                        ),
+                        _CharacterStatusRow(
+                          icon: widget.controller.sceneTime.icon,
+                          label: language.text('场景时间', 'Scene time', 'シーン時間'),
+                          value: widget.controller.sceneTime.label,
+                        ),
+                        _CharacterStatusRow(
+                          icon: Icons.psychology_alt_outlined,
+                          label: language.text('长期记忆', 'Memory', '長期記憶'),
+                          value: widget.controller.longTermMemoryEnabled
+                              ? language.text('启用', 'Enabled', '有効')
+                              : language.text('关闭', 'Disabled', '無効'),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
               ),
             ),
           ),

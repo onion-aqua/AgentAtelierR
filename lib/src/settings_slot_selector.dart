@@ -9,9 +9,11 @@ class SettingsSlotSelector extends StatelessWidget {
     required this.slots,
     required this.language,
     required this.onSelected,
+    this.presets = false,
   });
 
   final SettingsSlots slots;
+  final bool presets;
   final AppLanguage language;
   final ValueChanged<int> onSelected;
 
@@ -39,11 +41,17 @@ class SettingsSlotSelector extends StatelessWidget {
       ),
       const SizedBox(height: 6),
       Text(
-        language.text(
-          '切换时保留本次编辑；保存后使用所选槽位。取消不保存。',
-          'Switching keeps drafts. Save to use the selected slot; Cancel discards edits.',
-          '切替時は下書きを保持。保存で選択枠を使用し、キャンセルで編集を破棄します。',
-        ),
+        presets
+            ? language.text(
+                '独立预设：不随存档改变，也不会直接用于对话。保存后保留五个槽位的编辑。',
+                'Independent presets: unaffected by saves and not used in chat until copied. Save keeps all five drafts.',
+                '独立プリセット：セーブと会話に直接影響しません。保存で5枠の編集を保持します。',
+              )
+            : language.text(
+                '切换时保留本次编辑；保存后使用所选槽位。取消不保存。',
+                'Switching keeps drafts. Save to use the selected slot; Cancel discards edits.',
+                '切替時は下書きを保持。保存で選択枠を使用し、キャンセルで編集を破棄します。',
+              ),
         style: Theme.of(context).textTheme.bodySmall,
       ),
       const SizedBox(height: 12),

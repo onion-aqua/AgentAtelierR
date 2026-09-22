@@ -18,6 +18,7 @@ import 'glass_ui.dart';
 import 'mimo_tts_settings.dart';
 import 'settings_slots.dart';
 import 'settings_slot_selector.dart';
+import 'settings_preset_actions.dart';
 import 'openai_settings_dialog.dart';
 import 'legacy_data_converter.dart';
 import 'settings_detail_page.dart';
@@ -3165,7 +3166,13 @@ class _LongTermMemoryDialogState extends State<_LongTermMemoryDialog> {
 }
 
 class _UserProfileDialog extends StatefulWidget {
-  const _UserProfileDialog({required this.controller});
+  const _UserProfileDialog({
+    required this.controller,
+    this.presets = false,
+    this.liveDraft,
+  });
+  final bool presets;
+  final SettingsSlots? liveDraft;
   final AppController controller;
 
   @override
@@ -3173,7 +3180,9 @@ class _UserProfileDialog extends StatefulWidget {
 }
 
 class _UserProfileDialogState extends State<_UserProfileDialog> {
-  late final _slots = widget.controller.settingsSlots(SettingsSlotKind.user);
+  late final _slots = widget.presets
+      ? widget.controller.presetSlots(SettingsSlotKind.user)
+      : widget.controller.settingsSlots(SettingsSlotKind.user);
   late final TextEditingController _address;
   late final TextEditingController _portrait;
   late final TextEditingController _boundaries;
@@ -3182,6 +3191,7 @@ class _UserProfileDialogState extends State<_UserProfileDialog> {
   late final TextEditingController _relationshipCustom;
   late final TextEditingController _interactionCustom;
   late bool _preferCustom;
+  int _profileRevision = 0;
 
   @override
   void initState() {
@@ -3208,6 +3218,7 @@ class _UserProfileDialogState extends State<_UserProfileDialog> {
   }
 
   void _loadSlot() {
+    _profileRevision++;
     final entry = _slots.entries[_slots.active] ?? {};
     _address.text = entry['address'] ?? '伙伴';
     _portrait.text = entry['portrait'] ?? '';
@@ -3247,7 +3258,42 @@ class _UserProfileDialogState extends State<_UserProfileDialog> {
   @override
   Widget build(BuildContext context) {
     return SettingsDetailPage(
-      title: const Text('用户设定'),
+      controller: widget.controller,
+      title: Text(
+        widget.presets
+            ? widget.controller.interfaceLanguage.text(
+                '预设配置',
+                'Presets',
+                'プリセット',
+              )
+            : '用户设定',
+      ),
+      headerActions: [
+        SettingsPresetActions(
+          controller: widget.controller,
+          kind: SettingsSlotKind.user,
+          presets: widget.presets,
+          draft: () {
+            _stashSlot();
+            return _slots;
+          },
+          reload: () => setState(_loadSlot),
+          liveDraft: widget.liveDraft ?? _slots,
+          openPresets: () async {
+            _stashSlot();
+            await pushSettingsPage<void>(
+              context: context,
+              controller: widget.controller,
+              builder: (_) => _UserProfileDialog(
+                controller: widget.controller,
+                presets: true,
+                liveDraft: _slots,
+              ),
+            );
+            if (mounted) setState(_loadSlot);
+          },
+        ),
+      ],
       content: SizedBox(
         width: 420,
         child: SingleChildScrollView(
@@ -3256,6 +3302,7 @@ class _UserProfileDialogState extends State<_UserProfileDialog> {
             children: [
               SettingsSlotSelector(
                 slots: _slots,
+                presets: widget.presets,
                 language: widget.controller.interfaceLanguage,
                 onSelected: _selectSlot,
               ),
@@ -3283,7 +3330,7 @@ class _UserProfileDialogState extends State<_UserProfileDialog> {
               ),
               const SizedBox(height: 12),
               DropdownButtonFormField<UserRelationshipRole>(
-                key: ValueKey('relationship-${_slots.active}'),
+                key: ValueKey('relationship-${_slots.active}-$_profileRevision'),
                 initialValue: _relationshipRole,
                 isExpanded: true,
                 decoration: const InputDecoration(
@@ -3304,7 +3351,7 @@ class _UserProfileDialogState extends State<_UserProfileDialog> {
               ),
               const SizedBox(height: 12),
               DropdownButtonFormField<UserInteractionStyle>(
-                key: ValueKey('interaction-${_slots.active}'),
+                key: ValueKey('interaction-${_slots.active}-$_profileRevision'),
                 initialValue: _interactionStyle,
                 isExpanded: true,
                 decoration: const InputDecoration(
@@ -3377,11 +3424,34 @@ class _UserProfileDialogState extends State<_UserProfileDialog> {
           child: const Text('取消'),
         ),
         FilledButton(
-          onPressed: () {
+          onPressed: () async {
             _stashSlot();
-            Navigator.pop(context, _slots);
+            try {
+              if (widget.presets) {
+                await widget.controller.savePresetSlots(
+                  SettingsSlotKind.user,
+                  _slots,
+                );
+              }
+              if (context.mounted) {
+                Navigator.pop(context, widget.presets ? null : _slots);
+              }
+            } on Object catch (error) {
+              if (context.mounted) {
+                ScaffoldMessenger.of(context)
+                    .showSnackBar(SnackBar(content: Text('$error')));
+              }
+            }
           },
-          child: const Text('保存并使用'),
+          child: Text(
+            widget.presets
+                ? widget.controller.interfaceLanguage.text(
+                    '保存预设',
+                    'Save presets',
+                    'プリセットを保存',
+                  )
+                : '保存并使用',
+          ),
         ),
       ],
     );
