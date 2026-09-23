@@ -19,7 +19,12 @@ void main() {
             ? Colors.black
             : Colors.white;
         expect(theme.extension<DialogueAppearance>()!.textColor, color);
-        expect(theme.textTheme.bodyMedium!.color, color);
+        final base = atelierTheme(AppAccentTheme.jade, brightness);
+        expect(theme.colorScheme.onSurface, base.colorScheme.onSurface);
+        expect(
+          theme.textTheme.bodyMedium!.color,
+          base.textTheme.bodyMedium!.color,
+        );
         expect(theme.extension<DialogueAppearance>()!.fontScale, 1.35);
       }
     }
@@ -35,6 +40,7 @@ void main() {
     expect(theme.extension<DialogueAppearance>()!.textColor, isNull);
   });
 }
+
 void originalAppearanceTests() {
   test(
     'translation display preserves original segments and playback indices',
@@ -62,10 +68,8 @@ void originalAppearanceTests() {
     for (final palette in AppAccentTheme.values) {
       final themed = withDialogueAppearance(base, palette, true);
       expect(themed.extension<DialogueAppearance>()!.translationOnly, isTrue);
-      expect(
-        themed.textTheme.bodyMedium!.color,
-        themed.extension<DialogueAppearance>()!.textColor,
-      );
+      expect(themed.textTheme, base.textTheme);
+      expect(themed.colorScheme.onSurface, base.colorScheme.onSurface);
       expect(themed.colorScheme.primary, base.colorScheme.primary);
     }
     expect(base.extension<DialogueAppearance>(), isNull);

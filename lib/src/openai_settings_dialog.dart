@@ -158,14 +158,15 @@ class _OpenAiSettingsDialogState extends State<OpenAiSettingsDialog> {
                 ),
                 style: Theme.of(context).textTheme.bodySmall,
               ),
-              SwitchListTile(
-                contentPadding: EdgeInsets.zero,
-                value: _enabled,
-                onChanged: _saving
-                    ? null
-                    : (value) => setState(() => _enabled = value),
-                title: Text(
-                  language.text('启用真实 AI 对话', 'Enable AI chat', 'AI会話を有効にする'),
+              SettingsOptionCard(
+                child: SwitchListTile(
+                  value: _enabled,
+                  onChanged: _saving
+                      ? null
+                      : (value) => setState(() => _enabled = value),
+                  title: Text(
+                    language.text('启用真实 AI 对话', 'Enable AI chat', 'AI会話を有効にする'),
+                  ),
                 ),
               ),
               TextField(

@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:alarm/alarm.dart';
+import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
 
@@ -70,18 +71,19 @@ class _AlarmScreenState extends State<AlarmScreen> {
 
     if (!mounted) return;
     final now = DateTime.now();
-    final selected = await showTimePicker(
-      context: context,
-      initialTime: TimeOfDay.fromDateTime(now.add(const Duration(minutes: 1))),
-      helpText: language.text('选择响铃时间', 'Choose alarm time', 'アラーム時刻を選択'),
+    final selectedDuration = await _pickAlarmTime(now, language);
+    if (selectedDuration == null) return;
+    final selected = TimeOfDay(
+      hour: selectedDuration.inHours,
+      minute: selectedDuration.inMinutes.remainder(60),
     );
-    if (selected == null) return;
     var dateTime = DateTime(
       now.year,
       now.month,
       now.day,
       selected.hour,
       selected.minute,
+      selectedDuration.inSeconds.remainder(60),
     );
     if (!dateTime.isAfter(now)) {
       dateTime = dateTime.add(const Duration(days: 1));
@@ -137,6 +139,84 @@ class _AlarmScreenState extends State<AlarmScreen> {
     if (!mounted) return;
     ScaffoldMessenger.of(context)
         .showSnackBar(SnackBar(content: Text(success ? '闹钟已设置' : '闹钟设置失败')));
+  }
+
+  Future<Duration?> _pickAlarmTime(DateTime now, AppLanguage language) {
+    final target = now.add(const Duration(minutes: 1));
+    var selected = Duration(
+      hours: target.hour,
+      minutes: target.minute,
+      seconds: 0,
+    );
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    return showDialog<Duration>(
+      context: context,
+      barrierColor: Colors.black54,
+      builder: (dialogContext) => Dialog(
+        backgroundColor: Colors.transparent,
+        surfaceTintColor: Colors.transparent,
+        insetPadding: const EdgeInsets.symmetric(horizontal: 22, vertical: 28),
+        child: GlassSurface(
+          liquidGlass: widget.controller.liquidGlassChatUi,
+          tone: dark ? GlassTone.dark : GlassTone.light,
+          fallbackColor: dark
+              ? const Color(0xE824282C)
+              : const Color(0xE8F1F3F4),
+          borderRadius: BorderRadius.circular(26),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(18, 18, 18, 10),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    language.text('选择响铃时间', 'Choose alarm time', 'アラーム時刻を選択'),
+                    style: const TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 6),
+                SizedBox(
+                  height: 190,
+                  child: CupertinoTheme(
+                    data: CupertinoThemeData(
+                      brightness: Theme.of(dialogContext).brightness,
+                      textTheme: CupertinoTextThemeData(
+                        dateTimePickerTextStyle: TextStyle(
+                          color: Theme.of(dialogContext).colorScheme.onSurface,
+                          fontSize: 25,
+                        ),
+                      ),
+                    ),
+                    child: CupertinoTimerPicker(
+                      mode: CupertinoTimerPickerMode.hms,
+                      initialTimerDuration: selected,
+                      onTimerDurationChanged: (value) => selected = value,
+                    ),
+                  ),
+                ),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.end,
+                  children: [
+                    TextButton(
+                      onPressed: () => Navigator.pop(dialogContext),
+                      child: Text(language.text('取消', 'Cancel', 'キャンセル')),
+                    ),
+                    FilledButton(
+                      onPressed: () => Navigator.pop(dialogContext, selected),
+                      child: Text(language.text('确定', 'OK', '決定')),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
   }
 
   Future<void> _deleteAlarm(AlarmSettings settings) async {
@@ -218,26 +298,22 @@ class _AlarmScreenState extends State<AlarmScreen> {
     return Scaffold(
       backgroundColor: Colors.transparent,
       appBar: AppBar(
+        backgroundColor: glassPageHeaderColor(context),
         automaticallyImplyLeading: false,
         title: Padding(
           padding: const EdgeInsets.only(left: 58),
           child: Text(language.text('语音闹钟', 'Voice alarms', 'ボイスアラーム')),
         ),
       ),
-      floatingActionButton: FloatingActionButton(
+      floatingActionButton: GlassIconButton(
+        liquidGlass: widget.controller.liquidGlassChatUi,
         onPressed: _addAlarm,
         tooltip: language.text('添加闹钟', 'Add alarm', 'アラームを追加'),
-        child: const Icon(Icons.add_alarm_outlined),
+        icon: Icons.add_alarm_outlined,
+        size: 52,
       ),
-      body: GlassSurface(
+      body: GlassPageSurface(
         liquidGlass: widget.controller.liquidGlassChatUi,
-        tone: Theme.of(context).brightness == Brightness.dark
-            ? GlassTone.dark
-            : GlassTone.light,
-        fallbackColor: Theme.of(context).brightness == Brightness.dark
-            ? const Color(0xD91C2222)
-            : const Color(0xB8EEF2F0),
-        borderRadius: BorderRadius.zero,
         child: _alarms.isEmpty
             ? Center(
                 child: Column(
@@ -246,7 +322,7 @@ class _AlarmScreenState extends State<AlarmScreen> {
                     Icon(
                       Icons.alarm_off_outlined,
                       size: 48,
-                      color: Colors.black38,
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
                     ),
                     SizedBox(height: 12),
                     Text(
@@ -274,9 +350,8 @@ class _AlarmScreenState extends State<AlarmScreen> {
                   final reminderType = alarmReminderTypeFromAsset(audioAsset);
                   final time = TimeOfDay.fromDateTime(alarm.dateTime)
                       .format(context);
-                  return Material(
-                    color: Theme.of(context).colorScheme.surfaceContainer,
-                    borderRadius: BorderRadius.circular(8),
+                  return GlassContentCard(
+                    liquidGlass: widget.controller.liquidGlassChatUi,
                     child: ListTile(
                       contentPadding: const EdgeInsets.fromLTRB(16, 8, 8, 8),
                       leading: Icon(_reminderIcon(reminderType)),

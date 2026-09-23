@@ -90,8 +90,9 @@ class _RuntimeLogScreenState extends State<RuntimeLogScreen> {
       final entries = filtered;
       final language = widget.language;
       return Scaffold(
-        backgroundColor: Theme.of(context).scaffoldBackgroundColor,
-        appBar: AppBar(
+        backgroundColor: Colors.transparent,
+      appBar: AppBar(
+        backgroundColor: glassPageHeaderColor(context),
           automaticallyImplyLeading: false,
           title: Padding(
             padding: const EdgeInsets.only(left: 58),
@@ -122,12 +123,8 @@ class _RuntimeLogScreenState extends State<RuntimeLogScreen> {
             ),
           ],
         ),
-        body: GlassSurface(
+        body: GlassPageSurface(
           liquidGlass: widget.liquidGlass,
-          tone: Theme.of(context).brightness == Brightness.dark
-              ? GlassTone.dark
-              : GlassTone.light,
-          borderRadius: BorderRadius.zero,
           child: Column(
             children: [
               SingleChildScrollView(
@@ -219,11 +216,11 @@ class _RuntimeLogScreenState extends State<RuntimeLogScreen> {
                               context,
                             ).colorScheme.error,
                           };
-                          return Card(
+                          return GlassContentCard(
                             key: ValueKey(
                               '${entry.timestamp.toIso8601String()}:${entry.source}:$index',
                             ),
-                            color: color(entry.module).withValues(alpha: .07),
+                            liquidGlass: widget.liquidGlass,
                             child: Padding(
                               padding: const EdgeInsets.all(12),
                               child: Column(

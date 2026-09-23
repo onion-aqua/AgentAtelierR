@@ -18,6 +18,7 @@ class MissionScreen extends StatelessWidget {
       child: Scaffold(
         backgroundColor: Colors.transparent,
         appBar: AppBar(
+          backgroundColor: glassPageHeaderColor(context),
           automaticallyImplyLeading: false,
           title: Padding(
             padding: const EdgeInsets.only(left: 58),
@@ -48,15 +49,8 @@ class MissionScreen extends StatelessWidget {
             ],
           ),
         ),
-        body: GlassSurface(
+        body: GlassPageSurface(
           liquidGlass: controller.liquidGlassChatUi,
-          tone: Theme.of(context).brightness == Brightness.dark
-              ? GlassTone.dark
-              : GlassTone.light,
-          borderRadius: BorderRadius.zero,
-          fallbackColor: Theme.of(context).brightness == Brightness.dark
-              ? const Color(0xD91C2222)
-              : const Color(0xB8EEF2F0),
           child: TabBarView(
             children: [
               _StoryQuestList(controller: controller),
@@ -155,7 +149,7 @@ class _StoryQuestCard extends StatelessWidget {
         tone: Theme.of(context).brightness == Brightness.dark
             ? GlassTone.dark
             : GlassTone.light,
-        borderRadius: BorderRadius.circular(8),
+        borderRadius: BorderRadius.circular(18),
         fallbackColor: colorScheme.surfaceContainer.withValues(alpha: 0.66),
         child: Padding(
           padding: const EdgeInsets.all(14),
@@ -380,7 +374,7 @@ class _DynamicQuestCard extends StatelessWidget {
       tone: Theme.of(context).brightness == Brightness.dark
           ? GlassTone.dark
           : GlassTone.light,
-      borderRadius: BorderRadius.circular(8),
+      borderRadius: BorderRadius.circular(18),
       fallbackColor: colorScheme.surfaceContainer.withValues(alpha: 0.66),
       child: Padding(
         padding: const EdgeInsets.all(14),

@@ -39,7 +39,10 @@ class CharacterState {
     if (settled.contains(turn)) return this;
     final raw = proposal['state_delta'];
     final why = proposal['reason'];
-    if (raw is! Map || why is! String || why.trim().isEmpty || why.length > 240) {
+    if (raw is! Map ||
+        why is! String ||
+        why.trim().isEmpty ||
+        why.length > 240) {
       return this;
     }
     if (raw.keys.any((key) => !values.containsKey(key)) ||
@@ -77,6 +80,45 @@ class CharacterState {
       reason: why.trim(),
       updatedAt: DateTime.now(),
       settled: [...settled, turn].reversed.take(100).toList().reversed.toList(),
+    );
+  }
+
+  CharacterState applyItemEffect({
+    required Map<String, int> changes,
+    required String reason,
+    bool resetNegativeStats = false,
+  }) {
+    final next = Map<String, int>.from(values);
+    final applied = <String, int>{};
+    final nextBands = Map<String, int>.from(bands);
+    for (final key in values.keys) {
+      final previous = values[key]!;
+      final change = changes[key] ?? 0;
+      final adjusted = resetNegativeStats && previous < 0
+          ? 0
+          : previous + change;
+      next[key] = change == 0 && !resetNegativeStats
+          ? previous
+          : adjusted.clamp(change < 0 ? 0 : (key == 'mood' ? -100 : 0), 100);
+      applied[key] = next[key]! - previous;
+      final lower = key == 'mood' ? -25 : 30;
+      final upper = key == 'mood' ? 25 : 70;
+      var band = bands[key] ?? 1;
+      final value = next[key]!;
+      if (band == 0 && value >= lower + 5) band = 1;
+      if (band == 2 && value <= upper - 5) band = 1;
+      if (band == 1 && value < lower - 5) band = 0;
+      if (band == 1 && value > upper + 5) band = 2;
+      nextBands[key] = band;
+    }
+    return CharacterState(
+      values: next,
+      bands: nextBands,
+      delta: applied,
+      emotion: emotion,
+      reason: reason,
+      updatedAt: DateTime.now(),
+      settled: settled,
     );
   }
 

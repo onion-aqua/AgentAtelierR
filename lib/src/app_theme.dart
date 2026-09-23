@@ -74,15 +74,7 @@ ThemeData withDialogueAppearance(
       ? Color.lerp(text.color, Colors.white, 0.65)!
       : text.color;
   return theme.copyWith(
-    colorScheme: color == null
-        ? theme.colorScheme
-        : theme.colorScheme.copyWith(
-            onSurface: color,
-            onSurfaceVariant: color.withValues(alpha: 0.8),
-          ),
-    textTheme: color == null
-        ? theme.textTheme
-        : theme.textTheme.apply(bodyColor: color, displayColor: color),
+    // Dialogue text preferences must not recolor settings and dialogs.
     extensions: [
       ...theme.extensions.values,
       DialogueAppearance(

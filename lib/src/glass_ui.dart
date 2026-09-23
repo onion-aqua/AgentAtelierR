@@ -4,6 +4,63 @@ import 'package:flutter/material.dart';
 
 enum GlassTone { dark, light }
 
+/// Match the page fallback glass at the title bar while keeping labels clear.
+Color glassPageHeaderColor(BuildContext context) =>
+    Theme.of(context).brightness == Brightness.dark
+    ? const Color(0xD91C2222)
+    : const Color(0xE0EEF2F0);
+
+/// The same translucent surface used by the main scene, for secondary pages.
+class GlassPageSurface extends StatelessWidget {
+  const GlassPageSurface({
+    super.key,
+    required this.liquidGlass,
+    required this.child,
+  });
+
+  final bool liquidGlass;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    return GlassSurface(
+      liquidGlass: liquidGlass,
+      tone: dark ? GlassTone.dark : GlassTone.light,
+      borderRadius: BorderRadius.zero,
+      fallbackColor: dark ? const Color(0xD91C2222) : const Color(0xB8EEF2F0),
+      child: child,
+    );
+  }
+}
+
+/// Lightweight nested card: the page itself already blurs the backdrop.
+class GlassContentCard extends StatelessWidget {
+  const GlassContentCard({
+    super.key,
+    required this.liquidGlass,
+    required this.child,
+    this.borderRadius = const BorderRadius.all(Radius.circular(18)),
+  });
+
+  final bool liquidGlass;
+  final Widget child;
+  final BorderRadius borderRadius;
+
+  @override
+  Widget build(BuildContext context) {
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    return GlassSurface(
+      liquidGlass: liquidGlass,
+      backdropBlur: false,
+      tone: dark ? GlassTone.dark : GlassTone.light,
+      borderRadius: borderRadius,
+      fallbackColor: dark ? const Color(0xB8202428) : const Color(0xB8F1F3F4),
+      child: child,
+    );
+  }
+}
+
 class GlassSurface extends StatelessWidget {
   const GlassSurface({
     super.key,

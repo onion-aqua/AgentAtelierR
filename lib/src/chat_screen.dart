@@ -159,12 +159,14 @@ class ChatScreen extends StatefulWidget {
     super.key,
     required this.controller,
     required this.onMenuPressed,
+    required this.onShopPressed,
     required this.hideUi,
     this.onFullscreenChanged,
   });
 
   final AppController controller;
   final VoidCallback onMenuPressed;
+  final VoidCallback onShopPressed;
   final bool hideUi;
   final ValueChanged<bool>? onFullscreenChanged;
   final bool pageActive;
@@ -2803,6 +2805,21 @@ class _ChatScreenState extends State<ChatScreen> {
         ),
         sharedContext: sharedContext,
       );
+      // Singing is deliberately opt-in: ordinary dialogue never pays for
+      // this extra planner request and is always synthesized as speech.
+      final singingPlanning = _planSingingForReply(
+        text,
+        reply,
+        (messages) => _aiClient.complete(
+          performancePlanning: true,
+          provider: requestProvider,
+          baseUrl: requestBaseUrl,
+          apiKey: apiKey,
+          model: requestModel,
+          lightweight: true,
+          messages: messages,
+        ),
+      );
       var performanceText = PerformancePlanner.withoutControls(reply);
       Map<String, dynamic>? stateProposal;
       final stateRevision = widget.controller.dataRevision;
@@ -2882,6 +2899,11 @@ class _ChatScreenState extends State<ChatScreen> {
         } on FormatException catch (error) {
           RuntimeLog.instance.warning('TTS', '语音规划与台词不匹配，回退本地规则：$error');
         }
+      }
+      final singingPlan = await singingPlanning;
+      if (!mounted || generation != _replyGeneration) return;
+      if (singingPlan != null) {
+        performanceText = singingPlan.apply(performanceText);
       }
       await _playTtsIfConfigured(performanceText, displaySource: reply);
       if (generation != _replyGeneration) return;
@@ -3203,6 +3225,56 @@ class _ChatScreenState extends State<ChatScreen> {
       return plan;
     } on Object catch (error) {
       RuntimeLog.instance.warning('SpeechPlanner', '语音演出规划失败，回退本地规则：$error');
+      return null;
+    }
+  }
+
+  bool _isStrongSingingRequest(String input) {
+    if (widget.controller.ttsProvider != TtsProvider.fishAudio ||
+        !widget.controller.fishTtsEnabled) {
+      return false;
+    }
+    final normalized = input.trim().toLowerCase();
+    if (normalized.isEmpty ||
+        RegExp(r'不要唱|别唱|不用唱|不要哼|别哼|不会唱|唱得不好|don.?t sing|do not sing|no singing')
+            .hasMatch(normalized)) {
+      return false;
+    }
+    final singingIntent = RegExp(
+      r'唱歌|唱一首|唱首歌|唱给我|唱出来|歌唱|演唱|哼唱|哼一段|用歌声|唱段|sing(?:ing)?|sing a song|sing for me|hum(?:ming)?',
+    ).hasMatch(normalized);
+    if (!singingIntent) return false;
+    final explicitRequest = RegExp(
+      r'请|给我|为我|现在|能不能|可以吗|想听|来一段|来首|唱歌给我|唱给我听|please|can you|i want you to|sing for me|sing a song',
+    ).hasMatch(normalized);
+    final bareCommand = RegExp(
+      r'(?:^|[，,。！？!\s])(唱歌|哼唱|演唱|sing|hum)(?:吧|一下|给我|$)',
+    ).hasMatch(normalized);
+    return explicitRequest || bareCommand;
+  }
+
+  Future<SingingPlan?> _planSingingForReply(
+    String userInput,
+    String reply,
+    AuxiliaryCompletion complete,
+  ) async {
+    if (!_isStrongSingingRequest(userInput)) return null;
+    try {
+      if ((await _secretStore.readTtsKey(widget.controller.ttsProvider))
+          .isEmpty) {
+        return null;
+      }
+      RuntimeLog.instance.info('SingingPlanner', '明确歌唱请求，独立歌唱标签规划开始');
+      final plan = await SingingPlannerTool()
+          .plan(userInput: userInput, source: reply, complete: complete)
+          .timeout(const Duration(seconds: 3));
+      RuntimeLog.instance.info(
+        'SingingPlanner',
+        '歌唱标签规划完成：${plan.tagsBySegment}',
+      );
+      return plan;
+    } on Object catch (error) {
+      RuntimeLog.instance.warning('SingingPlanner', '歌唱标签规划失败，回退普通语音：$error');
       return null;
     }
   }
@@ -4940,12 +5012,14 @@ class _ChatScreenState extends State<ChatScreen> {
             top: 126,
             child: _CharacterToolCluster(
               liquidGlass: widget.controller.liquidGlassChatUi,
+              language: widget.controller.interfaceLanguage,
               expanded: _characterToolsExpanded,
               onToggle: () => setState(
                 () => _characterToolsExpanded = !_characterToolsExpanded,
               ),
               onMotionPressed: _showMotionPicker,
               onAppearancePressed: _showAppearancePicker,
+              onShopPressed: widget.onShopPressed,
             ),
           ),
         if (!widget.hideUi && !_appearance.animated)
@@ -5275,6 +5349,9 @@ class _TtsVoiceModeMenuState extends State<_TtsVoiceModeMenu> {
                 onLongPress: TtsVoiceMode.values[index] == TtsVoiceMode.asmr
                     ? () {
                         _removeOverlay();
+                        // Commit the visible mode first, then enter the
+                        // dedicated continuous ASMR page.
+                        widget.onModeSelected(TtsVoiceMode.asmr);
                         widget.onContinuousAsmr();
                       }
                     : null,
@@ -5729,17 +5806,21 @@ class _RoundIcon extends StatelessWidget {
 class _CharacterToolCluster extends StatelessWidget {
   const _CharacterToolCluster({
     required this.liquidGlass,
+    required this.language,
     required this.expanded,
     required this.onToggle,
     required this.onMotionPressed,
     required this.onAppearancePressed,
+    required this.onShopPressed,
   });
 
   final bool liquidGlass;
+  final AppLanguage language;
   final bool expanded;
   final VoidCallback onToggle;
   final VoidCallback onMotionPressed;
   final VoidCallback onAppearancePressed;
+  final VoidCallback onShopPressed;
 
   @override
   Widget build(BuildContext context) {
@@ -5747,7 +5828,13 @@ class _CharacterToolCluster extends StatelessWidget {
       children: [
         _CharacterToolButton(
           liquidGlass: liquidGlass,
-          tooltip: expanded ? '收起角色工具' : '展开角色工具',
+          tooltip: expanded
+              ? language.text(
+                  '收起角色工具',
+                  'Close character tools',
+                  'キャラクターツールを閉じる',
+                )
+              : language.text('展开角色工具', 'Open character tools', 'キャラクターツールを開く'),
           icon: expanded ? Icons.close_rounded : Icons.auto_fix_high_outlined,
           onPressed: onToggle,
         ),
@@ -5757,15 +5844,21 @@ class _CharacterToolCluster extends StatelessWidget {
           children: [
             _CharacterToolButton(
               liquidGlass: liquidGlass,
-              tooltip: '动作',
+              tooltip: language.text('动作', 'Motion', '動作'),
               icon: Icons.animation_outlined,
               onPressed: onMotionPressed,
             ),
             _CharacterToolButton(
               liquidGlass: liquidGlass,
-              tooltip: '服装与姿态',
+              tooltip: language.text('服装与姿态', 'Outfit and posture', '衣装と姿勢'),
               icon: Icons.checkroom_outlined,
               onPressed: onAppearancePressed,
+            ),
+            _CharacterToolButton(
+              liquidGlass: liquidGlass,
+              tooltip: language.text('商店', 'Shop', 'ショップ'),
+              icon: Icons.storefront_outlined,
+              onPressed: onShopPressed,
             ),
           ],
         ),

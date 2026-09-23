@@ -252,14 +252,15 @@ class _MimoTtsSettingsDialogState extends State<MimoTtsSettingsDialog> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              SwitchListTile(
-                contentPadding: EdgeInsets.zero,
-                value: _enabled,
-                onChanged: _busy
-                    ? null
-                    : (value) => setState(() => _enabled = value),
-                title: Text(
-                  t('AI 回复后自动播放', 'Play replies automatically', '返信を自動再生'),
+              SettingsOptionCard(
+                child: SwitchListTile(
+                  value: _enabled,
+                  onChanged: _busy
+                      ? null
+                      : (value) => setState(() => _enabled = value),
+                  title: Text(
+                    t('AI 回复后自动播放', 'Play replies automatically', '返信を自動再生'),
+                  ),
                 ),
               ),
               _field(
@@ -398,14 +399,15 @@ class _MimoTtsSettingsDialogState extends State<MimoTtsSettingsDialog> {
                         () => _density = TtsCueDensity.values[v.round()],
                       ),
               ),
-              SwitchListTile(
-                contentPadding: EdgeInsets.zero,
-                value: _previewAsmr,
-                onChanged: _busy
-                    ? null
-                    : (v) => setState(() => _previewAsmr = v),
-                title: Text(
-                  t('以 ASMR 模式试音', 'Preview in ASMR mode', 'ASMR で試聴'),
+              SettingsOptionCard(
+                child: SwitchListTile(
+                  value: _previewAsmr,
+                  onChanged: _busy
+                      ? null
+                      : (v) => setState(() => _previewAsmr = v),
+                  title: Text(
+                    t('以 ASMR 模式试音', 'Preview in ASMR mode', 'ASMR で試聴'),
+                  ),
                 ),
               ),
               Container(

@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/cupertino.dart';
 import 'package:audioplayers/audioplayers.dart';
 
 import 'app_controller.dart';
@@ -9,6 +10,20 @@ import 'app_localization.dart';
 import 'ai_services.dart';
 import 'chat_segments.dart';
 import 'mimo_tts_client.dart';
+import 'glass_ui.dart';
+
+DateTime asmrDeadline(DateTime now, Duration duration, TimeOfDay? time) {
+  if (time == null) return now.add(duration);
+  final target = DateTime(now.year, now.month, now.day, time.hour, time.minute);
+  return target.isAfter(now) ? target : target.add(const Duration(days: 1));
+}
+
+class _AsmrClip {
+  _AsmrClip(this.path, this.title);
+  final String path;
+  String title;
+  Duration? duration;
+}
 
 class ContinuousAsmrPage extends StatefulWidget {
   const ContinuousAsmrPage({super.key, required this.controller});
@@ -26,7 +41,12 @@ class _ContinuousAsmrPageState extends State<ContinuousAsmrPage> {
   Completer<void>? _playback;
   int _generation = 0;
   bool _running = false;
-  int _minutes = 30;
+  Duration _duration = const Duration(minutes: 15);
+  bool _timerEnabled = false;
+  bool _atTime = false;
+  bool _replaying = false;
+  final _clips = <_AsmrClip>[];
+  _AsmrClip? _activeClip;
   DateTime? _deadline;
   TimeOfDay? _time;
   String _status = '';
@@ -34,16 +54,44 @@ class _ContinuousAsmrPageState extends State<ContinuousAsmrPage> {
   AppController get c => widget.controller;
   String t(String zh, String en, String ja) =>
       c.interfaceLanguage.text(zh, en, ja);
+
+  /// Keeps each ASMR clip short enough for quick synthesis and a natural
+  /// hand-off to the next clip. Provider tags are intentionally preserved.
+  String _shortenAsmrText(String value) {
+    var normalized = value.replaceAll(RegExp(r'\s+'), ' ').trim();
+    if (normalized.isEmpty) return normalized;
+    final chunks = <String>[];
+    final current = StringBuffer();
+    for (final character in normalized.split('')) {
+      current.write(character);
+      if ('。！？!?'.contains(character) && current.length > 8) {
+        chunks.add(current.toString().trim());
+        current.clear();
+        if (chunks.length == 2) break;
+      }
+    }
+    if (chunks.length < 2 && current.isNotEmpty) {
+      chunks.add(current.toString().trim());
+    }
+    var result = chunks.take(2).join(' ');
+    if (result.isEmpty) result = normalized;
+    if (result.length > 72) {
+      final cutoff = result.lastIndexOf(RegExp(r'[。！？!?]'), 72);
+      result = result.substring(0, cutoff > 20 ? cutoff + 1 : 72).trim();
+    }
+    return result;
+  }
+
   @override
   void initState() {
     super.initState();
     _clock = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (_running &&
+      if ((_running || _replaying) &&
           _deadline != null &&
           !DateTime.now().isBefore(_deadline!)) {
         _stop();
         setState(() => _status = t('定时结束', 'Timer finished', 'タイマー終了'));
-      } else if (_running) {
+      } else if (_running || _replaying) {
         setState(() {});
       }
     });
@@ -52,13 +100,27 @@ class _ContinuousAsmrPageState extends State<ContinuousAsmrPage> {
   Future<void> _stop() async {
     _generation++;
     _running = false;
+    _replaying = false;
+    _activeClip = null;
+    final playback = _playback;
+    _playback = null;
     await _player.stop();
-    if (_playback != null && !_playback!.isCompleted) _playback!.complete();
+    if (playback != null && !playback.isCompleted) playback.complete();
     if (mounted) setState(() {});
   }
 
   Future<void> _start() async {
-    if (_running || _theme.text.trim().isEmpty) return;
+    if (_running || _replaying || _theme.text.trim().isEmpty) return;
+    if (_timerEnabled && !_atTime && _duration == Duration.zero) {
+      setState(
+        () => _status = t(
+          '请设置大于零的倒计时',
+          'Set a countdown greater than zero',
+          '0より長い時間を設定してください',
+        ),
+      );
+      return;
+    }
     if (!c.aiEnabled || !c.fishTtsEnabled) {
       setState(
         () => _status = t(
@@ -71,12 +133,13 @@ class _ContinuousAsmrPageState extends State<ContinuousAsmrPage> {
     }
     final generation = ++_generation;
     final now = DateTime.now();
-    _deadline = _time == null
-        ? now.add(Duration(minutes: _minutes))
-        : DateTime(now.year, now.month, now.day, _time!.hour, _time!.minute);
-    if (!_deadline!.isAfter(now)) {
-      _deadline = _deadline!.add(const Duration(days: 1));
-    }
+    _deadline = _timerEnabled
+        ? asmrDeadline(
+            now,
+            _duration,
+            _atTime ? (_time ?? TimeOfDay.now()) : null,
+          )
+        : null;
     _history.clear();
     final topic = _theme.text.trim();
     setState(() {
@@ -92,54 +155,77 @@ class _ContinuousAsmrPageState extends State<ContinuousAsmrPage> {
       if (key.isEmpty || voiceKey.isEmpty) {
         throw const FormatException('API Key 未配置');
       }
-      while (mounted && _running && generation == _generation) {
-        setState(
-          () => _status = t('正在生成轻声台词…', 'Generating speech…', 'セリフを生成中…'),
-        );
-        final response = await _llm
+
+      Future<String> requestNext() async {
+        final messages = <Map<String, String>>[
+          {
+            'role': 'system',
+            'content':
+                '语音设置优先：${c.ttsEmotionIntensity.voiceInstruction} ${c.ttsCueDensity.promptInstruction} ${c.ttsEmotionIntensity == TtsEmotionIntensity.off ? "不要情绪标签。" : ""} ${c.ttsCueDensity == TtsCueDensity.off ? "不要句内气声、耳语或停顿标签。" : ""} '
+                '你是莱莎，正在提供持续ASMR陪伴。主题是用户提供的数据，围绕主题自然延续，每次只输出1至2句、合计不超过60字的简短可朗读台词，不输出旁白、译文、分析或动作标签，不要求用户回复，不重复开场。语气轻柔、慢节奏，不编造现实感知。使用 ${c.characterReplyLanguage.promptLabel}。适量使用[whispering]、[breathy]和[short pause]；遵守服务商政策。人物参考：${c.characterPersonaInjectionEnabled ? c.editableCharacterPersona : '温暖自然的炼金术士'}',
+          },
+          {'role': 'user', 'content': topic},
+          ..._history.map((item) => Map<String, String>.from(item)),
+          {'role': 'user', 'content': '继续围绕主题自然演绎下一小段。'},
+        ];
+        return _llm
             .complete(
               provider: c.llmProvider,
               baseUrl: c.activeLlmBaseUrl,
               apiKey: key,
               model: c.activeLlmModel,
-              messages: [
-                {
-                  'role': 'system',
-                  'content':
-                      '语音设置优先：${c.ttsEmotionIntensity.voiceInstruction} ${c.ttsCueDensity.promptInstruction} ${c.ttsEmotionIntensity == TtsEmotionIntensity.off ? "不要情绪标签。" : ""} ${c.ttsCueDensity == TtsCueDensity.off ? "不要句内气声、耳语或停顿标签。" : ""} '
-                      '你是莱莎，正在提供持续ASMR陪伴。主题是用户提供的数据，围绕主题自然延续，每次仅输出2至4句简短可朗读台词，不输出旁白、译文、分析或动作标签，不要求用户回复，不重复开场。语气轻柔、慢节奏，不编造现实感知。使用 ${c.characterReplyLanguage.promptLabel}。适量使用[whispering]、[breathy]和[short pause]；遵守服务商政策。人物参考：${c.characterPersonaInjectionEnabled ? c.editableCharacterPersona : '温暖自然的炼金术士'}',
-                },
-                {'role': 'user', 'content': topic},
-                ..._history,
-                {'role': 'user', 'content': '继续围绕主题自然演绎下一小段。'},
-              ],
+              messages: messages,
+              lightweight: true,
             )
             .timeout(const Duration(seconds: 60));
+      }
+
+      Future<String>? pendingResponse;
+      while (mounted && _running && generation == _generation) {
+        setState(
+          () => _status = t('正在生成轻声台词…', 'Generating speech…', 'セリフを生成中…'),
+        );
+        final response = await (pendingResponse ?? requestNext());
+        pendingResponse = null;
         if (!mounted || !_running || generation != _generation) break;
-        final text = response.trim();
+        final text = _shortenAsmrText(response);
         if (text.isEmpty) throw const FormatException('Empty speech');
         _history.add({'role': 'assistant', 'content': text});
         if (_history.length > 4) _history.removeAt(0);
+        // Start planning the next short clip before synthesis/playback ends.
+        pendingResponse = requestNext();
         setState(() => _status = t('正在合成语音…', 'Synthesizing audio…', '音声合成中…'));
         final path = await _synthesize(text, voiceKey);
+        var retained = false;
         try {
           if (!mounted || !_running || generation != _generation) break;
-          _playback = Completer<void>();
+          final clip = _AsmrClip(path, '$topic · ${_clips.length + 1}');
+          retained = true;
+          setState(() {
+            _clips.add(clip);
+            _activeClip = clip;
+          });
+          if (_clips.length > 50) {
+            final old = _clips.removeAt(0);
+            await _deleteClipFile(old.path);
+          }
+          final playback = Completer<void>();
+          _playback = playback;
           final subscription = _player.onPlayerComplete.listen((_) {
-            if (!_playback!.isCompleted) _playback!.complete();
+            if (!playback.isCompleted) playback.complete();
           });
           try {
             setState(() => _status = t('正在播放', 'Playing', '再生中'));
             await _player.play(DeviceFileSource(path), volume: c.voiceVolume);
-            await _playback!.future.timeout(const Duration(minutes: 10));
+            clip.duration = await _player.getDuration();
+            await playback.future.timeout(const Duration(minutes: 10));
           } finally {
             await subscription.cancel();
           }
           if (!mounted || !_running || generation != _generation) break;
           setState(() => _rounds++);
         } finally {
-          final file = File(path);
-          if (await file.exists()) await file.delete();
+          if (!retained) await _deleteClipFile(path);
         }
       }
     } on Object catch (error) {
@@ -152,6 +238,53 @@ class _ContinuousAsmrPageState extends State<ContinuousAsmrPage> {
           );
         }
       }
+    }
+  }
+
+  Future<void> _deleteClipFile(String path) async {
+    try {
+      final file = File(path);
+      if (await file.exists()) await file.delete();
+    } on FileSystemException {
+      /* Temporary cache cleanup is best effort. */
+    }
+  }
+
+  Future<void> _replay(_AsmrClip clip) async {
+    if (_running || _replaying) await _stop();
+    if (!mounted) return;
+    final generation = ++_generation;
+    final now = DateTime.now();
+    _deadline = _timerEnabled
+        ? asmrDeadline(
+            now,
+            _duration,
+            _atTime ? (_time ?? TimeOfDay.now()) : null,
+          )
+        : null;
+    setState(() {
+      _replaying = true;
+      _activeClip = clip;
+      _status = t('正在播放', 'Playing', '再生中');
+    });
+    final done = Completer<void>();
+    _playback = done;
+    final subscription = _player.onPlayerComplete.listen((_) {
+      if (!done.isCompleted) done.complete();
+    });
+    try {
+      await _player.play(DeviceFileSource(clip.path), volume: c.voiceVolume);
+      clip.duration = await _player.getDuration();
+      await done.future.timeout(const Duration(minutes: 10));
+    } on Object catch (error) {
+      if (mounted && generation == _generation) {
+        setState(
+          () => _status = '${t('播放失败', 'Playback failed', '再生失敗')}: $error',
+        );
+      }
+    } finally {
+      await subscription.cancel();
+      if (mounted && generation == _generation) await _stop();
     }
   }
 
@@ -229,104 +362,257 @@ class _ContinuousAsmrPageState extends State<ContinuousAsmrPage> {
     _generation++;
     _running = false;
     if (_playback != null && !_playback!.isCompleted) _playback!.complete();
-    unawaited(_player.dispose());
+    unawaited(
+      _player.dispose().then((_) async {
+        for (final clip in _clips) {
+          await _deleteClipFile(clip.path);
+        }
+      }),
+    );
     _theme.dispose();
     super.dispose();
   }
 
+  String _clockText(Duration value) {
+    String two(int n) => n.toString().padLeft(2, '0');
+    return '${two(value.inHours)}:${two(value.inMinutes.remainder(60))}:${two(value.inSeconds.remainder(60))}';
+  }
+
   @override
   Widget build(BuildContext context) {
-    final remaining =
-        _deadline?.difference(DateTime.now()).inSeconds.clamp(0, 86400) ?? 0;
-    return Theme(
-      data: ThemeData.dark().copyWith(scaffoldBackgroundColor: Colors.black),
-      child: Scaffold(
-        backgroundColor: Colors.black,
-        appBar: AppBar(
-          backgroundColor: Colors.black,
-          title: Text(t('持续 ASMR', 'Continuous ASMR', '連続ASMR')),
-        ),
-        body: SafeArea(
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.all(24),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                TextField(
-                  controller: _theme,
-                  enabled: !_running,
-                  minLines: 3,
-                  maxLines: 6,
-                  decoration: InputDecoration(
-                    border: const OutlineInputBorder(),
-                    labelText: t('ASMR 主题', 'ASMR topic', 'ASMRテーマ'),
-                  ),
-                ),
-                const SizedBox(height: 20),
-                Text('${c.activeLlmModel} · ${c.ttsProvider.label}'),
-                const SizedBox(height: 12),
-                DropdownButtonFormField<int>(
-                  initialValue: _minutes,
-                  decoration: InputDecoration(
-                    labelText: t(
-                      '倒计时（分钟）',
-                      'Countdown (minutes)',
-                      'カウントダウン（分）',
+    final colors = Theme.of(context).colorScheme;
+    final busy = _running || _replaying;
+    final remaining = _deadline?.difference(DateTime.now()) ?? Duration.zero;
+    return Scaffold(
+      backgroundColor: Theme.of(context).scaffoldBackgroundColor,
+      appBar: AppBar(title: const Text('ASMR')),
+      body: SafeArea(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(20, 8, 20, 24),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(
+                'ASMR',
+                style: Theme.of(context).textTheme.displaySmall
+                    ?.copyWith(fontWeight: FontWeight.w600),
+              ),
+              const SizedBox(height: 18),
+              Row(
+                children: [
+                  Expanded(
+                    child: GlassSurface(
+                      liquidGlass: c.liquidGlassChatUi,
+                      tone: Theme.of(context).brightness == Brightness.dark
+                          ? GlassTone.dark
+                          : GlassTone.light,
+                      borderRadius: BorderRadius.circular(32),
+                      child: TextField(
+                        controller: _theme,
+                        enabled: !busy,
+                        minLines: 1,
+                        maxLines: 3,
+                        decoration: InputDecoration(
+                          hintText: t(
+                            '输入 ASMR 主题',
+                            'Enter ASMR topic',
+                            'ASMRテーマを入力',
+                          ),
+                          border: InputBorder.none,
+                          enabledBorder: InputBorder.none,
+                          focusedBorder: InputBorder.none,
+                          contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 22,
+                            vertical: 18,
+                          ),
+                        ),
+                      ),
                     ),
                   ),
-                  items: [
-                    for (final value in [5, 15, 30, 60, 90, 120])
-                      DropdownMenuItem(value: value, child: Text('$value')),
-                  ],
-                  onChanged: _running
-                      ? null
-                      : (value) => setState(() {
-                          _minutes = value!;
-                          _time = null;
-                        }),
-                ),
-                TextButton.icon(
-                  onPressed: _running
-                      ? null
-                      : () async {
-                          final picked = await showTimePicker(
-                            context: context,
-                            initialTime: TimeOfDay.now(),
-                          );
-                          if (picked != null && mounted) {
-                            setState(() => _time = picked);
-                          }
-                        },
-                  icon: const Icon(Icons.schedule),
-                  label: Text(
-                    _time == null
-                        ? t('或选择停止时间', 'Or choose stop time', '終了時刻を選択')
-                        : _time!.format(context),
+                  const SizedBox(width: 12),
+                  FilledButton(
+                    onPressed: busy ? null : _start,
+                    child: Text(t('生成', 'Generate', '生成')),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 22),
+              SegmentedButton<bool>(
+                segments: [
+                  ButtonSegment(
+                    value: false,
+                    label: Text(t('倒计时关闭', 'Countdown', 'カウントダウン')),
+                    icon: const Icon(Icons.timer_outlined),
+                  ),
+                  ButtonSegment(
+                    value: true,
+                    label: Text(t('指定时刻关闭', 'At time', '終了時刻')),
+                    icon: const Icon(Icons.schedule),
+                  ),
+                ],
+                selected: {_atTime},
+                onSelectionChanged: busy
+                    ? null
+                    : (value) => setState(() => _atTime = value.single),
+              ),
+              const SizedBox(height: 12),
+              IgnorePointer(
+                ignoring: busy,
+                child: SizedBox(
+                  height: 200,
+                  child: CupertinoTheme(
+                    data: CupertinoThemeData(
+                      brightness: Theme.of(context).brightness,
+                      primaryColor: colors.primary,
+                      textTheme: CupertinoTextThemeData(
+                        dateTimePickerTextStyle: TextStyle(
+                          color: colors.onSurface,
+                          fontSize: 26,
+                        ),
+                      ),
+                    ),
+                    child: _atTime
+                        ? CupertinoDatePicker(
+                            key: const ValueKey('asmr-clock'),
+                            mode: CupertinoDatePickerMode.time,
+                            use24hFormat: true,
+                            initialDateTime: DateTime(
+                              2026,
+                              1,
+                              1,
+                              _time?.hour ?? DateTime.now().hour,
+                              _time?.minute ?? DateTime.now().minute,
+                            ),
+                            onDateTimeChanged: (value) => setState(
+                              () => _time = TimeOfDay.fromDateTime(value),
+                            ),
+                          )
+                        : CupertinoTimerPicker(
+                            key: const ValueKey('asmr-countdown'),
+                            mode: CupertinoTimerPickerMode.hms,
+                            initialTimerDuration: _duration,
+                            onTimerDurationChanged: (value) =>
+                                setState(() => _duration = value),
+                          ),
                   ),
                 ),
+              ),
+              SwitchListTile.adaptive(
+                contentPadding: EdgeInsets.zero,
+                secondary: const Icon(Icons.timer_outlined),
+                title: Text(
+                  _atTime
+                      ? '${t('到时间关闭', 'Stop at', '終了時刻')} · ${(_time ?? TimeOfDay.now()).format(context)}'
+                      : '${t('定时关闭', 'Sleep timer', 'タイマー')} · ${_clockText(_duration)}',
+                ),
+                subtitle: _atTime
+                    ? Text(
+                        t(
+                          '已过的时刻按明天计算',
+                          'Past times mean tomorrow',
+                          '過ぎた時刻は翌日になります',
+                        ),
+                      )
+                    : null,
+                value: _timerEnabled,
+                onChanged: busy
+                    ? null
+                    : (value) => setState(() => _timerEnabled = value),
+              ),
+              if (busy && _deadline != null)
                 Text(
-                  t(
-                    '定时结束后停止生成和播放，保留黑屏；不关闭应用。',
-                    'Stops generation and playback at the deadline; keeps the black screen.',
-                    '終了時に生成と再生を停止し、黒い画面を維持します。',
-                  ),
+                  _clockText(remaining.isNegative ? Duration.zero : remaining),
+                  textAlign: TextAlign.center,
+                  style: Theme.of(context).textTheme.headlineSmall,
                 ),
-                const SizedBox(height: 24),
-                if (_running)
-                  Text(
-                    '${remaining ~/ 60}:${(remaining % 60).toString().padLeft(2, '0')}',
+              if (_status.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                  child: Text(_status, textAlign: TextAlign.center),
+                ),
+              const SizedBox(height: 16),
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      t('生成的语音', 'Generated audio', '生成した音声'),
+                      style: Theme.of(context).textTheme.titleLarge,
+                    ),
                   ),
-                Text('${t('已播放', 'Played', '再生済み')} $_rounds'),
-                Text(_status),
-                const SizedBox(height: 20),
-                FilledButton(
-                  onPressed: _running ? _stop : _start,
+                  Text('${_clips.length}'),
+                ],
+              ),
+              const SizedBox(height: 8),
+              if (_clips.isEmpty)
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 28),
                   child: Text(
-                    _running ? t('停止', 'Stop', '停止') : t('开始', 'Start', '開始'),
+                    t(
+                      '输入主题后开始生成，语音会显示在这里',
+                      'Generate a topic to see audio here',
+                      'テーマから生成すると音声がここに表示されます',
+                    ),
+                    style: TextStyle(color: colors.onSurfaceVariant),
                   ),
                 ),
-              ],
-            ),
+              for (final clip in _clips.reversed)
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: IconButton.filledTonal(
+                    onPressed: () => identical(_activeClip, clip) && busy
+                        ? _stop()
+                        : _replay(clip),
+                    icon: Icon(
+                      identical(_activeClip, clip) && busy
+                          ? Icons.stop_rounded
+                          : Icons.play_arrow_rounded,
+                    ),
+                  ),
+                  title: Text(
+                    clip.title,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  subtitle: clip.duration == null
+                      ? null
+                      : Text(_clockText(clip.duration!)),
+                  trailing: IconButton(
+                    tooltip: t('删除', 'Delete', '削除'),
+                    icon: const Icon(Icons.delete_outline),
+                    onPressed: () async {
+                      if (identical(_activeClip, clip)) await _stop();
+                      if (!mounted) return;
+                      setState(() => _clips.remove(clip));
+                      await _deleteClipFile(clip.path);
+                    },
+                  ),
+                ),
+              const SizedBox(height: 18),
+              Center(
+                child: IconButton.filled(
+                  iconSize: 48,
+                  padding: const EdgeInsets.all(20),
+                  tooltip: busy ? t('停止', 'Stop', '停止') : t('播放', 'Play', '再生'),
+                  onPressed: busy
+                      ? _stop
+                      : () =>
+                            _clips.isNotEmpty ? _replay(_clips.last) : _start(),
+                  icon: Icon(
+                    busy ? Icons.stop_rounded : Icons.play_arrow_rounded,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 16),
+              Text(
+                t(
+                  '到时停止生成和播放，不退出应用。语音仅保留本次页面会话，最多50条。',
+                  'Timer stops generation and playback, not the app. Up to 50 clips are kept for this page session.',
+                  '終了時に生成と再生を停止します。アプリは終了しません。音声はこの画面の利用中のみ最大50件保持します。',
+                ),
+                textAlign: TextAlign.center,
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+            ],
           ),
         ),
       ),

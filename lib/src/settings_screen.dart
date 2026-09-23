@@ -17,12 +17,14 @@ export 'runtime_log_screen.dart';
 import 'platform_slider.dart';
 import 'glass_ui.dart';
 import 'mimo_tts_settings.dart';
+import 'memory_timeline.dart';
 import 'settings_slots.dart';
 import 'settings_slot_selector.dart';
 import 'openai_settings_dialog.dart';
 import 'legacy_data_converter.dart';
 import 'settings_detail_page.dart';
 import 'conversation_collections_page.dart';
+import 'conversation_history_page.dart';
 
 String _activeTtsModel(AppController controller) =>
     switch (controller.ttsProvider) {
@@ -31,6 +33,24 @@ String _activeTtsModel(AppController controller) =>
       TtsProvider.generic => controller.genericTtsModel,
       TtsProvider.mimo => controller.mimoTts.model,
     };
+
+// Keep the category rows visually consistent with the main scene's controls.
+// Only direct tiles are wrapped; embedded cards and section headings retain
+// their own layout and do not acquire a second glass layer.
+List<Widget> _settingsTiles(
+  BuildContext context,
+  bool liquidGlass,
+  List<Widget> entries,
+) => [
+  for (final entry in entries)
+    if (entry is ListTile || entry is SwitchListTile)
+      Padding(
+        padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+        child: GlassContentCard(liquidGlass: liquidGlass, child: entry),
+      )
+    else
+      entry,
+];
 
 enum _SettingsCategory { appearance, audio, profile, ai, roleplay, data, about }
 
@@ -92,7 +112,7 @@ extension on _SettingsCategory {
       'Memory, local import, export and chat history',
       '長期記憶、データの読み込み・書き出し、会話履歴',
     ),
-    _SettingsCategory.about => 'AgentAtelierR · 1.0.3 beta1',
+    _SettingsCategory.about => 'AgentAtelierR · 1.0.3 beta2',
   };
 
   IconData get icon => switch (this) {
@@ -172,6 +192,7 @@ class SettingsScreenState extends State<SettingsScreen> {
     return Scaffold(
       backgroundColor: Colors.transparent,
       appBar: AppBar(
+        backgroundColor: glassPageHeaderColor(context),
         automaticallyImplyLeading: false,
         title: Padding(
           padding: const EdgeInsets.only(left: 58),
@@ -209,9 +230,54 @@ class SettingsScreenState extends State<SettingsScreen> {
           child: ListView(
             key: PageStorageKey('settings-${_category?.name ?? 'home'}'),
             padding: const EdgeInsets.only(bottom: 32),
-            children: [
+            children: _settingsTiles(context, controller.liquidGlassChatUi, [
               if (_category == null) ...[
                 const SizedBox(height: 12),
+                Padding(
+                  key: const ValueKey('settings-character-switcher'),
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
+                  child: GlassSurface(
+                    liquidGlass: controller.liquidGlassChatUi,
+                    backdropBlur: false,
+                    borderRadius: BorderRadius.circular(24),
+                    tone: Theme.of(context).brightness == Brightness.dark
+                        ? GlassTone.dark
+                        : GlassTone.light,
+                    fallbackColor:
+                        Theme.of(context).brightness == Brightness.dark
+                        ? const Color(0xB8202428)
+                        : const Color(0xB8F1F3F4),
+                    child: Padding(
+                      padding: const EdgeInsets.all(8),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: _CharacterChoice(
+                              name: language.text('莱莎', 'Ryza', 'ライザ'),
+                              asset: 'assets/images/character_switch/ryza.png',
+                              selected: true,
+                              onTap: null,
+                            ),
+                          ),
+                          Container(
+                            width: 1,
+                            height: 76,
+                            color: Colors.white.withValues(alpha: .20),
+                          ),
+                          Expanded(
+                            child: _CharacterChoice(
+                              name: language.text('苏菲', 'Sophie', 'ソフィー'),
+                              asset:
+                                  'assets/images/character_switch/sophie.png',
+                              selected: false,
+                              onTap: null,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
                 for (final category in _SettingsCategory.values)
                   Padding(
                     padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
@@ -981,13 +1047,21 @@ class SettingsScreenState extends State<SettingsScreen> {
                 _SectionLabel(language.text('数据', 'Data', 'データ')),
                 ListTile(
                   leading: const Icon(Icons.history_outlined),
-                  title: Text(language.text('聊天记录', 'Chat history', '会話履歴')),
+                  title: Text(
+                    language.text('历史对话', 'Conversation history', '会話履歴'),
+                  ),
                   subtitle: Text(
                     language.text(
-                      '本机保存 ${controller.messages.length} 条消息',
-                      '${controller.messages.length} messages stored locally',
-                      '${controller.messages.length}件のメッセージを端末に保存',
+                      '按存档查看和搜索用户、旁白与莱莎的对话',
+                      'Browse and search user, narration and Ryza dialogue by save',
+                      'セーブ別にユーザー・ナレーション・ライザの会話を検索',
                     ),
+                  ),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => _openDetailPage<void>(
+                    context: context,
+                    builder: (_) =>
+                        ConversationHistoryPage(controller: controller),
                   ),
                 ),
                 ListTile(
@@ -1068,9 +1142,9 @@ class SettingsScreenState extends State<SettingsScreen> {
                   title: const Text('AgentAtelierR'),
                   subtitle: Text(
                     language.text(
-                      '版本 1.0.3 beta1 测试版',
-                      'Version 1.0.3 beta1',
-                      'バージョン 1.0.3 beta1',
+                      '版本 1.0.3 beta2 测试版',
+                      'Version 1.0.3 beta2',
+                      'バージョン 1.0.3 beta2',
                     ),
                   ),
                 ),
@@ -1090,7 +1164,7 @@ class SettingsScreenState extends State<SettingsScreen> {
                   ),
                 ),
               ],
-            ],
+            ]),
           ),
         ),
       ),
@@ -1103,6 +1177,7 @@ class SettingsScreenState extends State<SettingsScreen> {
       builder: (context) => _ThemeSettingsDialog(
         initialValue: controller.themePreference,
         language: controller.interfaceLanguage,
+        liquidGlass: controller.liquidGlassChatUi,
       ),
     );
     if (selected != null) controller.setThemePreference(selected);
@@ -1206,102 +1281,114 @@ class SettingsScreenState extends State<SettingsScreen> {
             child: SingleChildScrollView(
               child: Column(
                 mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    language.text(
-                      '即时应用，可搭配浅色、暗色或跟随系统。',
-                      'Applies immediately with light, dark or system appearance.',
-                      '即時反映。ライト・ダーク・システム設定と組み合わせられます。',
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  for (final accent in AppAccentTheme.values)
-                    ListTile(
-                      key: ValueKey('accent-${accent.name}'),
-                      contentPadding: EdgeInsets.zero,
-                      leading: CircleAvatar(
-                        backgroundColor: accent.color,
-                        child: controller.accentTheme == accent
-                            ? const Icon(
-                                Icons.check_rounded,
-                                color: Colors.white,
-                              )
-                            : null,
+                children: _settingsTiles(
+                  context,
+                  controller.liquidGlassChatUi,
+                  [
+                    Text(
+                      language.text(
+                        '即时应用，可搭配浅色、暗色或跟随系统。',
+                        'Applies immediately with light, dark or system appearance.',
+                        '即時反映。ライト・ダーク・システム設定と組み合わせられます。',
                       ),
-                      title: Text(accent.label(language)),
-                      selected: controller.accentTheme == accent,
-                      onTap: () => controller.setAccentTheme(accent),
                     ),
-                  const Divider(),
-                  Text(language.text('文字颜色', 'Text color', '文字色')),
-                  ListTile(
-                    contentPadding: EdgeInsets.zero,
-                    title: Text(
-                      language.text('对话字号', 'Dialogue text size', '会話の文字サイズ'),
-                    ),
-                    subtitle: Slider(
-                      value: controller.dialogueFontScale,
-                      min: .85,
-                      max: 1.35,
-                      divisions: 10,
-                      label: '${(controller.dialogueFontScale * 100).round()}%',
-                      onChanged: controller.setDialogueFontScale,
-                    ),
-                  ),
-                  for (final choice in AppTextColor.values)
-                    ListTile(
-                      key: ValueKey('text-choice-${choice.name}'),
-                      leading: CircleAvatar(
-                        backgroundColor: choice == AppTextColor.black
-                            ? Colors.black
-                            : choice == AppTextColor.white
-                            ? Colors.white
-                            : Theme.of(context).colorScheme.primary,
-                        child:
-                            controller.textColorChoice == choice &&
-                                (choice != AppTextColor.theme ||
-                                    controller.textColorTheme == null)
-                            ? Icon(
-                                Icons.check,
-                                color: choice == AppTextColor.white
-                                    ? Colors.black
-                                    : Colors.white,
-                              )
-                            : null,
-                      ),
-                      title: Text(switch (choice) {
-                        AppTextColor.theme => language.text(
-                          '跟随主题',
-                          'Follow theme',
-                          'テーマに合わせる',
+                    const SizedBox(height: 12),
+                    for (final accent in AppAccentTheme.values)
+                      ListTile(
+                        key: ValueKey('accent-${accent.name}'),
+                        leading: CircleAvatar(
+                          backgroundColor: accent.color,
+                          child: controller.accentTheme == accent
+                              ? const Icon(
+                                  Icons.check_rounded,
+                                  color: Colors.white,
+                                )
+                              : null,
                         ),
-                        AppTextColor.black => language.text('黑色', 'Black', '黒'),
-                        AppTextColor.white => language.text('白色', 'White', '白'),
-                      }),
-                      selected:
-                          controller.textColorChoice == choice &&
-                          (choice != AppTextColor.theme ||
-                              controller.textColorTheme == null),
-                      onTap: () => controller.setTextColorChoice(choice),
-                    ),
-                  for (final color in AppAccentTheme.values)
-                    ListTile(
-                      key: ValueKey('text-color-${color.name}'),
-                      leading: CircleAvatar(
-                        backgroundColor: color.color,
-                        child:
-                            controller.textColorChoice == AppTextColor.theme &&
-                                controller.textColorTheme == color
-                            ? const Icon(Icons.check, color: Colors.white)
-                            : null,
+                        title: Text(accent.label(language)),
+                        selected: controller.accentTheme == accent,
+                        onTap: () => controller.setAccentTheme(accent),
                       ),
-                      title: Text(color.label(language)),
-                      selected:
-                          controller.textColorChoice == AppTextColor.theme &&
-                          controller.textColorTheme == color,
-                      onTap: () => controller.setTextColorTheme(color),
+                    const Divider(),
+                    Text(language.text('文字颜色', 'Text color', '文字色')),
+                    ListTile(
+                      title: Text(
+                        language.text('对话字号', 'Dialogue text size', '会話の文字サイズ'),
+                      ),
+                      subtitle: Slider(
+                        value: controller.dialogueFontScale,
+                        min: .85,
+                        max: 1.35,
+                        divisions: 10,
+                        label:
+                            '${(controller.dialogueFontScale * 100).round()}%',
+                        onChanged: controller.setDialogueFontScale,
+                      ),
                     ),
-                ],
+                    for (final choice in AppTextColor.values)
+                      ListTile(
+                        key: ValueKey('text-choice-${choice.name}'),
+                        leading: CircleAvatar(
+                          backgroundColor: choice == AppTextColor.black
+                              ? Colors.black
+                              : choice == AppTextColor.white
+                              ? Colors.white
+                              : Theme.of(context).colorScheme.primary,
+                          child:
+                              controller.textColorChoice == choice &&
+                                  (choice != AppTextColor.theme ||
+                                      controller.textColorTheme == null)
+                              ? Icon(
+                                  Icons.check,
+                                  color: choice == AppTextColor.white
+                                      ? Colors.black
+                                      : Colors.white,
+                                )
+                              : null,
+                        ),
+                        title: Text(switch (choice) {
+                          AppTextColor.theme => language.text(
+                            '跟随主题',
+                            'Follow theme',
+                            'テーマに合わせる',
+                          ),
+                          AppTextColor.black => language.text(
+                            '黑色',
+                            'Black',
+                            '黒',
+                          ),
+                          AppTextColor.white => language.text(
+                            '白色',
+                            'White',
+                            '白',
+                          ),
+                        }),
+                        selected:
+                            controller.textColorChoice == choice &&
+                            (choice != AppTextColor.theme ||
+                                controller.textColorTheme == null),
+                        onTap: () => controller.setTextColorChoice(choice),
+                      ),
+                    for (final color in AppAccentTheme.values)
+                      ListTile(
+                        key: ValueKey('text-color-${color.name}'),
+                        leading: CircleAvatar(
+                          backgroundColor: color.color,
+                          child:
+                              controller.textColorChoice ==
+                                      AppTextColor.theme &&
+                                  controller.textColorTheme == color
+                              ? const Icon(Icons.check, color: Colors.white)
+                              : null,
+                        ),
+                        title: Text(color.label(language)),
+                        selected:
+                            controller.textColorChoice == AppTextColor.theme &&
+                            controller.textColorTheme == color,
+                        onTap: () => controller.setTextColorTheme(color),
+                      ),
+                  ],
+                ),
               ),
             ),
           ),
@@ -1338,11 +1425,12 @@ class SettingsScreenState extends State<SettingsScreen> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                SwitchListTile(
-                  contentPadding: EdgeInsets.zero,
-                  value: enabled,
-                  onChanged: (value) => setDialogState(() => enabled = value),
-                  title: const Text('设为当前 AI 对话服务'),
+                SettingsOptionCard(
+                  child: SwitchListTile(
+                    value: enabled,
+                    onChanged: (value) => setDialogState(() => enabled = value),
+                    title: const Text('设为当前 AI 对话服务'),
+                  ),
                 ),
                 TextField(
                   controller: baseUrl,
@@ -1434,12 +1522,13 @@ class SettingsScreenState extends State<SettingsScreen> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              SwitchListTile(
-                contentPadding: EdgeInsets.zero,
-                value: enabled,
-                onChanged: (value) => setDialogState(() => enabled = value),
-                title: const Text('启用高级推理参数'),
-                subtitle: const Text('默认关闭；关闭时不向接口发送额外参数'),
+              SettingsOptionCard(
+                child: SwitchListTile(
+                  value: enabled,
+                  onChanged: (value) => setDialogState(() => enabled = value),
+                  title: const Text('启用高级推理参数'),
+                  subtitle: const Text('默认关闭；关闭时不向接口发送额外参数'),
+                ),
               ),
               const SizedBox(height: 8),
               DropdownButtonFormField<ReasoningEffort>(
@@ -1572,13 +1661,14 @@ class SettingsScreenState extends State<SettingsScreen> {
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    SwitchListTile(
-                      contentPadding: EdgeInsets.zero,
-                      value: enabled,
-                      onChanged: (value) =>
-                          setDialogState(() => enabled = value),
-                      title: const Text('AI 回复后自动播放'),
-                      subtitle: const Text('只合成“莱莎：”台词，旁白不会发声'),
+                    SettingsOptionCard(
+                      child: SwitchListTile(
+                        value: enabled,
+                        onChanged: (value) =>
+                            setDialogState(() => enabled = value),
+                        title: const Text('AI 回复后自动播放'),
+                        subtitle: const Text('只合成“莱莎：”台词，旁白不会发声'),
+                      ),
                     ),
                     _TtsEmotionSlider(
                       value: emotionIntensity,
@@ -1881,11 +1971,13 @@ class SettingsScreenState extends State<SettingsScreen> {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  SwitchListTile(
-                    contentPadding: EdgeInsets.zero,
-                    value: enabled,
-                    onChanged: (value) => setDialogState(() => enabled = value),
-                    title: const Text('AI 回复后自动播放'),
+                  SettingsOptionCard(
+                    child: SwitchListTile(
+                      value: enabled,
+                      onChanged: (value) =>
+                          setDialogState(() => enabled = value),
+                      title: const Text('AI 回复后自动播放'),
+                    ),
                   ),
                   TextField(
                     controller: key,
@@ -2345,11 +2437,13 @@ class SettingsScreenState extends State<SettingsScreen> {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  SwitchListTile(
-                    contentPadding: EdgeInsets.zero,
-                    value: enabled,
-                    onChanged: (value) => setDialogState(() => enabled = value),
-                    title: const Text('AI 回复后自动播放'),
+                  SettingsOptionCard(
+                    child: SwitchListTile(
+                      value: enabled,
+                      onChanged: (value) =>
+                          setDialogState(() => enabled = value),
+                      title: const Text('AI 回复后自动播放'),
+                    ),
                   ),
                   _TtsEmotionSlider(
                     value: emotionIntensity,
@@ -2699,10 +2793,12 @@ class _ThemeSettingsDialog extends StatelessWidget {
   const _ThemeSettingsDialog({
     required this.initialValue,
     required this.language,
+    required this.liquidGlass,
   });
 
   final AppThemePreference initialValue;
   final AppLanguage language;
+  final bool liquidGlass;
 
   @override
   Widget build(BuildContext context) {
@@ -2713,14 +2809,20 @@ class _ThemeSettingsDialog extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         children: [
           for (final value in AppThemePreference.values)
-            ListTile(
-              leading: Icon(
-                value == initialValue
-                    ? Icons.radio_button_checked
-                    : Icons.radio_button_unchecked,
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: GlassContentCard(
+                liquidGlass: liquidGlass,
+                child: ListTile(
+                  leading: Icon(
+                    value == initialValue
+                        ? Icons.radio_button_checked
+                        : Icons.radio_button_unchecked,
+                  ),
+                  title: Text(value.label(language)),
+                  onTap: () => Navigator.pop(context, value),
+                ),
               ),
-              title: Text(value.label(language)),
-              onTap: () => Navigator.pop(context, value),
             ),
         ],
       ),
@@ -3015,12 +3117,13 @@ class _LongTermMemoryDialogState extends State<_LongTermMemoryDialog> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            SwitchListTile(
-              contentPadding: EdgeInsets.zero,
-              value: _enabled,
-              onChanged: (value) => setState(() => _enabled = value),
-              title: Text(
-                language.text('启用长期记忆', 'Enable memory', '長期記憶を有効にする'),
+            SettingsOptionCard(
+              child: SwitchListTile(
+                value: _enabled,
+                onChanged: (value) => setState(() => _enabled = value),
+                title: Text(
+                  language.text('启用长期记忆', 'Enable memory', '長期記憶を有効にする'),
+                ),
               ),
             ),
             const SizedBox(height: 8),
@@ -3058,12 +3161,7 @@ class _LongTermMemoryDialogState extends State<_LongTermMemoryDialog> {
                           children: [
                             Expanded(
                               child: Text(
-                                _entries![index]['date']?.toString() ??
-                                    language.text(
-                                      '时间未记录',
-                                      'Date not recorded',
-                                      '日時未記録',
-                                    ),
+                                '${_entries![index]['id'] ?? 'AM${(index + 1).toString().padLeft(4, '0')}'}  ·  ${_entries![index]['date'] ?? language.text('时间未记录', 'Date not recorded', '日時未記録')}',
                                 style: Theme.of(context).textTheme.labelMedium
                                     ?.copyWith(
                                       color: Theme.of(context)
@@ -3081,7 +3179,11 @@ class _LongTermMemoryDialogState extends State<_LongTermMemoryDialog> {
                               icon: const Icon(Icons.delete_outline),
                               onPressed: () => setState(() {
                                 _entries!.removeAt(index);
-                                _summary.text = jsonEncode(_document);
+                                _summary.text =
+                                    MemoryTimeline.normalizeExisting(
+                                      jsonEncode(_document),
+                                    );
+                                _parseMemory();
                               }),
                             ),
                           ],
@@ -3106,6 +3208,25 @@ class _LongTermMemoryDialogState extends State<_LongTermMemoryDialog> {
                             _summary.text = jsonEncode(_document);
                           },
                         ),
+                        if (_entries![index]['state_change'] is Map) ...[
+                          const SizedBox(height: 6),
+                          Text(
+                            '${(_entries![index]['state_change'] as Map)['from'] ?? ''} → '
+                            '${(_entries![index]['state_change'] as Map)['to'] ?? ''}'
+                            '${_entries![index]['status'] == 'superseded' ? ' · ${language.text('历史状态', 'Historical state', '過去の状態')}' : ''}',
+                            style: Theme.of(context).textTheme.bodySmall,
+                          ),
+                        ],
+                        if (_entries![index]['key_quotes'] is List)
+                          for (final quote
+                              in _entries![index]['key_quotes'] as List)
+                            Padding(
+                              padding: const EdgeInsets.only(top: 4),
+                              child: Text(
+                                '“$quote”',
+                                style: Theme.of(context).textTheme.bodySmall,
+                              ),
+                            ),
                       ],
                     ),
                   ),
@@ -3679,6 +3800,80 @@ class _SectionLabel extends StatelessWidget {
           color: Theme.of(context).colorScheme.primary,
           fontSize: 13,
           fontWeight: FontWeight.w700,
+        ),
+      ),
+    );
+  }
+}
+
+class _CharacterChoice extends StatelessWidget {
+  const _CharacterChoice({
+    required this.name,
+    required this.asset,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final String name;
+  final String asset;
+  final bool selected;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(18),
+      child: Container(
+        constraints: const BoxConstraints(minHeight: 84),
+        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
+        decoration: BoxDecoration(
+          color: selected
+              ? scheme.primary.withValues(alpha: .18)
+              : Colors.transparent,
+          borderRadius: BorderRadius.circular(20),
+          border: selected
+              ? Border.all(
+                  color: Colors.white.withValues(alpha: .52),
+                  width: 1.2,
+                )
+              : null,
+          boxShadow: selected
+              ? [
+                  BoxShadow(
+                    color: scheme.primary.withValues(alpha: .10),
+                    blurRadius: 14,
+                    spreadRadius: 1,
+                  ),
+                ]
+              : null,
+        ),
+        child: Opacity(
+          opacity: selected ? 1 : .42,
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              SizedBox(
+                width: 62,
+                height: 62,
+                child: Image.asset(asset, fit: BoxFit.contain),
+              ),
+              const SizedBox(width: 10),
+              Flexible(
+                child: Text(
+                  name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: selected ? scheme.primary : scheme.onSurface,
+                    fontWeight: FontWeight.w700,
+                    fontSize: 21,
+                  ),
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );

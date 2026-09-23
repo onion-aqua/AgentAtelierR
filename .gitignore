@@ -77,6 +77,11 @@ assets/**/*
 !assets/branding/
 !assets/branding/agent_atelier_logo.png
 !assets/branding/app_icon_source.png
+!assets/images/shop/gift-box.png
+!assets/images/shop/energy-potion.png
+!assets/images/shop/reconciliation-voucher.png
+!assets/images/character_switch/ryza.png
+!assets/images/character_switch/sophie.png
 !android/app/src/main/res/drawable-*/launch_logo.png
 !android/app/src/main/res/drawable-*/ic_launcher_foreground.png
 !android/app/src/main/res/drawable-nodpi/launch_logo_android12.png

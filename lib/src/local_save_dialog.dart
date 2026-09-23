@@ -66,13 +66,51 @@ class _LocalSaveDialogState extends State<_LocalSaveDialog> {
         input.dispose();
         if (name != null) await widget.controller.renameLocalSlot(index, name);
       } else if (action == 'export') {
+        final includeHistory = await showDialog<bool>(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: Text(
+              _text(
+                '是否包含历史对话？',
+                'Include conversation history?',
+                '会話履歴を含めますか？',
+              ),
+            ),
+            content: Text(
+              _text(
+                '历史对话包含此存档中的用户发言、旁白和莱莎回复。不包含时，导入后的存档将从空白对话开始。',
+                'History includes the user, narration and Ryza replies in this save. Without it, the imported save starts with an empty conversation.',
+                'このセーブ内のユーザー、ナレーション、ライザの会話を含みます。含めない場合、読み込んだセーブの会話は空になります。',
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: Text(_text('取消', 'Cancel', 'キャンセル')),
+              ),
+              TextButton(
+                onPressed: () => Navigator.pop(context, false),
+                child: Text(_text('不包含', 'Without history', '含めない')),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.pop(context, true),
+                child: Text(_text('包含', 'Include', '含める')),
+              ),
+            ],
+          ),
+        );
+        if (includeHistory == null || !mounted) return;
         await FilePicker.saveFile(
           fileName:
               'AgentAtelierR-save-${index + 1}-${DateTime.now().millisecondsSinceEpoch}.json',
           bytes: Uint8List.fromList(
             utf8.encode(
-              const JsonEncoder.withIndent('  ')
-                  .convert(widget.controller.exportLocalSlot(index)),
+              const JsonEncoder.withIndent('  ').convert(
+                widget.controller.exportLocalSlot(
+                  index,
+                  includeConversationHistory: includeHistory,
+                ),
+              ),
             ),
           ),
           mimeType: 'application/json',
@@ -238,6 +276,11 @@ class _LocalSaveDialogState extends State<_LocalSaveDialog> {
   @override
   Widget build(BuildContext context) {
     final slots = widget.controller.localSaveSlots;
+    final theme = Theme.of(context);
+    final dark = theme.brightness == Brightness.dark;
+    final foreground = theme.colorScheme.onSurface;
+    final secondary = foreground.withValues(alpha: 0.72);
+    final tertiary = foreground.withValues(alpha: 0.60);
     return Dialog(
       backgroundColor: Colors.transparent,
       surfaceTintColor: Colors.transparent,
@@ -246,8 +289,10 @@ class _LocalSaveDialogState extends State<_LocalSaveDialog> {
         constraints: const BoxConstraints(maxWidth: 520, maxHeight: 650),
         child: GlassSurface(
           liquidGlass: widget.controller.liquidGlassChatUi,
-          tone: GlassTone.dark,
-          fallbackColor: const Color(0xE0201D1B),
+          tone: dark ? GlassTone.dark : GlassTone.light,
+          fallbackColor: dark
+              ? const Color(0xE0202428)
+              : const Color(0xE8F1F3F4),
           boxShadow: const [
             BoxShadow(
               color: Color(0x66000000),
@@ -261,13 +306,13 @@ class _LocalSaveDialogState extends State<_LocalSaveDialog> {
                 padding: const EdgeInsets.fromLTRB(18, 12, 8, 8),
                 child: Row(
                   children: [
-                    const Icon(Icons.save_outlined, color: Colors.white),
+                    Icon(Icons.save_outlined, color: foreground),
                     const SizedBox(width: 10),
                     Expanded(
                       child: Text(
                         _text('本地存档', 'Local saves', 'ローカルセーブ'),
-                        style: const TextStyle(
-                          color: Colors.white,
+                        style: TextStyle(
+                          color: foreground,
                           fontSize: 19,
                           fontWeight: FontWeight.w700,
                         ),
@@ -276,13 +321,13 @@ class _LocalSaveDialogState extends State<_LocalSaveDialog> {
                     IconButton(
                       onPressed: _busy ? null : () => Navigator.pop(context),
                       tooltip: _text('关闭', 'Close', '閉じる'),
-                      color: Colors.white,
+                      color: foreground,
                       icon: const Icon(Icons.close_rounded),
                     ),
                   ],
                 ),
               ),
-              const Divider(height: 1, color: Colors.white24),
+              Divider(height: 1, color: foreground.withValues(alpha: .18)),
               Expanded(
                 child: ListView.separated(
                   padding: const EdgeInsets.all(12),
@@ -290,9 +335,8 @@ class _LocalSaveDialogState extends State<_LocalSaveDialog> {
                   separatorBuilder: (_, _) => const SizedBox(height: 8),
                   itemBuilder: (context, index) {
                     final slot = slots[index];
-                    return Material(
-                      color: Colors.black.withValues(alpha: 0.18),
-                      borderRadius: BorderRadius.circular(8),
+                    return GlassContentCard(
+                      liquidGlass: widget.controller.liquidGlassChatUi,
                       child: Padding(
                         padding: const EdgeInsets.all(12),
                         child: Column(
@@ -303,8 +347,8 @@ class _LocalSaveDialogState extends State<_LocalSaveDialog> {
                               children: [
                                 CircleAvatar(
                                   radius: 16,
-                                  backgroundColor: Colors.white12,
-                                  foregroundColor: Colors.white,
+                                  backgroundColor: foreground.withValues(alpha: .12),
+                                  foregroundColor: foreground,
                                   child: Text('${index + 1}'),
                                 ),
                                 const SizedBox(width: 10),
@@ -315,8 +359,8 @@ class _LocalSaveDialogState extends State<_LocalSaveDialog> {
                                         : slot.name.isEmpty
                                         ? slot.location
                                         : slot.name,
-                                    style: const TextStyle(
-                                      color: Colors.white,
+                                    style: TextStyle(
+                                      color: foreground,
                                       fontWeight: FontWeight.w600,
                                     ),
                                   ),
@@ -327,7 +371,7 @@ class _LocalSaveDialogState extends State<_LocalSaveDialog> {
                             if (slot != null) ...[
                               Text(
                                 _formatTime(slot.savedAt),
-                                style: const TextStyle(color: Colors.white70),
+                                style: TextStyle(color: secondary),
                               ),
                               const SizedBox(height: 4),
                             ],
@@ -341,7 +385,7 @@ class _LocalSaveDialogState extends State<_LocalSaveDialog> {
                                   : '${slot.messageCount} ${_text('条消息', 'messages', '件のメッセージ')}\n${slot.preview}',
                               maxLines: slot == null ? null : 3,
                               overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(color: Colors.white60),
+                              style: TextStyle(color: tertiary),
                             ),
                             const SizedBox(height: 6),
                             Wrap(
@@ -356,7 +400,7 @@ class _LocalSaveDialogState extends State<_LocalSaveDialog> {
                                         : () => _load(index),
                                     label: Text(_text('读取', 'Load', 'ロード')),
                                     style: TextButton.styleFrom(
-                                      foregroundColor: Colors.white,
+                                      foregroundColor: foreground,
                                     ),
                                     icon: const Icon(Icons.download_rounded),
                                   ),
@@ -366,7 +410,7 @@ class _LocalSaveDialogState extends State<_LocalSaveDialog> {
                                       : () => _save(index, slot != null),
                                   label: Text(_text('保存', 'Save', 'セーブ')),
                                   style: TextButton.styleFrom(
-                                    foregroundColor: Colors.white,
+                                    foregroundColor: foreground,
                                   ),
                                   icon: const Icon(Icons.save_rounded),
                                 ),
@@ -377,10 +421,7 @@ class _LocalSaveDialogState extends State<_LocalSaveDialog> {
                                     'More actions',
                                     'その他の操作',
                                   ),
-                                  icon: const Icon(
-                                    Icons.more_vert,
-                                    color: Colors.white70,
-                                  ),
+                                  icon: Icon(Icons.more_vert, color: secondary),
                                   onSelected: (action) => action == 'delete'
                                       ? _delete(index)
                                       : _manage(index, action),

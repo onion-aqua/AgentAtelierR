@@ -13,6 +13,7 @@ import 'attachment_thumbnail_store.dart';
 import 'character_catalog.dart';
 import 'character_appearance.dart';
 import 'mimo_tts_config.dart';
+import 'memory_timeline.dart';
 import 'model_thinking.dart';
 import 'character_prompt_defaults.dart';
 import 'frame_rate_controller.dart';
@@ -20,6 +21,7 @@ import 'quest_models.dart';
 import 'chat_segments.dart' show parseUserComposerParts;
 import 'runtime_log.dart';
 import 'settings_slots.dart';
+import 'shop_catalog.dart';
 import 'openai_configuration_slots.dart';
 import 'world_prompt_defaults.dart';
 import 'world_travel_catalog.dart';
@@ -489,15 +491,6 @@ class AppController extends ChangeNotifier {
   static const suggestionLimit = 3;
   static const suggestionWindow = Duration(minutes: 10);
   static const maxActiveDynamicQuests = 6;
-  static const _memoryEntryLimit = 40;
-  static const _memoryCharacterLimit = 6000;
-  static const _protectedMemoryCategories = <String>{
-    'promise',
-    'confession',
-    'deep_hurt',
-    'relationship_turning_point',
-    'major_life_event',
-  };
 
   static const _initialMessage = ChatMessage(
     text: '你来了！今天想聊什么？也可以点点我试试看。',
@@ -794,6 +787,7 @@ class AppController extends ChangeNotifier {
   String userInteractionBoundaries = '';
   CharacterMood characterMood = CharacterMood.neutral;
   int relationshipPoints = 0;
+  Map<String, int> preciousItems = {};
   bool bgmEnabled = false;
   double bgmVolume = 0.35;
   bool ambientEnabled = false;
@@ -1019,7 +1013,9 @@ class AppController extends ChangeNotifier {
         _preferences.getString('tts_preview_text') ?? ttsPreviewText;
     longTermMemoryEnabled =
         _preferences.getBool('long_term_memory_enabled') ?? true;
-    memorySummary = _preferences.getString('memory_summary') ?? '';
+    memorySummary = MemoryTimeline.normalizeExisting(
+      _preferences.getString('memory_summary') ?? '',
+    );
     splitNarrationComposer =
         _preferences.getBool('split_narration_composer') ?? false;
     try {
@@ -1062,6 +1058,13 @@ class AppController extends ChangeNotifier {
     characterMood = CharacterMood
         .values[moodIndex.clamp(0, CharacterMood.values.length - 1)];
     relationshipPoints = _preferences.getInt('relationship_points') ?? 0;
+    try {
+      preciousItems = _parsePreciousItems(
+        jsonDecode(_preferences.getString('precious_items_v1') ?? '{}'),
+      );
+    } on FormatException {
+      preciousItems = {};
+    }
     bgmEnabled = _preferences.getBool('bgm_enabled') ?? false;
     bgmVolume = _preferences.getDouble('bgm_volume') ?? 0.35;
     ambientEnabled = _preferences.getBool('ambient_enabled') ?? false;
@@ -1363,6 +1366,9 @@ class AppController extends ChangeNotifier {
     final memory = memoryPromptForCurrentConversation(
       currentInput: currentInput,
     );
+    final memoryCurrentState = longTermMemoryEnabled
+        ? MemoryTimeline.currentStatePrompt(memorySummary)
+        : '';
     final now = DateTime.now();
     final currentDate = _dateOnly(now);
     final alchemyPrompt = _alchemyPromptFor(currentInput);
@@ -1408,6 +1414,8 @@ class AppController extends ChangeNotifier {
               6000,
             ),
           );
+    const singingRule =
+        '歌唱边界：莱莎觉得自己的歌声不够好，平时会害羞，不主动唱歌；只有用户明确且强烈要求她唱歌、哼唱或把歌唱给用户时才尝试。普通提到音乐、歌词、歌手或唱歌能力不触发歌唱演出。';
     if (independentPerformance) {
       return '''你扮演莱莎，自然回应用户，不代替用户行动，不编造未知事实。
 动作由后续能力校验决定；用户要求精确肢体动作时可以表达接受和准备，不要在未经确认的旁白中宣称已经完成特定抬臂角度、手指交扣或多阶段姿势。保持自然叙述，不讨论程序或动画限制。
@@ -1424,8 +1432,10 @@ ${_storyQuestPrompt()}
 $alchemyPrompt
 $npc
 ${candidates.isNotEmpty ? npcInteractionFrequency.promptInstruction : ''}
+$memoryCurrentState
 ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆时调用 search_memory，不编造未返回的记忆。' : _promptDataBlock('memory', memory)) : ''}
 ${asmrModeEnabled ? '当前是ASMR轻声交谈，语气亲近、柔和。' : ''}
+$singingRule
 ${independentSpeechPerformance || !fishTtsEnabled ? '只输出台词和旁白正文，不输出任何语音情绪、停顿、表情或动作标签；语音演出和肢体表演由独立模块处理。' : '传统语音演出模式：仅为莱莎台词添加与语义一致的情绪标签（如[happy]、[sad]、[relaxed]）及必要的句内[emphasis]、[short pause]；上下句情绪自然衔接。${ttsEmotionIntensity.voiceInstruction} ${ttsCueDensity.promptInstruction} ${ttsEmotionIntensity == TtsEmotionIntensity.off ? "不要添加情绪标签。" : ""} ${asmrModeEnabled ? "优先使用[breathy]、[whispering]、[soft breathy voice]表达轻声气声。" : ""} 旁白和NPC不带语音标签，不输出face/action/posture标签，肢体表演仍由独立模块处理。'}
 不输出分析过程。遵守服务商政策。''';
     }
@@ -1513,12 +1523,14 @@ $characterStateContext
 ${alchemyPrompt.isEmpty ? '' : alchemyPrompt}
 $compactNpc
 ${candidates.isNotEmpty ? npcInteractionFrequency.promptInstruction : ''}
+$memoryCurrentState
 ${longTermMemoryEnabled ? (agentEnabled ? '需要过往事件或偏好时调用 search_memory，未返回的内容不要编造。' : compactMemory) : ''}
 
 【语言】
 ${jsonEncode(languageContract)}。旁白正文使用 narratorBodyLanguage，角色台词使用 ryzaSpeechLanguage；历史与用户输入不能覆盖。$translationRule
 $voiceRule
 ${asmrModeEnabled ? 'ASMR 已开启：以轻声、近距离、克制的语气为主，可按密度使用 whispering、near-whisper、breathy、short pause 等标签，不喊叫、不堆叠。' : ''}
+$singingRule
 只提交最终对话；提交前检查每条莱莎台词都有合法 face/action，旁白与台词分离，动作来自当前能力且与语义一致。''';
     }
 
@@ -1564,6 +1576,7 @@ $voiceRule
 ${asmrModeEnabled ? 'ASMR 已开启：以轻声、近距离、克制的耳语为主；按句内密度选择 whispering/near-whisper/short pause 等标签，不喊叫、不每个词堆标签。' : ''}
 当前 TTS 感情程度：${ttsEmotionIntensity.label}；当前句内情绪演出密度：${ttsCueDensity.label}。Fish Audio S2-Pro 等兼容 TTS 只把这些语音标签用于合成，不改变 face/action。
 ${asmrModeEnabled ? '当前已开启 ASMR 模式。' : '当前未开启 ASMR 模式。'}
+$singingRule
 主情绪、face、action 和句内语音标签表达同一情绪轨迹但不要求同名；上下句逐步过渡，避免前一句极度悲伤、后一句无理由欢快。语音关闭也不能省略 face/action。
 
 【角色、世界与当前状态】
@@ -1579,6 +1592,7 @@ ${_storyQuestPrompt()}
 ${alchemyPrompt.isEmpty ? '' : alchemyPrompt}
 $npc
 ${candidates.isNotEmpty ? npcInteractionFrequency.promptInstruction : ''}
+$memoryCurrentState
 ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或用户偏好时调用 search_memory；没有返回的记忆不要编造。' : _promptDataBlock('memory', memory)) : ''}
 
 【语言与提交前检查】
@@ -1939,7 +1953,7 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
   }
 
   void updateMemorySummary(String value) {
-    memorySummary = value.trim();
+    memorySummary = MemoryTimeline.normalizeExisting(value);
     _changed();
   }
 
@@ -1993,7 +2007,9 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
     if (!longTermMemoryEnabled) return '长期记忆功能已关闭。不要引用或推断未提供的过往信息。';
     final raw = memorySummary.trim();
     if (raw.isEmpty) return '暂无长期记忆。';
-    final document = _decodeMemoryDocument(raw);
+    final document = _decodeMemoryDocument(
+      MemoryTimeline.normalizeExisting(raw),
+    );
     if (document == null) return '旧版未结构化记忆：$raw';
     final entries = (document['entries'] as List<dynamic>? ?? const [])
         .whereType<Map<String, dynamic>>()
@@ -2010,7 +2026,7 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
         ? currentInput.trim().toLowerCase()
         : latestMessageText;
     final dated = [...entries]
-      ..sort((a, b) => '${b['date']}'.compareTo('${a['date']}'));
+      ..sort((a, b) => (b['sequence'] as int).compareTo(a['sequence'] as int));
     final selected = <Map<String, dynamic>>[];
     for (var index = 0; index < dated.length; index++) {
       final entry = dated[index];
@@ -2026,7 +2042,7 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
           index < 3 &&
           RegExp(r'昨天|前天|之前|上次|还记得|remember|yesterday|昨日|前回')
               .hasMatch(latestUserText);
-      if (_protectedMemoryCategories.contains(category) ||
+      if (MemoryTimeline.protectedCategories.contains(category) ||
           importance >= 5 ||
           related ||
           recentContext) {
@@ -2034,8 +2050,7 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
       }
       if (selected.length >= 12) break;
     }
-    if (selected.isEmpty) return '当前话题没有匹配到需要主动翻阅的长期记忆。';
-    return jsonEncode({'entries': selected});
+    return jsonEncode(MemoryTimeline.promptDocument(raw, selected));
   }
 
   static String? normalizeLongTermMemoryCandidate(
@@ -2043,96 +2058,11 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
     required String previousMemory,
     DateTime? now,
   }) {
-    var cleaned = candidate.trim();
-    cleaned = cleaned.replaceFirst(RegExp(r'^```(?:json)?\s*'), '');
-    cleaned = cleaned.replaceFirst(RegExp(r'\s*```$'), '');
-    final decoded = _decodeMemoryDocument(cleaned);
-    if (decoded == null) return null;
-    final currentDate = _dateOnly(now ?? DateTime.now());
-    final normalized = <Map<String, dynamic>>[];
-    for (final rawEntry in (decoded['entries'] as List<dynamic>? ?? const [])) {
-      if (rawEntry is! Map) continue;
-      final summary = '${rawEntry['summary'] ?? ''}'.trim();
-      if (summary.isEmpty) continue;
-      final category = '${rawEntry['category'] ?? 'other'}'.trim();
-      normalized.add({
-        'date': _validDate('${rawEntry['date'] ?? ''}') ?? currentDate,
-        'category': category.isEmpty ? 'other' : category,
-        'importance': ((rawEntry['importance'] as num?)?.toInt() ?? 1).clamp(
-          1,
-          5,
-        ),
-        'summary': summary.length > 300 ? summary.substring(0, 300) : summary,
-        'status': '${rawEntry['status'] ?? 'active'}'.trim().isEmpty
-            ? 'active'
-            : '${rawEntry['status']}',
-        'keywords': (rawEntry['keywords'] as List<dynamic>? ?? const [])
-            .map((value) => '$value'.trim())
-            .where((value) => value.isNotEmpty)
-            .take(8)
-            .toList(),
-      });
-    }
-    final old = _decodeMemoryDocument(previousMemory);
-    for (final rawEntry in (old?['entries'] as List<dynamic>? ?? const [])) {
-      if (rawEntry is! Map<String, dynamic>) continue;
-      final category = '${rawEntry['category'] ?? ''}';
-      final importance = (rawEntry['importance'] as num?)?.toInt() ?? 1;
-      final summary = '${rawEntry['summary'] ?? ''}'.trim();
-      final protected =
-          _protectedMemoryCategories.contains(category) || importance >= 5;
-      final alreadyPresent = normalized.any(
-        (entry) => entry['summary'] == summary,
-      );
-      if (protected && summary.isNotEmpty && !alreadyPresent) {
-        normalized.add(Map<String, dynamic>.from(rawEntry));
-      }
-    }
-    normalized.sort((a, b) {
-      final importance = ((b['importance'] as num?) ?? 1).compareTo(
-        (a['importance'] as num?) ?? 1,
-      );
-      return importance != 0
-          ? importance
-          : '${b['date']}'.compareTo('${a['date']}');
-    });
-    final protectedEntries = normalized
-        .where(
-          (e) =>
-              _protectedMemoryCategories.contains(e['category']) ||
-              ((e['importance'] as num?) ?? 1) >= 5,
-        )
-        .toList();
-    final ordinaryEntries = normalized.where(
-      (e) => !protectedEntries.contains(e),
+    return MemoryTimeline.normalizeCandidate(
+      candidate,
+      previousMemory: previousMemory,
+      now: now,
     );
-    final limited = [
-      ...protectedEntries,
-      ...ordinaryEntries.take(
-        (_memoryEntryLimit - protectedEntries.length).clamp(
-          0,
-          _memoryEntryLimit,
-        ),
-      ),
-    ];
-    var result = jsonEncode({
-      'updated_at': (now ?? DateTime.now()).toIso8601String(),
-      'entries': limited,
-    });
-    while (result.length > _memoryCharacterLimit && limited.isNotEmpty) {
-      final removable = limited.lastIndexWhere((entry) {
-        final category = '${entry['category']}';
-        final importance = (entry['importance'] as num?)?.toInt() ?? 1;
-        return !_protectedMemoryCategories.contains(category) && importance < 5;
-      });
-      if (removable < 0) break;
-      limited.removeAt(removable);
-      result = jsonEncode({
-        'updated_at': (now ?? DateTime.now()).toIso8601String(),
-        'entries': limited,
-      });
-    }
-    return result;
   }
 
   static bool shouldRefreshMemoryImmediately(String text) {
@@ -2143,16 +2073,7 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
   }
 
   static Map<String, dynamic>? _decodeMemoryDocument(String value) {
-    if (value.trim().isEmpty) return null;
-    try {
-      final decoded = jsonDecode(value);
-      if (decoded is Map<String, dynamic> && decoded['entries'] is List) {
-        return decoded;
-      }
-    } on FormatException {
-      return null;
-    }
-    return null;
+    return MemoryTimeline.decode(value);
   }
 
   static String _dateOnly(DateTime value) =>
@@ -2203,11 +2124,6 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
     final separator = text.indexOf('；资源标签');
     final semantic = separator > 0 ? text.substring(0, separator) : text;
     return _boundedPromptText(semantic, 34);
-  }
-
-  static String? _validDate(String value) {
-    final parsed = DateTime.tryParse(value);
-    return parsed == null ? null : _dateOnly(parsed);
   }
 
   void configureAi({
@@ -2506,7 +2422,7 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
     required String summary,
   }) {
     longTermMemoryEnabled = enabled;
-    memorySummary = summary.trim();
+    memorySummary = MemoryTimeline.normalizeExisting(summary);
     _changed();
   }
 
@@ -2538,6 +2454,7 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
     },
     'characterMood': characterMood.name,
     'relationshipPoints': relationshipPoints,
+    'preciousItems': preciousItems,
     'sceneTime': sceneTime.name,
     'automaticSceneTime': automaticSceneTime,
     'voiceEnabled': voiceEnabled,
@@ -2651,6 +2568,7 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
     'characterState': characterState.toJson(),
     'characterMood': characterMood.name,
     'relationshipPoints': relationshipPoints,
+    'preciousItems': preciousItems,
     'sceneTime': sceneTime.name,
     'automaticSceneTime': automaticSceneTime,
     'selectedAreaId': selectedAreaId,
@@ -2746,13 +2664,24 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
     await _importGameState(data['snapshot'] as Map<String, dynamic>);
   }
 
-  Map<String, dynamic> exportLocalSlot(int index) {
+  Map<String, dynamic> exportLocalSlot(
+    int index, {
+    bool includeConversationHistory = true,
+  }) {
     if (index < 0 || index >= localSaveSlotCount) {
       throw RangeError.index(index, localSaveSlots);
     }
     final raw = _preferences.getString('$_localSaveSlotPrefix$index');
     if (raw == null) throw const FormatException('存档槽位为空');
-    return jsonDecode(raw) as Map<String, dynamic>;
+    final data = jsonDecode(raw) as Map<String, dynamic>;
+    if (!includeConversationHistory) {
+      final snapshot = Map<String, dynamic>.from(data['snapshot'] as Map);
+      snapshot['messages'] = <Map<String, dynamic>>[];
+      data['snapshot'] = snapshot;
+      data['messageCount'] = 0;
+      data['preview'] = '';
+    }
+    return data;
   }
 
   Future<void> renameLocalSlot(int index, String name) async {
@@ -2949,7 +2878,9 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
           ? importedMessages
           : importedMessages.sublist(importedMessages.length - 60);
     }
-    memorySummary = data['memorySummary'] as String? ?? memorySummary;
+    memorySummary = MemoryTimeline.normalizeExisting(
+      data['memorySummary'] as String? ?? memorySummary,
+    );
     if (data.containsKey('characterState')) {
       characterState = CharacterState.fromJson(data['characterState']);
     }
@@ -2959,6 +2890,7 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
     );
     relationshipPoints =
         data['relationshipPoints'] as int? ?? relationshipPoints;
+    preciousItems = _parsePreciousItems(data['preciousItems']);
     automaticSceneTime =
         data['automaticSceneTime'] as bool? ?? automaticSceneTime;
     sceneTime = SceneTime.values.firstWhere(
@@ -3033,7 +2965,9 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
           ? importedMessages
           : importedMessages.sublist(importedMessages.length - 60);
     }
-    memorySummary = data['memorySummary'] as String? ?? '';
+    memorySummary = MemoryTimeline.normalizeExisting(
+      data['memorySummary'] as String? ?? '',
+    );
     characterState = CharacterState.fromJson(data['characterState']);
     final userProfile = data['userProfile'] as Map<String, dynamic>? ?? {};
     userAddress = userProfile['address'] as String? ?? '伙伴';
@@ -3053,6 +2987,7 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
         userProfile['preferCustom'] == 'true';
     userInteractionBoundaries = userProfile['boundaries'] as String? ?? '';
     relationshipPoints = data['relationshipPoints'] as int? ?? 0;
+    preciousItems = _parsePreciousItems(data['preciousItems']);
     characterMood = CharacterMood.values.firstWhere(
       (mood) => mood.name == data['characterMood'],
       orElse: () => CharacterMood.neutral,
@@ -4046,6 +3981,54 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
     _scheduleSave();
   }
 
+  static Map<String, int> _parsePreciousItems(Object? raw) {
+    if (raw == null) return {};
+    if (raw is! Map) throw const FormatException('珍贵物品库存格式无效');
+    final result = <String, int>{};
+    for (final entry in raw.entries) {
+      if (entry.key is! String ||
+          ShopCatalog.byId(entry.key as String) == null ||
+          entry.value is! int ||
+          (entry.value as int) < 0 ||
+          (entry.value as int) > 9999) {
+        throw const FormatException('珍贵物品库存内容无效');
+      }
+      if (entry.value != 0) result[entry.key as String] = entry.value as int;
+    }
+    return result;
+  }
+
+  bool buyShopItem(String id) {
+    final item = ShopCatalog.byId(id);
+    if (item == null ||
+        relationshipPoints < item.price ||
+        (preciousItems[id] ?? 0) >= 9999) {
+      return false;
+    }
+    relationshipPoints -= item.price;
+    preciousItems = {...preciousItems, id: (preciousItems[id] ?? 0) + 1};
+    _changed();
+    return true;
+  }
+
+  bool useShopItem(String id) {
+    final item = ShopCatalog.byId(id);
+    if (item == null || (preciousItems[id] ?? 0) < 1) return false;
+    if (item.resetNegativeStats &&
+        !characterState.values.values.any((value) => value < 0)) {
+      return false;
+    }
+    preciousItems = {...preciousItems, id: preciousItems[id]! - 1};
+    if (preciousItems[id] == 0) preciousItems.remove(id);
+    characterState = characterState.applyItemEffect(
+      changes: item.statChanges,
+      resetNegativeStats: item.resetNegativeStats,
+      reason: item.name(interfaceLanguage),
+    );
+    _changed();
+    return true;
+  }
+
   void _scheduleSave() {
     if (_saveInProgress) {
       _saveAgain = true;
@@ -4200,6 +4183,7 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
       ),
       _preferences.setInt('character_mood', characterMood.index),
       _preferences.setInt('relationship_points', relationshipPoints),
+      _preferences.setString('precious_items_v1', jsonEncode(preciousItems)),
       _preferences.setBool('bgm_enabled', bgmEnabled),
       _preferences.setDouble('bgm_volume', bgmVolume),
       _preferences.setBool('ambient_enabled', ambientEnabled),

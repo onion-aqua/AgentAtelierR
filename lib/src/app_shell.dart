@@ -15,6 +15,7 @@ import 'glass_ui.dart';
 import 'mission_screen.dart';
 import 'page_navigation.dart';
 import 'settings_screen.dart';
+import 'shop_screen.dart';
 import 'soundscape_controller.dart';
 import 'world_map_screen.dart';
 
@@ -26,6 +27,7 @@ enum AppDestination {
   alarms,
   settings,
   runtimeLogs,
+  shop,
 }
 
 extension AppDestinationData on AppDestination {
@@ -37,6 +39,7 @@ extension AppDestinationData on AppDestination {
     AppDestination.alarms => language.text('语音闹钟', 'Voice alarms', 'ボイスアラーム'),
     AppDestination.settings => language.text('设置', 'Settings', '設定'),
     AppDestination.runtimeLogs => language.text('运行日志', 'Runtime logs', '実行ログ'),
+    AppDestination.shop => language.text('商店', 'Shop', 'ショップ'),
   };
 
   IconData get icon => switch (this) {
@@ -47,6 +50,7 @@ extension AppDestinationData on AppDestination {
     AppDestination.alarms => Icons.alarm_outlined,
     AppDestination.settings => Icons.settings_outlined,
     AppDestination.runtimeLogs => Icons.bug_report_outlined,
+    AppDestination.shop => Icons.storefront_outlined,
   };
 }
 
@@ -186,6 +190,7 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
           AppDestination.settings ||
           AppDestination.alchemy ||
           AppDestination.missions => true,
+          AppDestination.shop => true,
           _ => false,
         };
         final content = Stack(
@@ -199,6 +204,7 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
                   pageActive: _destination == AppDestination.chat,
                   controller: widget.controller,
                   onMenuPressed: _openMenu,
+                  onShopPressed: () => _selectDestination(AppDestination.shop),
                   hideUi: _chatUiHidden || overlayDestination,
                   onFullscreenChanged: (value) => setState(() {
                     _chatFullscreen = value;
@@ -223,6 +229,7 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
                   liquidGlass: widget.controller.liquidGlassChatUi,
                   onMenuPressed: _openMenu,
                 ),
+                const SizedBox.shrink(),
               ],
             ),
             if (_destination == AppDestination.settings)
@@ -236,6 +243,8 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
               AlchemyScreen(controller: widget.controller),
             if (_destination == AppDestination.missions)
               MissionScreen(controller: widget.controller),
+            if (_destination == AppDestination.shop)
+              ShopScreen(controller: widget.controller),
           ],
         );
         final safeTop = MediaQuery.paddingOf(context).top;

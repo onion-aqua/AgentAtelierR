@@ -4,6 +4,7 @@ import 'alchemy_models.dart';
 import 'app_controller.dart';
 import 'app_localization.dart';
 import 'glass_ui.dart';
+import 'shop_catalog.dart';
 
 class AlchemyScreen extends StatefulWidget {
   const AlchemyScreen({super.key, required this.controller});
@@ -82,6 +83,47 @@ class _AlchemyScreenState extends State<AlchemyScreen> {
     }
   }
 
+  Future<void> _usePreciousItem(ShopItem item, AppLanguage language) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(item.name(language)),
+        content: Text(
+          '${item.description(language)}\n\n${item.effect(language)}',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: Text(language.text('取消', 'Cancel', 'キャンセル')),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: Text(language.text('使用', 'Use', '使う')),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    final used = widget.controller.useShopItem(item.id);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          used
+              ? language.text(
+                  '已使用 ${item.name(language)}',
+                  'Used ${item.name(language)}',
+                  '${item.name(language)}を使用しました',
+                )
+              : language.text(
+                  '无法使用：库存已变化，或没有需要归零的负值',
+                  'Cannot use: inventory changed or there are no negative stats',
+                  '使用できません：所持数が変わったか、マイナスの数値がありません',
+                ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final language = widget.controller.interfaceLanguage;
@@ -90,6 +132,7 @@ class _AlchemyScreenState extends State<AlchemyScreen> {
       child: Scaffold(
         backgroundColor: Colors.transparent,
         appBar: AppBar(
+          backgroundColor: glassPageHeaderColor(context),
           automaticallyImplyLeading: false,
           title: Padding(
             padding: const EdgeInsets.only(left: 58),
@@ -102,15 +145,8 @@ class _AlchemyScreenState extends State<AlchemyScreen> {
             ],
           ),
         ),
-        body: GlassSurface(
+        body: GlassPageSurface(
           liquidGlass: widget.controller.liquidGlassChatUi,
-          tone: Theme.of(context).brightness == Brightness.dark
-              ? GlassTone.dark
-              : GlassTone.light,
-          borderRadius: BorderRadius.zero,
-          fallbackColor: Theme.of(context).brightness == Brightness.dark
-              ? const Color(0xD91C2222)
-              : const Color(0xB8EEF2F0),
           child: TabBarView(
             children: [_buildInventory(language), _buildHistory(language)],
           ),
@@ -122,54 +158,89 @@ class _AlchemyScreenState extends State<AlchemyScreen> {
   Widget _buildInventory(AppLanguage language) {
     final items = widget.controller.alchemyState.inventory.toList()
       ..sort((a, b) => b.acquiredAt.compareTo(a.acquiredAt));
-    if (items.isEmpty) {
-      return Center(
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: _EmptyInventoryNotice(language: language),
-        ),
-      );
-    }
-    return ListView.separated(
+    final precious = ShopCatalog.items
+        .where((item) => (widget.controller.preciousItems[item.id] ?? 0) > 0)
+        .toList();
+    return ListView(
       padding: const EdgeInsets.fromLTRB(16, 16, 16, 32),
-      itemCount: items.length + 1,
-      separatorBuilder: (_, _) => const Divider(height: 1),
-      itemBuilder: (context, index) {
-        if (index == 0) {
-          return ListTile(
-            leading: const Icon(Icons.inventory_2_outlined),
-            title: Text(language.text('当前库存', 'Inventory', 'コンテナ')),
-            subtitle: Text(
+      children: [
+        ListTile(
+          leading: const Icon(Icons.auto_awesome_outlined),
+          title: Text(language.text('珍贵的东西', 'Precious things', '大切なもの')),
+          trailing: Text(
+            '${precious.fold<int>(0, (sum, item) => sum + widget.controller.preciousItems[item.id]!)}',
+          ),
+        ),
+        if (precious.isEmpty)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+            child: Text(
               language.text(
-                '在聊天中告诉莱莎想制作什么，配方与选材由她根据真实库存决定。',
-                'Tell Ryza what to make in chat. She decides the recipe and ingredients from the real inventory.',
-                'チャットで作りたい物を伝えると、ライザが実際の在庫からレシピと素材を決めます。',
+                '还没有珍贵物品',
+                'No precious items yet',
+                '大切なものはまだありません',
               ),
             ),
-            trailing: Text(
-              '${items.fold<int>(0, (sum, item) => sum + item.quantity)}',
+          ),
+        for (final item in precious)
+          ListTile(
+            leading: Image.asset(
+              item.imageAsset,
+              width: 48,
+              height: 48,
+              cacheWidth: 192,
             ),
-          );
-        }
-        final item = items[index - 1];
-        final tags = _tagNames(item).join('、');
-        return ListTile(
-          title: Text('${item.displayNameFor(language)} × ${item.quantity}'),
-          trailing: IconButton(
-            tooltip: language.text('使用 1 份', 'Use one', '1個使う'),
-            icon: const Icon(Icons.remove_circle_outline),
-            onPressed: () => _useItem(item, language),
+            title: Text(
+              '${item.name(language)} × ${widget.controller.preciousItems[item.id]}',
+            ),
+            subtitle: Text(item.effect(language)),
+            trailing: IconButton(
+              tooltip: language.text('使用', 'Use', '使う'),
+              icon: const Icon(Icons.play_circle_outline),
+              onPressed: () => _usePreciousItem(item, language),
+            ),
           ),
+        const Divider(),
+        ListTile(
+          leading: const Icon(Icons.inventory_2_outlined),
+          title: Text(language.text('当前库存', 'Inventory', 'コンテナ')),
           subtitle: Text(
-            '${language.text('品质', 'Quality', '品質')} '
-            '${item.qualityRank}（${item.quality}）\n'
-            '${language.text('标签', 'Traits', '特性')}：'
-            '${tags.isEmpty ? language.text('无', 'None', 'なし') : tags}'
-            '${item.descriptionFor(language).isEmpty ? '' : '\n${item.descriptionFor(language)}'}',
+            language.text(
+              '在聊天中告诉莱莎想制作什么，配方与选材由她根据真实库存决定。',
+              'Tell Ryza what to make in chat. She decides the recipe and ingredients from the real inventory.',
+              'チャットで作りたい物を伝えると、ライザが実際の在庫からレシピと素材を決めます。',
+            ),
           ),
-          isThreeLine: true,
-        );
-      },
+          trailing: Text(
+            '${items.fold<int>(0, (sum, item) => sum + item.quantity)}',
+          ),
+        ),
+        if (items.isEmpty)
+          Padding(
+            padding: const EdgeInsets.all(8),
+            child: _EmptyInventoryNotice(
+              language: language,
+              liquidGlass: widget.controller.liquidGlassChatUi,
+            ),
+          ),
+        for (final item in items)
+          ListTile(
+            title: Text('${item.displayNameFor(language)} × ${item.quantity}'),
+            trailing: IconButton(
+              tooltip: language.text('使用 1 份', 'Use one', '1個使う'),
+              icon: const Icon(Icons.remove_circle_outline),
+              onPressed: () => _useItem(item, language),
+            ),
+            subtitle: Text(
+              '${language.text('品质', 'Quality', '品質')} '
+              '${item.qualityRank}（${item.quality}）\n'
+              '${language.text('标签', 'Traits', '特性')}：'
+              '${_tagNames(item).isEmpty ? language.text('无', 'None', 'なし') : _tagNames(item).join('、')}'
+              '${item.descriptionFor(language).isEmpty ? '' : '\n${item.descriptionFor(language)}'}',
+            ),
+            isThreeLine: true,
+          ),
+      ],
     );
   }
 
@@ -215,12 +286,17 @@ class _AlchemyScreenState extends State<AlchemyScreen> {
 }
 
 class _EmptyInventoryNotice extends StatelessWidget {
-  const _EmptyInventoryNotice({required this.language});
+  const _EmptyInventoryNotice({
+    required this.language,
+    required this.liquidGlass,
+  });
 
   final AppLanguage language;
+  final bool liquidGlass;
 
   @override
-  Widget build(BuildContext context) => Card(
+  Widget build(BuildContext context) => GlassContentCard(
+    liquidGlass: liquidGlass,
     child: Padding(
       padding: const EdgeInsets.all(16),
       child: Row(
