@@ -216,6 +216,87 @@ class _LocalSaveDialogState extends State<_LocalSaveDialog> {
     }
   }
 
+  Future<void> _create() async {
+    if (_busy) return;
+    final slots = widget.controller.localSaveSlots;
+    final index = slots.indexWhere((slot) => slot == null);
+    if (index < 0) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              _text(
+                '存档槽位已满，请先删除一个存档。',
+                'All save slots are full. Delete one first.',
+                'セーブスロットが一杯です。先に1つ削除してください。',
+              ),
+            ),
+          ),
+        );
+      }
+      return;
+    }
+    final input = TextEditingController(
+      text: _text(
+        '新存档 ${index + 1}',
+        'New save ${index + 1}',
+        '新規セーブ ${index + 1}',
+      ),
+    );
+    final name = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(_text('新建存档', 'New save', '新規セーブ')),
+        content: TextField(
+          controller: input,
+          maxLength: 60,
+          autofocus: true,
+          decoration: InputDecoration(
+            labelText: _text('存档名称', 'Save name', 'セーブ名'),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: Text(_text('取消', 'Cancel', 'キャンセル')),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, input.text),
+            child: Text(_text('创建', 'Create', '作成')),
+          ),
+        ],
+      ),
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 300));
+    input.dispose();
+    if (!mounted || name == null) return;
+    setState(() => _busy = true);
+    try {
+      await widget.controller.createLocalSlot(index, name: name);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            _text(
+              '已创建并切换到新存档',
+              'Created and switched to the new save',
+              '新規セーブを作成して切り替えました',
+            ),
+          ),
+        ),
+      );
+    } on Object catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('${_text('创建失败', 'Create failed', '作成失敗')}: $error'),
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
   Future<void> _load(int index) async {
     if (_busy) return;
     final confirmed = await _confirm(
@@ -318,6 +399,12 @@ class _LocalSaveDialogState extends State<_LocalSaveDialog> {
                         ),
                       ),
                     ),
+                    TextButton.icon(
+                      onPressed: _busy ? null : _create,
+                      icon: const Icon(Icons.add_box_outlined),
+                      label: Text(_text('新建存档', 'New save', '新規セーブ')),
+                      style: TextButton.styleFrom(foregroundColor: foreground),
+                    ),
                     IconButton(
                       onPressed: _busy ? null : () => Navigator.pop(context),
                       tooltip: _text('关闭', 'Close', '閉じる'),
@@ -347,7 +434,9 @@ class _LocalSaveDialogState extends State<_LocalSaveDialog> {
                               children: [
                                 CircleAvatar(
                                   radius: 16,
-                                  backgroundColor: foreground.withValues(alpha: .12),
+                                  backgroundColor: foreground.withValues(
+                                    alpha: .12,
+                                  ),
                                   foregroundColor: foreground,
                                   child: Text('${index + 1}'),
                                 ),
@@ -365,6 +454,20 @@ class _LocalSaveDialogState extends State<_LocalSaveDialog> {
                                     ),
                                   ),
                                 ),
+                                if (widget.controller.activeLocalSaveSlot ==
+                                    index)
+                                  Tooltip(
+                                    message: _text(
+                                      '当前存档',
+                                      'Active save',
+                                      '現在のセーブ',
+                                    ),
+                                    child: Icon(
+                                      Icons.check_circle_rounded,
+                                      color: theme.colorScheme.primary,
+                                      size: 20,
+                                    ),
+                                  ),
                               ],
                             ),
                             const SizedBox(height: 8),
@@ -395,14 +498,24 @@ class _LocalSaveDialogState extends State<_LocalSaveDialog> {
                               children: [
                                 if (slot != null)
                                   TextButton.icon(
-                                    onPressed: _busy
+                                    onPressed:
+                                        _busy ||
+                                            widget
+                                                    .controller
+                                                    .activeLocalSaveSlot ==
+                                                index
                                         ? null
                                         : () => _load(index),
                                     label: Text(_text('读取', 'Load', 'ロード')),
                                     style: TextButton.styleFrom(
                                       foregroundColor: foreground,
                                     ),
-                                    icon: const Icon(Icons.download_rounded),
+                                    icon: Icon(
+                                      widget.controller.activeLocalSaveSlot ==
+                                              index
+                                          ? Icons.check_rounded
+                                          : Icons.download_rounded,
+                                    ),
                                   ),
                                 TextButton.icon(
                                   onPressed: _busy

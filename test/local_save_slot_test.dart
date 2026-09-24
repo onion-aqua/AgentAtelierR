@@ -6,6 +6,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:ryza_chat_mvp/src/app_controller.dart';
 import 'package:ryza_chat_mvp/src/alchemy_models.dart';
 import 'package:ryza_chat_mvp/src/attachment_thumbnail_store.dart';
+import 'package:ryza_chat_mvp/src/character_state.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
@@ -151,6 +152,53 @@ void main() {
       throwsRangeError,
     );
   });
+
+  test(
+    'new save uses fresh relationship defaults and slots can switch',
+    () async {
+      SharedPreferences.setMockInitialValues({});
+      final controller = await AppController.load();
+      addTearDown(controller.dispose);
+
+      await controller.createLocalSlot(0, name: '新旅程');
+      expect(controller.activeLocalSaveSlot, 0);
+      expect(controller.localSaveSlots[0]?.name, '新旅程');
+      expect(controller.characterState.values, {
+        'mood': 0,
+        'energy': 100,
+        'closeness': 0,
+        'curiosity': 20,
+      });
+      expect(controller.relationshipPoints, 0);
+
+      controller.characterState = CharacterState(
+        values: const {
+          'mood': 12,
+          'energy': 23,
+          'closeness': 34,
+          'curiosity': 45,
+        },
+      );
+      controller.relationshipPoints = 88;
+      await controller.saveToLocalSlot(1, name: '另一段旅程');
+      expect(controller.activeLocalSaveSlot, 1);
+
+      await controller.loadFromLocalSlot(0);
+      expect(controller.activeLocalSaveSlot, 0);
+      expect(controller.characterState.values['energy'], 100);
+      expect(controller.characterState.values['closeness'], 0);
+      expect(controller.relationshipPoints, 0);
+
+      await controller.loadFromLocalSlot(1);
+      expect(controller.activeLocalSaveSlot, 1);
+      expect(controller.characterState.values['energy'], 23);
+      expect(controller.characterState.values['closeness'], 34);
+      expect(controller.relationshipPoints, 88);
+
+      await controller.deleteLocalSlot(1);
+      expect(controller.activeLocalSaveSlot, isNull);
+    },
+  );
 
   test(
     'imports retain the newest 60 messages and reject partial updates',

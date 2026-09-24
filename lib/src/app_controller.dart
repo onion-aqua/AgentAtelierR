@@ -2600,6 +2600,29 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
 
   static const localSaveSlotCount = 6;
   static const _localSaveSlotPrefix = 'local_save_slot_';
+  static const _activeLocalSaveSlotKey = 'active_local_save_slot';
+
+  /// The slot currently selected by the player. This is application metadata,
+  /// so it is intentionally kept outside each game snapshot.
+  int? get activeLocalSaveSlot {
+    final value = _preferences.getInt(_activeLocalSaveSlotKey);
+    return value != null && value >= 0 && value < localSaveSlotCount
+        ? value
+        : null;
+  }
+
+  Future<void> _setActiveLocalSaveSlot(int? index) async {
+    if (index == null) {
+      await _preferences.remove(_activeLocalSaveSlotKey);
+      return;
+    }
+    if (index < 0 || index >= localSaveSlotCount) {
+      throw RangeError.range(index, 0, localSaveSlotCount - 1, 'index');
+    }
+    if (!await _preferences.setInt(_activeLocalSaveSlotKey, index)) {
+      throw StateError('活动存档槽位写入失败');
+    }
+  }
 
   List<LocalSaveSlot?> get localSaveSlots =>
       List<LocalSaveSlot?>.generate(localSaveSlotCount, (index) {
@@ -2628,7 +2651,7 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
         }
       }, growable: false);
 
-  Future<void> saveToLocalSlot(int index) async {
+  Future<void> saveToLocalSlot(int index, {String? name}) async {
     if (index < 0 || index >= localSaveSlotCount) {
       throw RangeError.range(index, 0, localSaveSlotCount - 1, 'index');
     }
@@ -2644,14 +2667,62 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
       'messageCount': messages.length,
       'preview': preview.length > 80 ? '${preview.substring(0, 80)}…' : preview,
       'snapshot': _exportGameState(),
-      'name': localSaveSlots[index]?.name ?? '',
+      'name': name?.trim() ?? localSaveSlots[index]?.name ?? '',
     };
     final saved = await _preferences.setString(
       '$_localSaveSlotPrefix$index',
       jsonEncode(data),
     );
     if (!saved) throw StateError('存档写入失败');
+    await _setActiveLocalSaveSlot(index);
     notifyListeners();
+  }
+
+  /// Creates a fresh save in [index] and switches the current game to it.
+  ///
+  /// Role/world settings remain available in the new save, while runtime
+  /// progress starts from a clean state with the requested relationship
+  /// defaults. Existing slots may be replaced by the UI after confirmation.
+  Future<void> createLocalSlot(int index, {String name = ''}) async {
+    if (index < 0 || index >= localSaveSlotCount) {
+      throw RangeError.range(index, 0, localSaveSlotCount - 1, 'index');
+    }
+    final snapshot = _exportGameState();
+    snapshot
+      ..['messages'] = <Map<String, dynamic>>[_initialMessage.toJson()]
+      ..['memorySummary'] = ''
+      ..['characterState'] = CharacterState.newSave().toJson()
+      ..['characterMood'] = CharacterMood.neutral.name
+      ..['relationshipPoints'] = 0
+      ..['preciousItems'] = <String, int>{}
+      ..['sceneTime'] = sceneTimeForNow().name
+      ..['automaticSceneTime'] = true
+      ..['selectedAreaId'] = 'area_01'
+      ..['selectedStageId'] = 'stage_01_002_01'
+      ..['selectedAreaName'] = '库肯岛周边地域'
+      ..['selectedStageName'] = '小妖精之森・隐居处前'
+      ..['selectedCharacterAppearanceId'] = 'seated_01'
+      ..['progress'] = <String, dynamic>{
+        'characterTouchCount': 0,
+        'userMessageCount': 0,
+        'mapVisitCount': 0,
+        'travelCount': 0,
+        'sceneChangeCount': 0,
+        'gatherCount': 0,
+        'synthesisCount': 0,
+        'storyQuestIndex': 0,
+        'storyQuestBaseline': 0,
+        'stars': 0,
+        'claimedMissionIds': <String>[],
+      }
+      ..['dynamicQuests'] = <Map<String, dynamic>>[]
+      ..['alchemy'] = AlchemyState.empty().toJson();
+    _applyGameState(snapshot);
+    _changed();
+    await saveToLocalSlot(
+      index,
+      name: name.trim().isEmpty ? '新存档 ${index + 1}' : name.trim(),
+    );
   }
 
   Future<void> loadFromLocalSlot(int index) async {
@@ -2667,6 +2738,8 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
       throw const FormatException('存档格式无效');
     }
     await _importGameState(data['snapshot'] as Map<String, dynamic>);
+    await _setActiveLocalSaveSlot(index);
+    notifyListeners();
   }
 
   Map<String, dynamic> exportLocalSlot(
@@ -2759,6 +2832,9 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
     }
     final removed = await _preferences.remove('$_localSaveSlotPrefix$index');
     if (!removed) throw StateError('存档删除失败');
+    if (activeLocalSaveSlot == index) {
+      await _setActiveLocalSaveSlot(null);
+    }
     notifyListeners();
   }
 

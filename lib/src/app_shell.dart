@@ -193,58 +193,67 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
           AppDestination.shop => true,
           _ => false,
         };
+        // Keep chat at a stable tree location so switching pages never
+        // disposes its draft, replayable audio, or active performance state.
+        final chat = ChatScreen(
+          pageActive: _destination == AppDestination.chat,
+          controller: widget.controller,
+          onMenuPressed: _openMenu,
+          onShopPressed: () => _selectDestination(AppDestination.shop),
+          hideUi: _chatUiHidden || overlayDestination,
+          onFullscreenChanged: (value) => setState(() {
+            _chatFullscreen = value;
+            if (value) _menuOpen = false;
+          }),
+        );
+        final page = switch (_destination) {
+          AppDestination.chat => const SizedBox.shrink(),
+          AppDestination.worldMap => WorldMapScreen(
+            key: _worldMapKey,
+            controller: widget.controller,
+            onMenuPressed: _openMenu,
+            onClose: () => _selectDestination(AppDestination.chat),
+          ),
+          AppDestination.alarms => AlarmScreen(
+            controller: widget.controller,
+            onMenuPressed: _openMenu,
+          ),
+          AppDestination.runtimeLogs => RuntimeLogScreen(
+            language: widget.controller.interfaceLanguage,
+            liquidGlass: widget.controller.liquidGlassChatUi,
+            onMenuPressed: _openMenu,
+          ),
+          AppDestination.settings => SettingsScreen(
+            key: _settingsKey,
+            backHandledByShell: true,
+            controller: widget.controller,
+            onMenuPressed: _openMenu,
+          ),
+          AppDestination.alchemy => AlchemyScreen(
+            controller: widget.controller,
+          ),
+          AppDestination.missions => MissionScreen(
+            controller: widget.controller,
+          ),
+          AppDestination.shop => ShopScreen(controller: widget.controller),
+        };
         final content = Stack(
           children: [
-            IndexedStack(
-              index: overlayDestination
-                  ? AppDestination.chat.index
-                  : _destination.index,
-              children: [
-                ChatScreen(
-                  pageActive: _destination == AppDestination.chat,
-                  controller: widget.controller,
-                  onMenuPressed: _openMenu,
-                  onShopPressed: () => _selectDestination(AppDestination.shop),
-                  hideUi: _chatUiHidden || overlayDestination,
-                  onFullscreenChanged: (value) => setState(() {
-                    _chatFullscreen = value;
-                    if (value) _menuOpen = false;
-                  }),
+            chat,
+            Positioned.fill(
+              child: AnimatedSwitcher(
+                duration: const Duration(milliseconds: 320),
+                reverseDuration: const Duration(milliseconds: 240),
+                switchInCurve: Curves.easeOutCubic,
+                switchOutCurve: Curves.easeInCubic,
+                transitionBuilder: (child, animation) =>
+                    FadeTransition(opacity: animation, child: child),
+                child: KeyedSubtree(
+                  key: ValueKey<AppDestination>(_destination),
+                  child: page,
                 ),
-                WorldMapScreen(
-                  key: _worldMapKey,
-                  controller: widget.controller,
-                  onMenuPressed: _openMenu,
-                  onClose: () => _selectDestination(AppDestination.chat),
-                ),
-                const SizedBox.shrink(),
-                const SizedBox.shrink(),
-                AlarmScreen(
-                  controller: widget.controller,
-                  onMenuPressed: _openMenu,
-                ),
-                const SizedBox.shrink(),
-                RuntimeLogScreen(
-                  language: widget.controller.interfaceLanguage,
-                  liquidGlass: widget.controller.liquidGlassChatUi,
-                  onMenuPressed: _openMenu,
-                ),
-                const SizedBox.shrink(),
-              ],
-            ),
-            if (_destination == AppDestination.settings)
-              SettingsScreen(
-                key: _settingsKey,
-                backHandledByShell: true,
-                controller: widget.controller,
-                onMenuPressed: _openMenu,
               ),
-            if (_destination == AppDestination.alchemy)
-              AlchemyScreen(controller: widget.controller),
-            if (_destination == AppDestination.missions)
-              MissionScreen(controller: widget.controller),
-            if (_destination == AppDestination.shop)
-              ShopScreen(controller: widget.controller),
+            ),
           ],
         );
         final safeTop = MediaQuery.paddingOf(context).top;

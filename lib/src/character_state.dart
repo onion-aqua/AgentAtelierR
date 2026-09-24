@@ -17,6 +17,14 @@ class CharacterState {
        delta = delta ?? {},
        settled = settled ?? [];
 
+  /// The initial relationship state for a newly created local save.
+  ///
+  /// Keep this separate from [CharacterState]'s legacy runtime defaults so
+  /// existing installations and state-delta tests retain their behavior.
+  factory CharacterState.newSave() => CharacterState(
+    values: const {'mood': 0, 'energy': 100, 'closeness': 0, 'curiosity': 20},
+  );
+
   final Map<String, int> values;
   final Map<String, int> bands;
   final Map<String, int> delta;
