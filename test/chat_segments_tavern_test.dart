@@ -1,7 +1,30 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:ryza_chat_mvp/src/app_controller.dart';
 import 'package:ryza_chat_mvp/src/chat_segments.dart';
+import 'package:ryza_chat_mvp/src/character_performance.dart';
 
 void main() {
+  test('late performance cues align with the already synthesized speech', () {
+    const speech = '莱莎：[happy]你来啦！\n旁白：她走近。\n莱莎：[relaxed]先坐下吧。';
+    const planned =
+        '莱莎：[face:happy][action:wave]你来啦！\n旁白：她走近。\n莱莎：[face:neutral][action:none]先坐下吧。';
+    final aligned = performanceSegmentsMatchingSpeech(
+      speech,
+      planned,
+      fallbackMood: CharacterMood.neutral,
+    );
+    expect(aligned, hasLength(2));
+    expect(aligned!.first.action, CharacterAction.wave);
+    expect(
+      performanceSegmentsMatchingSpeech(
+        speech,
+        planned.replaceFirst('先坐下吧', '现在走吧'),
+        fallbackMood: CharacterMood.neutral,
+      ),
+      isNull,
+    );
+  });
+
   test('user narration preserves both sides including empty speech', () {
     final parts = parseUserComposerParts('旁白：走近\n发言：你好\n旁白：挥手\n微笑');
     expect(parts.narration, '走近');

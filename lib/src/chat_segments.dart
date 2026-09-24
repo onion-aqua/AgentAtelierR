@@ -690,6 +690,30 @@ List<RyzaPerformanceSegment> performanceSegmentsForAssistantResponse(
   return result;
 }
 
+List<RyzaPerformanceSegment>? performanceSegmentsMatchingSpeech(
+  String speechResponse,
+  String plannedResponse, {
+  required CharacterMood fallbackMood,
+}) {
+  final speech = performanceSegmentsForAssistantResponse(
+    speechResponse,
+    fallbackMood: fallbackMood,
+  );
+  final planned = performanceSegmentsForAssistantResponse(
+    plannedResponse,
+    fallbackMood: fallbackMood,
+  );
+  if (speech.length != planned.length) return null;
+  for (var i = 0; i < speech.length; i++) {
+    String visible(RyzaPerformanceSegment segment) =>
+        displayTextForAssistantSegment(
+          ChatSegment(speaker: ChatSpeaker.ryza, text: segment.speechText),
+        );
+    if (visible(speech[i]) != visible(planned[i])) return null;
+  }
+  return planned;
+}
+
 String? postureCueForAssistantResponse(String response) {
   String? posture;
   final cue = RegExp(

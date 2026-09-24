@@ -202,6 +202,18 @@ class _CachedSpeechSegment {
   final CharacterAction? action;
   final String? posture;
   final List<String> motionGroupIds;
+
+  _CachedSpeechSegment withPerformance(RyzaPerformanceSegment segment) =>
+      _CachedSpeechSegment(
+        text: text,
+        path: path,
+        envelope: envelope,
+        expression: segment.expression,
+        expressionIntensity: segment.expressionIntensity,
+        action: segment.action,
+        posture: segment.posture,
+        motionGroupIds: segment.motionGroupIds,
+      );
 }
 
 class _ChatScreenState extends State<ChatScreen> {
@@ -2143,6 +2155,17 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
+  void _applySpeechSegmentPerformance(RyzaPerformanceSegment segment) {
+    if (segment.posture case final posture?) _selectPosture(posture);
+    if (segment.expression case final expression?) {
+      _applyExpression(expression, intensity: segment.expressionIntensity);
+    }
+    if (segment.action case final action?) _performSemanticAction(action);
+    for (final id in segment.motionGroupIds.take(2)) {
+      _performMotionGroupIntent(id);
+    }
+  }
+
   void _performSemanticAction(CharacterAction action) {
     if (action == CharacterAction.none || !_spineReady || _tapReactionActive) {
       return;
@@ -2820,81 +2843,89 @@ class _ChatScreenState extends State<ChatScreen> {
           messages: messages,
         ),
       );
-      var performanceText = PerformancePlanner.withoutControls(reply);
-      Map<String, dynamic>? stateProposal;
       final stateRevision = widget.controller.dataRevision;
       final stateTurn = '${DateTime.now().microsecondsSinceEpoch}:$generation';
-      try {
-        RuntimeLog.instance.info('AI', '独立表情工具与动作工具并行规划（各总预算30秒；与语音规划并行）');
-        final planned = await IndependentPerformanceTools().plan(
-          userInput: text,
-          source: reply,
-          capabilities: capabilities,
-          currentFace: _currentExpression.name,
-          currentIntensity: _expressionIntensity,
-          sharedContext: sharedContext,
-          onMismatch: (reason) {
-            if (!mounted || generation != _replyGeneration) return;
-            RuntimeLog.instance.warning(
-              'ActionPlanner',
-              '旁白/动作一致性检查未通过：$reason；未播放替代动作',
-            );
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                content: Text(
-                  widget.controller.interfaceLanguage.text(
-                    '本轮动作无法准确呈现，已跳过。详情见动作日志。',
-                    'This action could not be represented accurately and was skipped. See action logs.',
-                    '動作を正確に再現できないためスキップしました。詳細は動作ログをご確認ください。',
+      final performancePlanning = () async {
+        var performanceText = PerformancePlanner.withoutControls(reply);
+        Map<String, dynamic>? stateProposal;
+        try {
+          RuntimeLog.instance.info('AI', '独立表情与动作规划已启动，不阻塞语音合成');
+          final planned = await IndependentPerformanceTools().plan(
+            userInput: text,
+            source: reply,
+            capabilities: capabilities,
+            currentFace: _currentExpression.name,
+            currentIntensity: _expressionIntensity,
+            sharedContext: sharedContext,
+            onMismatch: (reason) {
+              if (!mounted || generation != _replyGeneration) return;
+              RuntimeLog.instance.warning(
+                'ActionPlanner',
+                '旁白/动作一致性检查未通过：$reason；未播放替代动作',
+              );
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text(
+                    widget.controller.interfaceLanguage.text(
+                      '本轮动作无法准确呈现，已跳过。详情见动作日志。',
+                      'This action could not be represented accurately and was skipped. See action logs.',
+                      '動作を正確に再現できないためスキップしました。詳細は動作ログをご確認ください。',
+                    ),
                   ),
                 ),
-              ),
-            );
-          },
-          characterState: {
-            'values': widget.controller.characterState.values,
-            'emotion': widget.controller.characterState.emotion,
-            'reason_language': widget.controller.interfaceLanguage.promptLabel,
-          },
-          onStateProposal: (proposal) => stateProposal = proposal,
-          recentActions: _recentDialogueActions.reversed.toList(),
-          complete: (messages) => _aiClient.complete(
-            performancePlanning: true,
-            provider: requestProvider,
-            baseUrl: requestBaseUrl,
-            apiKey: apiKey,
-            model: requestModel,
-            lightweight: true,
-            messages: messages,
-          ),
-        );
-        if (!mounted || generation != _replyGeneration) return;
-        final current = _buildPerformancePromptContext();
-        if (current.appearanceId == capabilities.appearanceId &&
-            current.revision == capabilities.revision) {
-          performanceText = planned;
-          RuntimeLog.instance.info('AI', '独立表演规划完成：$planned');
+              );
+            },
+            characterState: {
+              'values': widget.controller.characterState.values,
+              'emotion': widget.controller.characterState.emotion,
+              'reason_language':
+                  widget.controller.interfaceLanguage.promptLabel,
+            },
+            onStateProposal: (proposal) => stateProposal = proposal,
+            recentActions: _recentDialogueActions.reversed.toList(),
+            complete: (messages) => _aiClient.complete(
+              performancePlanning: true,
+              provider: requestProvider,
+              baseUrl: requestBaseUrl,
+              apiKey: apiKey,
+              model: requestModel,
+              lightweight: true,
+              messages: messages,
+            ),
+          );
+          if (!mounted || generation != _replyGeneration) {
+            return performanceText;
+          }
+          final current = _buildPerformancePromptContext();
+          if (current.appearanceId == capabilities.appearanceId &&
+              current.revision == capabilities.revision) {
+            performanceText = planned;
+            RuntimeLog.instance.info('AI', '独立表演规划完成：$planned');
+          }
+        } on Object catch (error) {
+          RuntimeLog.instance.warning('AI', '表演规划跳过，继续原文播放：$error');
         }
-      } on Object catch (error) {
-        RuntimeLog.instance.warning('AI', '表演规划跳过，继续原文播放：$error');
-      }
-      if (!mounted || generation != _replyGeneration) return;
-      if (stateProposal != null) {
-        final settled = widget.controller.settleCharacterState(
-          stateTurn,
-          stateProposal!,
-          stateRevision,
-        );
-        RuntimeLog.instance.info(
-          'CharacterState',
-          settled ? '本轮状态已更新' : '状态提议无效或存档已改变，保留原值',
-        );
-      }
+        if (mounted &&
+            generation == _replyGeneration &&
+            stateProposal != null) {
+          final settled = widget.controller.settleCharacterState(
+            stateTurn,
+            stateProposal!,
+            stateRevision,
+          );
+          RuntimeLog.instance.info(
+            'CharacterState',
+            settled ? '本轮状态已更新' : '状态提议无效或存档已改变，保留原值',
+          );
+        }
+        return performanceText;
+      }();
+      var speechText = PerformancePlanner.withoutControls(reply);
       final speechPlan = await speechPlanning;
       if (!mounted || generation != _replyGeneration) return;
       if (speechPlan != null) {
         try {
-          performanceText = speechPlan.apply(performanceText);
+          speechText = speechPlan.apply(speechText);
           _previousSpeechEmotion = speechPlan.lastEmotion;
         } on FormatException catch (error) {
           RuntimeLog.instance.warning('TTS', '语音规划与台词不匹配，回退本地规则：$error');
@@ -2903,9 +2934,25 @@ class _ChatScreenState extends State<ChatScreen> {
       final singingPlan = await singingPlanning;
       if (!mounted || generation != _replyGeneration) return;
       if (singingPlan != null) {
-        performanceText = singingPlan.apply(performanceText);
+        speechText = singingPlan.apply(speechText);
       }
-      await _playTtsIfConfigured(performanceText, displaySource: reply);
+      final plannedPerformance = performancePlanning.then((planned) {
+        var result = planned;
+        if (speechPlan != null) {
+          try {
+            result = speechPlan.apply(result);
+          } on FormatException catch (error) {
+            RuntimeLog.instance.warning('TTS', '表演文本无法复用语音规划：$error');
+          }
+        }
+        if (singingPlan != null) result = singingPlan.apply(result);
+        return result;
+      });
+      await _playTtsIfConfigured(
+        speechText,
+        displaySource: reply,
+        plannedPerformance: plannedPerformance,
+      );
       if (generation != _replyGeneration) return;
     } on Object catch (error, stackTrace) {
       if (generation != _replyGeneration) return;
@@ -3282,7 +3329,19 @@ class _ChatScreenState extends State<ChatScreen> {
   Future<void> _playTtsIfConfigured(
     String text, {
     String? displaySource,
+    Future<String>? plannedPerformance,
   }) async {
+    final replyGeneration = _replyGeneration;
+    Future<String> fallbackPerformance() async {
+      if (plannedPerformance == null) return text;
+      try {
+        return await plannedPerformance;
+      } on Object catch (error) {
+        RuntimeLog.instance.warning('ActionPlanner', '表演回退失败：$error');
+        return text;
+      }
+    }
+
     final collectionMessage = widget.controller.messages
         .where((m) => !m.isUser && m.text == (displaySource ?? text))
         .lastOrNull;
@@ -3298,7 +3357,9 @@ class _ChatScreenState extends State<ChatScreen> {
       return;
     }
     if (!widget.controller.fishTtsEnabled) {
-      _applyPerformanceFromResponse(text);
+      final fallback = await fallbackPerformance();
+      if (!mounted || replyGeneration != _replyGeneration) return;
+      _applyPerformanceFromResponse(fallback);
       _stopSpeakingAnimation();
       return;
     }
@@ -3327,7 +3388,9 @@ class _ChatScreenState extends State<ChatScreen> {
         'TTS',
         '跳过合成：${widget.controller.ttsProvider.label} 的密钥或必要配置缺失',
       );
-      _applyPerformanceFromResponse(text);
+      final fallback = await fallbackPerformance();
+      if (!mounted || replyGeneration != _replyGeneration) return;
+      _applyPerformanceFromResponse(fallback);
       _stopSpeakingAnimation();
       return;
     }
@@ -3339,6 +3402,59 @@ class _ChatScreenState extends State<ChatScreen> {
     final cancellation = Completer<void>();
     _speechCancellation = cancellation;
     final completedSegments = <_CachedSpeechSegment>[];
+    List<RyzaPerformanceSegment>? plannedSegments = plannedPerformance == null
+        ? segments
+        : null;
+    String? plannedText;
+    var activeIndex = -1;
+    var playbackFinished = false;
+    final appliedPerformance = <int>{};
+    void applyPerformanceAt(int index) {
+      final cues = plannedSegments;
+      if (cues == null || index < 0 || index >= cues.length) return;
+      if (!appliedPerformance.add(index)) return;
+      _applySpeechSegmentPerformance(cues[index]);
+    }
+
+    if (plannedPerformance != null) {
+      unawaited(
+        plannedPerformance.then<void>(
+          (planned) {
+            if (!mounted || generation != _speechPlaybackGeneration) return;
+            final aligned = performanceSegmentsMatchingSpeech(
+              text,
+              planned,
+              fallbackMood: widget.controller.characterMood,
+            );
+            if (aligned == null) {
+              RuntimeLog.instance.warning(
+                'ActionPlanner',
+                '表演规划段落与语音正文不一致，跳过晚到动作',
+              );
+              return;
+            }
+            plannedText = planned;
+            plannedSegments = aligned;
+            for (var i = 0; i < completedSegments.length; i++) {
+              completedSegments[i] = completedSegments[i].withPerformance(
+                aligned[i],
+              );
+            }
+            if (!playbackFinished) applyPerformanceAt(activeIndex);
+            if (playbackFinished &&
+                _lastSpeechSource == (displaySource ?? text)) {
+              _lastSpeech = List<_CachedSpeechSegment>.unmodifiable(
+                completedSegments,
+              );
+              _lastSpeechPerformance = planned;
+            }
+          },
+          onError: (Object error, StackTrace stackTrace) {
+            RuntimeLog.instance.warning('ActionPlanner', '晚到表演规划失败：$error');
+          },
+        ),
+      );
+    }
     try {
       final model = switch (widget.controller.ttsProvider) {
         TtsProvider.fishAudio => widget.controller.fishAudioModel,
@@ -3379,18 +3495,14 @@ class _ChatScreenState extends State<ChatScreen> {
           displayIndex,
           _readingDurationFor(segment.speechText),
         );
-        if (segment.posture case final posture?) _selectPosture(posture);
-        if (segment.expression case final expression?) {
-          _applyExpression(expression, intensity: segment.expressionIntensity);
-        }
-        if (segment.action case final action?) {
-          _performSemanticAction(action);
-        }
-        for (final id in segment.motionGroupIds.take(2)) {
-          _performMotionGroupIntent(id);
-        }
+        activeIndex = index;
+        applyPerformanceAt(index);
         await _audioPlayer.stop();
         await _audioPlayer.setVolume(widget.controller.voiceVolume);
+        if (!mounted || generation != _speechPlaybackGeneration) {
+          await _deleteTemporarySpeech(prepared.path);
+          return;
+        }
         _startSpeakingAnimation(
           envelope: prepared.envelope,
           awaitingAudio: true,
@@ -3398,11 +3510,13 @@ class _ChatScreenState extends State<ChatScreen> {
         final completed = _audioPlayer.onPlayerComplete.first;
         await _audioPlayer.play(DeviceFileSource(prepared.path));
         await Future.any([completed, cancellation.future]);
+        activeIndex = -1;
         if (generation != _speechPlaybackGeneration) {
           await _deleteSpeechSegments(completedSegments);
           await _deleteTemporarySpeech(prepared.path);
           return;
         }
+        final performance = plannedSegments?[index] ?? segment;
         completedSegments.add(
           _CachedSpeechSegment(
             text: displayTextForAssistantSegment(
@@ -3410,11 +3524,11 @@ class _ChatScreenState extends State<ChatScreen> {
             ),
             path: prepared.path,
             envelope: prepared.envelope,
-            expression: segment.expression,
-            expressionIntensity: segment.expressionIntensity,
-            action: segment.action,
-            posture: segment.posture,
-            motionGroupIds: segment.motionGroupIds,
+            expression: performance.expression,
+            expressionIntensity: performance.expressionIntensity,
+            action: performance.action,
+            posture: performance.posture,
+            motionGroupIds: performance.motionGroupIds,
           ),
         );
         if (next != null) {
@@ -3442,7 +3556,13 @@ class _ChatScreenState extends State<ChatScreen> {
       }
       await _replaceLastSpeech(completedSegments);
       _lastSpeechSource = displaySource ?? text;
-      _lastSpeechPerformance = text;
+      _lastSpeechPerformance = plannedText ?? text;
+      if (plannedText != null) {
+        _lastSpeech = List<_CachedSpeechSegment>.unmodifiable(
+          completedSegments,
+        );
+      }
+      playbackFinished = true;
       RuntimeLog.instance.info(
         'TTS',
         '合成与播放完成，分段数=${completedSegments.length}',
@@ -3464,7 +3584,9 @@ class _ChatScreenState extends State<ChatScreen> {
       for (final path in _temporarySpeechPaths.toList()) {
         unawaited(_deleteTemporarySpeech(path));
       }
-      _applyPerformanceFromResponse(text);
+      final fallback = await fallbackPerformance();
+      if (!mounted || replyGeneration != _replyGeneration) return;
+      _applyPerformanceFromResponse(fallback);
       _stopSpeakingAnimation();
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(

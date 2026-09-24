@@ -1396,6 +1396,13 @@ void main() {
       expect(controller.buildCharacterPrompt(), contains('"crying"'));
       expect(controller.buildCharacterPrompt(), contains('"comfort"'));
       expect(controller.buildCharacterPrompt(), contains('不要输出原始 Spine 动画名'));
+      expect(controller.buildCharacterPrompt(), contains('禁止“……っ”“…っ”“...っ”'));
+      controller.setLlmContextCompatibility(true);
+      expect(controller.buildCharacterPrompt(), contains('禁止“……っ”“…っ”“...っ”'));
+      expect(
+        controller.buildCharacterPrompt(independentPerformance: true),
+        contains('禁止“……っ”“…っ”“...っ”'),
+      );
     },
   );
 

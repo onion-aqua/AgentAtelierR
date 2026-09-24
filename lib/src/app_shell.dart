@@ -437,13 +437,14 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
                 onPressed: _toggleAlwaysOnTop,
               ),
             for (final destination in AppDestination.values)
-              GlassIconButton(
-                liquidGlass: liquidGlass,
-                size: 48,
-                icon: destination.icon,
-                tooltip: destination.label(language),
-                onPressed: () => _selectDestination(destination),
-              ),
+              if (destination != AppDestination.shop)
+                GlassIconButton(
+                  liquidGlass: liquidGlass,
+                  size: 48,
+                  icon: destination.icon,
+                  tooltip: destination.label(language),
+                  onPressed: () => _selectDestination(destination),
+                ),
           ],
         ),
       ),

@@ -66,6 +66,7 @@ class SpeechPlanner {
             'cues允许发声标签${speechDeliveryTags.join(',')}及情绪标签${speechEmotionTags.join(',')}。情绪标签只用于有语义依据的句内转折，不能连续堆叠相反情绪。offset是原文UTF-16偏移，不能拆开emoji等代理对；不确定时仅使用0或句首明确位置。'
             '标签密度与情感强度独立：${intensity.voiceInstruction} ${density.promptInstruction} '
             '${asmr ? 'ASMR开启：优先轻声、气声、耳语和自然呼吸，避免吼叫；不必每句同一标签。' : 'ASMR关闭，不要无故使用耳语或气声。'}'
+            '遇到省略号后紧跟“っ”的原文也不要改写；不要在两者之间插入语音标签。客户端会在送往 Fish Audio 前清理这个组合。'
             '不要为旁白或NPC分配语音。',
       },
       {

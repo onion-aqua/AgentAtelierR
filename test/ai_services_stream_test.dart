@@ -200,4 +200,24 @@ void main() {
       expect(requests, 2);
     },
   );
+
+  test(
+    'Fish Audio request cleans ellipsis-small-tsu without changing words',
+    () async {
+      final client = MockClient((request) async {
+        final body = jsonDecode(request.body) as Map<String, dynamic>;
+        expect(body['text'], '[breathy]あ……、待って！');
+        return http.Response.bytes(
+          Uint8List.fromList(const [0x49, 0x44, 0x33]),
+          200,
+        );
+      });
+
+      await FishAudioClient(client: client).synthesizeBytes(
+        apiKey: 'test-key',
+        referenceId: 'voice-id',
+        text: '[breathy]あ……っ、待って！',
+      );
+    },
+  );
 }

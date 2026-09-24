@@ -21,6 +21,31 @@ void main() {
       DateTime(2026, 9, 22, 23, 55),
     );
   });
+  test('complete ASMR script is segmented without dropping text or tags', () {
+    const script =
+        '[whispering]雨落在窗边，声音很轻。你可以慢慢闭上眼睛，听一会儿。\n'
+        '[breathy]我会留在这里，等这一阵雨慢慢过去。';
+    final segments = splitAsmrScript(script);
+
+    expect(segments.length, greaterThan(1));
+    expect(
+      segments.map((segment) => segment.text).join(),
+      script.replaceAll('\n', ''),
+    );
+    expect(segments.first.text, startsWith('[whispering]'));
+    expect(segments.last.text, startsWith('[breathy]'));
+    expect(segments.first.pauseAfter, greaterThan(Duration.zero));
+    expect(segments.last.pauseAfter, Duration.zero);
+  });
+
+  test('long ASMR text stays in order and uses bounded TTS segments', () {
+    final script = '[soft breathy voice]${'这是完整朗读稿，不应被裁掉。' * 25}';
+    final segments = splitAsmrScript(script);
+
+    expect(segments.length, greaterThan(3));
+    expect(segments.every((segment) => segment.text.length <= 96), isTrue);
+    expect(segments.map((segment) => segment.text).join(), script);
+  });
   testWidgets(
     'ASMR page exposes topic, countdown and time without starting requests',
     (tester) async {

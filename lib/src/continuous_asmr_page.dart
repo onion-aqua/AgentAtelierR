@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:collection';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -18,10 +19,54 @@ DateTime asmrDeadline(DateTime now, Duration duration, TimeOfDay? time) {
   return target.isAfter(now) ? target : target.add(const Duration(days: 1));
 }
 
+class AsmrSpeechSegment {
+  const AsmrSpeechSegment(this.text, this.pauseAfter);
+
+  final String text;
+  final Duration pauseAfter;
+}
+
+List<AsmrSpeechSegment> splitAsmrScript(String script) {
+  final segments = <AsmrSpeechSegment>[];
+  final current = StringBuffer();
+  final tokens = RegExp(r'\[[^\]]*\]|[\s\S]')
+      .allMatches(script.replaceAll('\r\n', '\n').trim());
+
+  void flush(Duration pause) {
+    final text = current.toString().trim();
+    current.clear();
+    if (text.isNotEmpty) segments.add(AsmrSpeechSegment(text, pause));
+  }
+
+  for (final token in tokens) {
+    final value = token.group(0)!;
+    if (value == '\n') {
+      flush(const Duration(milliseconds: 650));
+      continue;
+    }
+    current.write(value);
+    final length = current.length;
+    if ('。！？!?；;'.contains(value) && length >= 24) {
+      flush(const Duration(milliseconds: 320));
+    } else if ('，,、'.contains(value) && length >= 72) {
+      flush(const Duration(milliseconds: 220));
+    } else if (length >= 96 && !value.startsWith('[')) {
+      flush(const Duration(milliseconds: 180));
+    }
+  }
+  flush(Duration.zero);
+  if (segments.isNotEmpty) {
+    final last = segments.removeLast();
+    segments.add(AsmrSpeechSegment(last.text, Duration.zero));
+  }
+  return segments;
+}
+
 class _AsmrClip {
-  _AsmrClip(this.path, this.title);
+  _AsmrClip(this.path, this.title, this.pauseAfter);
   final String path;
   String title;
+  final Duration pauseAfter;
   Duration? duration;
 }
 
@@ -36,7 +81,11 @@ class _ContinuousAsmrPageState extends State<ContinuousAsmrPage> {
   final _theme = TextEditingController();
   final _player = AudioPlayer();
   final _llm = OpenAiCompatibleClient();
-  final _history = <Map<String, String>>[];
+  final _buffer = Queue<_AsmrClip>();
+  Completer<void>? _bufferChanged;
+  Completer<void>? _bufferSpace;
+  bool _synthesisFinished = false;
+  Object? _synthesisError;
   Timer? _clock;
   Completer<void>? _playback;
   int _generation = 0;
@@ -55,31 +104,90 @@ class _ContinuousAsmrPageState extends State<ContinuousAsmrPage> {
   String t(String zh, String en, String ja) =>
       c.interfaceLanguage.text(zh, en, ja);
 
-  /// Keeps each ASMR clip short enough for quick synthesis and a natural
-  /// hand-off to the next clip. Provider tags are intentionally preserved.
-  String _shortenAsmrText(String value) {
-    var normalized = value.replaceAll(RegExp(r'\s+'), ' ').trim();
-    if (normalized.isEmpty) return normalized;
-    final chunks = <String>[];
-    final current = StringBuffer();
-    for (final character in normalized.split('')) {
-      current.write(character);
-      if ('。！？!?'.contains(character) && current.length > 8) {
-        chunks.add(current.toString().trim());
-        current.clear();
-        if (chunks.length == 2) break;
+  void _wakeBuffer() {
+    final waiter = _bufferChanged;
+    _bufferChanged = null;
+    if (waiter != null && !waiter.isCompleted) waiter.complete();
+  }
+
+  void _wakeSpace() {
+    final waiter = _bufferSpace;
+    _bufferSpace = null;
+    if (waiter != null && !waiter.isCompleted) waiter.complete();
+  }
+
+  bool _isCurrent(int generation) =>
+      mounted && _running && generation == _generation;
+
+  Future<void> _fillBuffer(
+    List<AsmrSpeechSegment> segments,
+    String topic,
+    String voiceKey,
+    int generation,
+  ) async {
+    try {
+      for (
+        var index = 0;
+        index < segments.length && _isCurrent(generation);
+        index++
+      ) {
+        while (_isCurrent(generation) && _buffer.length >= 3) {
+          await (_bufferSpace ??= Completer<void>()).future;
+        }
+        if (!_isCurrent(generation)) break;
+        final segment = segments[index];
+        final path = await _synthesize(segment.text, voiceKey);
+        if (!_isCurrent(generation)) {
+          await _deleteClipFile(path);
+          break;
+        }
+        final clip = _AsmrClip(
+          path,
+          '$topic · ${_clips.length + 1}',
+          segment.pauseAfter,
+        );
+        setState(() {
+          _clips.add(clip);
+          _buffer.add(clip);
+        });
+        if (_clips.length > 50) {
+          final old = _clips.removeAt(0);
+          await _deleteClipFile(old.path);
+        }
+        _wakeBuffer();
+      }
+    } on Object catch (error) {
+      if (_isCurrent(generation)) _synthesisError = error;
+    } finally {
+      if (generation == _generation) {
+        _synthesisFinished = true;
+        _wakeBuffer();
       }
     }
-    if (chunks.length < 2 && current.isNotEmpty) {
-      chunks.add(current.toString().trim());
+  }
+
+  Future<void> _waitForPrebuffer(int count, int generation) async {
+    while (_isCurrent(generation) &&
+        !_synthesisFinished &&
+        _buffer.length < count) {
+      await (_bufferChanged ??= Completer<void>()).future;
     }
-    var result = chunks.take(2).join(' ');
-    if (result.isEmpty) result = normalized;
-    if (result.length > 72) {
-      final cutoff = result.lastIndexOf(RegExp(r'[。！？!?]'), 72);
-      result = result.substring(0, cutoff > 20 ? cutoff + 1 : 72).trim();
+  }
+
+  Future<_AsmrClip?> _takeBufferedClip(int generation) async {
+    while (_isCurrent(generation)) {
+      if (_buffer.isNotEmpty) {
+        final clip = _buffer.removeFirst();
+        _wakeSpace();
+        return clip;
+      }
+      if (_synthesisFinished) {
+        if (_synthesisError != null) throw _synthesisError!;
+        return null;
+      }
+      await (_bufferChanged ??= Completer<void>()).future;
     }
-    return result;
+    return null;
   }
 
   @override
@@ -102,6 +210,9 @@ class _ContinuousAsmrPageState extends State<ContinuousAsmrPage> {
     _running = false;
     _replaying = false;
     _activeClip = null;
+    _buffer.clear();
+    _wakeBuffer();
+    _wakeSpace();
     final playback = _playback;
     _playback = null;
     await _player.stop();
@@ -140,7 +251,9 @@ class _ContinuousAsmrPageState extends State<ContinuousAsmrPage> {
             _atTime ? (_time ?? TimeOfDay.now()) : null,
           )
         : null;
-    _history.clear();
+    _buffer.clear();
+    _synthesisFinished = false;
+    _synthesisError = null;
     final topic = _theme.text.trim();
     setState(() {
       _running = true;
@@ -156,77 +269,82 @@ class _ContinuousAsmrPageState extends State<ContinuousAsmrPage> {
         throw const FormatException('API Key 未配置');
       }
 
-      Future<String> requestNext() async {
-        final messages = <Map<String, String>>[
+      final targetMinutes = (_deadline?.difference(now).inMinutes ?? 15).clamp(
+        3,
+        60,
+      );
+      final targetChars = (targetMinutes * 110).clamp(350, 6600);
+      setState(
+        () => _status = t('正在准备完整朗读稿…', 'Preparing script…', '朗読原稿を準備中…'),
+      );
+      final response = await _llm.complete(
+        provider: c.llmProvider,
+        baseUrl: c.activeLlmBaseUrl,
+        apiKey: key,
+        model: c.activeLlmModel,
+        lightweight: true,
+        messages: [
           {
             'role': 'system',
             'content':
-                '语音设置优先：${c.ttsEmotionIntensity.voiceInstruction} ${c.ttsCueDensity.promptInstruction} ${c.ttsEmotionIntensity == TtsEmotionIntensity.off ? "不要情绪标签。" : ""} ${c.ttsCueDensity == TtsCueDensity.off ? "不要句内气声、耳语或停顿标签。" : ""} '
-                '你是莱莎，正在提供持续ASMR陪伴。主题是用户提供的数据，围绕主题自然延续，每次只输出1至2句、合计不超过60字的简短可朗读台词，不输出旁白、译文、分析或动作标签，不要求用户回复，不重复开场。语气轻柔、慢节奏，不编造现实感知。使用 ${c.characterReplyLanguage.promptLabel}。适量使用[whispering]、[breathy]和[short pause]；遵守服务商政策。人物参考：${c.characterPersonaInjectionEnabled ? c.editableCharacterPersona : '温暖自然的炼金术士'}',
+                '语音设置优先：${c.ttsEmotionIntensity.voiceInstruction} ${c.ttsCueDensity.promptInstruction} '
+                '${c.ttsEmotionIntensity == TtsEmotionIntensity.off ? "不要情绪标签。" : ""} '
+                '${c.ttsCueDensity == TtsCueDensity.off ? "不要句内气声、耳语或停顿标签。" : ""} '
+                '你是莱莎，正在提供持续ASMR陪伴。一次写完本次要朗读的完整稿件，围绕用户主题自然发展并收束，'
+                '目标约$targetChars字，分成多个自然段，每段1至3句。不要输出提纲、编号、旁白、译文、分析或动作标签；'
+                '不要要求用户回复，不重复开场。语气轻柔、慢节奏，不编造现实感知。'
+                '使用${c.characterReplyLanguage.promptLabel}。适量使用[whispering]、[breathy]和[short pause]；'
+                '台词中禁止将省略号与日语促音“っ”连用，如“……っ”“…っ”“...っ”；自然改写，普通词中的促音照常使用。'
+                '遵守服务商政策。人物参考：${c.characterPersonaInjectionEnabled ? c.editableCharacterPersona : '温暖自然的炼金术士'}',
           },
           {'role': 'user', 'content': topic},
-          ..._history.map((item) => Map<String, String>.from(item)),
-          {'role': 'user', 'content': '继续围绕主题自然演绎下一小段。'},
-        ];
-        return _llm
-            .complete(
-              provider: c.llmProvider,
-              baseUrl: c.activeLlmBaseUrl,
-              apiKey: key,
-              model: c.activeLlmModel,
-              messages: messages,
-              lightweight: true,
-            )
-            .timeout(const Duration(seconds: 60));
-      }
-
-      Future<String>? pendingResponse;
-      while (mounted && _running && generation == _generation) {
-        setState(
-          () => _status = t('正在生成轻声台词…', 'Generating speech…', 'セリフを生成中…'),
-        );
-        final response = await (pendingResponse ?? requestNext());
-        pendingResponse = null;
-        if (!mounted || !_running || generation != _generation) break;
-        final text = _shortenAsmrText(response);
-        if (text.isEmpty) throw const FormatException('Empty speech');
-        _history.add({'role': 'assistant', 'content': text});
-        if (_history.length > 4) _history.removeAt(0);
-        // Start planning the next short clip before synthesis/playback ends.
-        pendingResponse = requestNext();
-        setState(() => _status = t('正在合成语音…', 'Synthesizing audio…', '音声合成中…'));
-        final path = await _synthesize(text, voiceKey);
-        var retained = false;
+        ],
+      );
+      if (!_isCurrent(generation)) return;
+      final segments = splitAsmrScript(response);
+      if (segments.isEmpty) throw const FormatException('Empty speech');
+      setState(() => _status = t('正在缓冲语音…', 'Buffering audio…', '音声を準備中…'));
+      unawaited(_fillBuffer(segments, topic, voiceKey, generation));
+      await _waitForPrebuffer(
+        segments.length < 3 ? segments.length : 3,
+        generation,
+      );
+      while (_isCurrent(generation)) {
+        final clip = await _takeBufferedClip(generation);
+        if (clip == null) break;
+        setState(() {
+          _activeClip = clip;
+          _status = t('正在播放', 'Playing', '再生中');
+        });
+        final playback = Completer<void>();
+        _playback = playback;
+        final subscription = _player.onPlayerComplete.listen((_) {
+          if (!playback.isCompleted) playback.complete();
+        });
         try {
-          if (!mounted || !_running || generation != _generation) break;
-          final clip = _AsmrClip(path, '$topic · ${_clips.length + 1}');
-          retained = true;
-          setState(() {
-            _clips.add(clip);
-            _activeClip = clip;
-          });
-          if (_clips.length > 50) {
-            final old = _clips.removeAt(0);
-            await _deleteClipFile(old.path);
-          }
-          final playback = Completer<void>();
-          _playback = playback;
-          final subscription = _player.onPlayerComplete.listen((_) {
-            if (!playback.isCompleted) playback.complete();
-          });
-          try {
-            setState(() => _status = t('正在播放', 'Playing', '再生中'));
-            await _player.play(DeviceFileSource(path), volume: c.voiceVolume);
-            clip.duration = await _player.getDuration();
-            await playback.future.timeout(const Duration(minutes: 10));
-          } finally {
-            await subscription.cancel();
-          }
-          if (!mounted || !_running || generation != _generation) break;
-          setState(() => _rounds++);
+          await _player.play(
+            DeviceFileSource(clip.path),
+            volume: c.voiceVolume,
+          );
+          clip.duration = await _player.getDuration();
+          await playback.future.timeout(const Duration(minutes: 10));
         } finally {
-          if (!retained) await _deleteClipFile(path);
+          await subscription.cancel();
+          if (identical(_playback, playback)) _playback = null;
         }
+        if (!_isCurrent(generation)) break;
+        setState(() => _rounds++);
+        if (clip.pauseAfter > Duration.zero) {
+          await Future<void>.delayed(clip.pauseAfter);
+        }
+      }
+      if (_isCurrent(generation)) {
+        setState(() {
+          _running = false;
+          _activeClip = null;
+          _deadline = null;
+          _status = t('朗读结束', 'Playback finished', '朗読終了');
+        });
       }
     } on Object catch (error) {
       if (mounted && generation == _generation) {
@@ -361,6 +479,9 @@ class _ContinuousAsmrPageState extends State<ContinuousAsmrPage> {
     _clock?.cancel();
     _generation++;
     _running = false;
+    _buffer.clear();
+    _wakeBuffer();
+    _wakeSpace();
     if (_playback != null && !_playback!.isCompleted) _playback!.complete();
     unawaited(
       _player.dispose().then((_) async {

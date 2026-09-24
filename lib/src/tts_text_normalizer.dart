@@ -10,3 +10,15 @@ String compressRepeatedTtsPunctuation(String text) {
     return String.fromCharCodes(List<int>.filled(keep, codePoint));
   });
 }
+
+/// Fish Audio can misread a small tsu after an ellipsis as a breath sound.
+/// Keep normal Japanese gemination, such as 待って, unchanged.
+String normalizeFishAudioText(String text) {
+  final pattern = RegExp(
+    r'(?:…+|\.{2,})(?:[ \t\u3000]*\[[a-z][a-z ]*\])*[ \t\u3000]*っ',
+  );
+  return text.replaceAllMapped(
+    pattern,
+    (match) => match.group(0)!.substring(0, match.group(0)!.length - 1),
+  );
+}

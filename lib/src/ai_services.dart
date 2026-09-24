@@ -16,6 +16,7 @@ import 'openai_configuration_slots.dart';
 import 'retry_policy.dart';
 import 'model_thinking.dart';
 import 'planning_http_client.dart';
+import 'tts_text_normalizer.dart';
 
 part 'gemini_interactions.dart';
 
@@ -1197,7 +1198,7 @@ class FishAudioClient {
     final started = DateTime.now();
     final uri = Uri.parse(baseUrl.trim().isEmpty ? endpoint : baseUrl.trim());
     final requestBody = {
-      'text': text,
+      'text': normalizeFishAudioText(text),
       'reference_id': referenceId,
       'temperature': temperature.clamp(0.0, 1.0),
       'normalize': true,
