@@ -30,6 +30,18 @@ void main() {
     await log.initialize();
     expect(log.entries, isEmpty);
   });
+  test('action info is sampled by category without suppressing warnings', () {
+    final log = RuntimeLog.instance;
+    log.infoRateLimited('ActionPlanner', 'motion-start', 'first');
+    log.infoRateLimited('ActionPlanner', 'motion-start', 'second');
+    log.infoRateLimited('ActionPlanner', 'motion-finish', 'finished');
+    log.warning('ActionPlanner', 'playback failed');
+    expect(log.entries.map((entry) => entry.message), [
+      'first',
+      'finished',
+      'playback failed',
+    ]);
+  });
   test('nested JSON is formatted and sensitive values are redacted', () {
     final value = RuntimeLog.prettyMessage(
       jsonEncode({

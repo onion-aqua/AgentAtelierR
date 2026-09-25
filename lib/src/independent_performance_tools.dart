@@ -99,8 +99,8 @@ class ExpressionPlannerTool {
       final face = row['face'];
       if (!PerformancePlanner.faces.contains(face)) continue;
       final requestedIntensity = row['intensity'];
-      final intensity = (intensities[face] ?? const ['normal'])
-              .contains(requestedIntensity)
+      final intensity =
+          (intensities[face] ?? const ['normal']).contains(requestedIntensity)
           ? requestedIntensity as String
           : 'normal';
       result[row['id']] =
@@ -403,9 +403,19 @@ class IndependentPerformanceTools {
       Map<int, String> fallback,
     ) async {
       try {
-        RuntimeLog.instance.info(name, '开始独立规划');
+        if (name != ActionPlannerTool.name) {
+          RuntimeLog.instance.info(name, '开始独立规划');
+        }
         final result = await run().timeout(const Duration(seconds: 30));
-        RuntimeLog.instance.info(name, '规划完成：${result.length}段');
+        if (name == ActionPlannerTool.name) {
+          RuntimeLog.instance.infoRateLimited(
+            name,
+            'planning',
+            '规划完成：${result.length}段',
+          );
+        } else {
+          RuntimeLog.instance.info(name, '规划完成：${result.length}段');
+        }
         return result;
       } on Object catch (error) {
         RuntimeLog.instance.warning(name, '规划失败，仅回退本工具：$error');

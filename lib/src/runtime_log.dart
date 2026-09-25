@@ -102,6 +102,7 @@ class RuntimeLog extends ChangeNotifier {
   static const maxEntries = 250;
 
   final List<RuntimeLogEntry> _entries = [];
+  final Map<String, DateTime> _lastRateLimitedInfo = {};
   Future<void> _writeQueue = Future<void>.value();
   SharedPreferences? _preferences;
 
@@ -134,6 +135,20 @@ class RuntimeLog extends ChangeNotifier {
 
   void info(String source, String message) =>
       add(RuntimeLogLevel.info, source, message);
+
+  void infoRateLimited(
+    String source,
+    String category,
+    String message, {
+    Duration interval = const Duration(seconds: 15),
+  }) {
+    final key = '$source:$category';
+    final now = DateTime.now();
+    final last = _lastRateLimitedInfo[key];
+    if (last != null && now.difference(last) < interval) return;
+    _lastRateLimitedInfo[key] = now;
+    info(source, message);
+  }
 
   void warning(String source, String message) =>
       add(RuntimeLogLevel.warning, source, message);
@@ -265,6 +280,7 @@ class RuntimeLog extends ChangeNotifier {
 
   Future<void> clear() async {
     _entries.clear();
+    _lastRateLimitedInfo.clear();
     notifyListeners();
     _writeQueue = _writeQueue.then((_) async {
       await (_preferences ??= await SharedPreferences.getInstance()).remove(

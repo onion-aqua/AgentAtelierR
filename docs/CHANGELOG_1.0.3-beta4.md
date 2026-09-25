@@ -4,6 +4,9 @@
 
 ## 本次更新
 
+- 修复动作队列播放第一条动作时，表情切换误清空后续待播动作的问题。
+- 动作完成回调和超时计时器只释放一次 Spine 动作轨道，避免重复完成。
+- 动作规划、播放及等待的常规日志按类别每 15 秒最多采集一次；队列入出和去重不再逐条记录，失败与资源不兼容告警仍即时记录。
 - 修复表情规划某一段无效时整轮表情被丢弃的问题；无效强度回退到 `normal`，有效段落继续生效。
 - 修复表情规划晚于语音播放结束时，角色没有应用最后一段表情的问题。
 - 对话框过滤 `<think>`、`<tool_call>`、`<function_call>` 及其内部内容；`<answer>`、`<code>` 只去掉标签并保留正文。流式未闭合标签和历史原始输出视图也会过滤。
@@ -21,7 +24,7 @@
 
 使用 `tool/build_protected.ps1 -Target apk -Mode debug` 加密构建。APK 保存在 `build/app/outputs/flutter-apk/app-debug.apk`。连接设备后，可用 `tool/build_protected.ps1 -Target apk -Mode debug -DeviceId a43d2d7a -Install` 构建并安装。
 
-本次 Flutter 测试结果为 448 项通过、10 项因资源条件跳过；静态分析无问题。debug APK 的 SHA-256 为 `CF0896B5295CDCC373E483FAB9562E71F5252C45B2941DFB1999C86DFBF5FB7D`。当前 `adb devices -l` 未发现 `a43d2d7a`，因此真机安装及画面验收尚未完成。
+本次 Flutter 单进程全量测试结果为 449 项通过、10 项因资源条件跳过；静态分析无问题。debug APK 的 SHA-256 为 `486794296E5C154160DC95449FA7AD5A11F90E2644A2F45CEEDEB1BE1139E331`。当前 `adb devices -l` 未发现 `a43d2d7a`，因此真机安装及画面验收尚未完成。
 
 ## 已知范围
 

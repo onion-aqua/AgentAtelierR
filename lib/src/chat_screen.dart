@@ -1209,10 +1209,17 @@ class _ChatScreenState extends State<ChatScreen> {
     _activeMotionVariants[generation] = group;
     _activeMotionGroupId = _motionLayers.latestGroupId;
     _motionBusyUntil = _motionLayers.latestExpiry;
+    var finished = false;
     void finish() {
-      if (!mounted) return;
-      RuntimeLog.instance.info(
+      if (finished ||
+          !mounted ||
+          !_motionReleaseTimers.containsKey(generation)) {
+        return;
+      }
+      finished = true;
+      RuntimeLog.instance.infoRateLimited(
         'ActionPlanner',
+        'motion-finish',
         '动作完成：${group.id}；generation=$generation',
       );
       final release = smoothCharacterGestureMix(
@@ -1231,8 +1238,9 @@ class _ChatScreenState extends State<ChatScreen> {
       if (type == EventType.complete) finish();
     });
     _motionReleaseTimers[generation] = Timer(motionDuration, finish);
-    RuntimeLog.instance.info(
+    RuntimeLog.instance.infoRateLimited(
       'ActionPlanner',
+      'motion-start',
       '动作开始：${group.id}；动画=${animations.map((a) => a.name).join(',')}；轨道=$appliedTracks；时长=${longestDuration.toStringAsFixed(2)}秒；混合=$blend；generation=$generation',
     );
     widget.controller.frameRate.boost(
@@ -1247,7 +1255,11 @@ class _ChatScreenState extends State<ChatScreen> {
     _motionReleaseTimers.remove(token)?.cancel();
     _activeMotionVariants.remove(token);
     final tracks = _motionLayers.release(token);
-    if (tracks.isEmpty) return;
+    if (tracks.isEmpty) {
+      _activeMotionGroupId = _motionLayers.latestGroupId;
+      _motionBusyUntil = _motionLayers.latestExpiry;
+      return;
+    }
     final state = _spineController?.animationState;
     if (state != null) {
       for (final track in tracks) {
@@ -1347,8 +1359,9 @@ class _ChatScreenState extends State<ChatScreen> {
       );
       return;
     }
-    RuntimeLog.instance.info(
+    RuntimeLog.instance.infoRateLimited(
       'ActionPlanner',
+      'recipe-stage',
       '组合阶段开始：${recipe.id}；${index + 1}/${recipe.stages.length}',
     );
     final controller = _spineController!;
@@ -1401,8 +1414,9 @@ class _ChatScreenState extends State<ChatScreen> {
           !_tapReactionActive) {
         _playRecipeStage(recipe, index + 1);
       } else {
-        RuntimeLog.instance.info(
+        RuntimeLog.instance.infoRateLimited(
           'ActionPlanner',
+          'recipe-finish',
           '组合阶段结束：${recipe.id}；${index + 1}/${recipe.stages.length}',
         );
         state.setEmptyAnimation(1, blend);
@@ -1422,8 +1436,9 @@ class _ChatScreenState extends State<ChatScreen> {
     final spineController = _spineController;
     if (!_spineReady || spineController == null) return;
     if (_activeMotionGroupId != null) {
-      RuntimeLog.instance.info(
+      RuntimeLog.instance.infoRateLimited(
         'ActionPlanner',
+        'motion-reset',
         '释放/替换动作层：$_activeMotionGroupId；混合=$mixDuration；保留轨道=$replacingTracks；generation=$_motionGeneration',
       );
     }
@@ -1498,12 +1513,18 @@ class _ChatScreenState extends State<ChatScreen> {
       ..setTimeScale(timeScale);
   }
 
-  void _applyExpression(CharacterExpression expression, {String? intensity}) {
+  void _applyExpression(
+    CharacterExpression expression, {
+    String? intensity,
+    bool clearQueuedActions = true,
+  }) {
     if (intensity != null && intensity != _expressionIntensity) {
       _expressionIntensity = intensity;
       _activeResourceExpression = null;
     }
-    if (expression != _currentExpression) _clearPerformanceQueue();
+    if (clearQueuedActions && expression != _currentExpression) {
+      _clearPerformanceQueue();
+    }
     if (expression != _currentExpression) {
       _activeResourceExpression = null;
       _activeFacialDetail = null;
@@ -2292,7 +2313,6 @@ class _ChatScreenState extends State<ChatScreen> {
     final key =
         '${actions.map((a) => a.name).join('+')}|${motionGroupIds.join('+')}:${cue.actionCueCount}';
     if (_lastPerformanceActionKey == key) {
-      RuntimeLog.instance.info('ActionPlanner', '回复动作去重，跳过：$key');
       return;
     }
     _lastPerformanceActionKey = key;
@@ -2327,10 +2347,6 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   void _performMotionGroupIntent(String motionGroupId) {
-    RuntimeLog.instance.info(
-      'ActionPlanner',
-      '收到动作：$motionGroupId；皮肤=${_appearance.id}；姿态=$_sittingId；基础动画=$_currentIdleAnimation',
-    );
     if (!_spineReady || _tapReactionActive) {
       RuntimeLog.instance.warning(
         'ActionPlanner',
@@ -2368,8 +2384,11 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   final _performanceQueue = CharacterPerformanceQueue(
-    onDiagnostic: (message) =>
-        RuntimeLog.instance.info('ActionPlanner', message),
+    onDiagnostic: (message) {
+      if (message.startsWith('过期丢弃') || message.startsWith('队列已满')) {
+        RuntimeLog.instance.warning('ActionPlanner', message);
+      }
+    },
   );
   final List<String> _recentDialogueActions = [];
   void _rememberDialogueAction(String id) {
@@ -2420,7 +2439,11 @@ class _ChatScreenState extends State<ChatScreen> {
         final reason =
             '等待：当前动作=$_activeMotionGroupId；忙碌=$_motionBusy；冷却=$coolingDown';
         if (_lastQueueWaitReason != reason) {
-          RuntimeLog.instance.info('ActionPlanner', reason);
+          RuntimeLog.instance.infoRateLimited(
+            'ActionPlanner',
+            'queue-wait',
+            reason,
+          );
           _lastQueueWaitReason = reason;
         }
         _performanceQueueTimer = Timer(
@@ -2433,7 +2456,7 @@ class _ChatScreenState extends State<ChatScreen> {
     _lastQueueWaitReason = null;
     final cue = _performanceQueue.take(now);
     if (cue == null) return;
-    _applyExpression(cue.expression);
+    _applyExpression(cue.expression, clearQueuedActions: false);
     if (cue.motionGroupId case final motionGroupId?) {
       _playMotionGroupNow(motionGroupId);
     } else {
@@ -2461,8 +2484,9 @@ class _ChatScreenState extends State<ChatScreen> {
         .firstOrNull;
     if (recipe != null) {
       if (_motionBusy) return;
-      RuntimeLog.instance.info(
+      RuntimeLog.instance.infoRateLimited(
         'ActionPlanner',
+        'recipe-play',
         '播放组合：${recipe.id} ${recipe.name}（${recipe.stages.length}阶段）',
       );
       _playRecipeStage(recipe, 0);
