@@ -19,11 +19,13 @@ class SkinImportControls extends StatefulWidget {
     required this.language,
     required this.onImported,
     required this.onTextureChanged,
+    this.compact = false,
   });
   final CharacterAppearance appearance;
   final AppLanguage language;
   final ValueChanged<CharacterAppearance> onImported;
   final VoidCallback onTextureChanged;
+  final bool compact;
 
   @override
   State<SkinImportControls> createState() => _SkinImportControlsState();
@@ -140,6 +142,65 @@ class _SkinImportControlsState extends State<SkinImportControls> {
   Widget build(BuildContext context) {
     final store = LocalSkinStore.instance;
     final id = widget.appearance.assetName;
+    final importButtons = Wrap(
+      spacing: 8,
+      runSpacing: 4,
+      children: [
+        FilledButton.tonalIcon(
+          onPressed: _busy ? null : () => _run(_importZip),
+          icon: const Icon(Icons.folder_zip_outlined),
+          label: Text(t('导入皮肤 ZIP', 'Import skin ZIP', 'スキン ZIP を追加')),
+        ),
+        Tooltip(
+          message: t(
+            'PNG 尺寸及部件位置须与当前服装原图一致，文件上限 64 MB',
+            'PNG dimensions and parts must match this outfit. Maximum 64 MB.',
+            'PNG のサイズとパーツ配置を合わせてください。上限 64 MB。',
+          ),
+          child: FilledButton.tonalIcon(
+            onPressed: _busy ? null : () => _run(_importTexture),
+            icon: const Icon(Icons.texture),
+            label: Text(t('导入贴图', 'Import texture', 'テクスチャを追加')),
+          ),
+        ),
+      ],
+    );
+    final textureChoices = store.hasTexture(id)
+        ? Wrap(
+            spacing: 8,
+            children: [
+              for (final enabled in [false, true])
+                ChoiceChip(
+                  label: Text(
+                    enabled
+                        ? t('导入贴图', 'Imported texture', '追加テクスチャ')
+                        : t('原始贴图', 'Original texture', '元のテクスチャ'),
+                  ),
+                  selected: store.usesTexture(id) == enabled,
+                  onSelected: _busy
+                      ? null
+                      : (_) => _run(() async {
+                          await store.setTextureEnabled(id, enabled);
+                          ProtectedCharacterAssets.clearCache();
+                          if (mounted) widget.onTextureChanged();
+                        }),
+                ),
+            ],
+          )
+        : null;
+    if (widget.compact) {
+      return Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          importButtons,
+          ?textureChoices,
+          if (_busy) const LinearProgressIndicator(),
+          if (_error != null)
+            Text(_error!, style: const TextStyle(color: Colors.orangeAccent)),
+        ],
+      );
+    }
     return Padding(
       padding: const EdgeInsets.fromLTRB(12, 16, 12, 4),
       child: Column(
@@ -154,22 +215,7 @@ class _SkinImportControlsState extends State<SkinImportControls> {
             ),
           ),
           const SizedBox(height: 8),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: [
-              FilledButton.tonalIcon(
-                onPressed: _busy ? null : () => _run(_importZip),
-                icon: const Icon(Icons.folder_zip_outlined),
-                label: Text(t('导入皮肤 ZIP', 'Import skin ZIP', 'スキン ZIP を追加')),
-              ),
-              FilledButton.tonalIcon(
-                onPressed: _busy ? null : () => _run(_importTexture),
-                icon: const Icon(Icons.texture),
-                label: Text(t('导入当前皮肤贴图', 'Import texture', 'テクスチャを追加')),
-              ),
-            ],
-          ),
+          importButtons,
           const SizedBox(height: 8),
           Text(
             t(
@@ -179,28 +225,7 @@ class _SkinImportControlsState extends State<SkinImportControls> {
             ),
             style: const TextStyle(color: Colors.white70, fontSize: 12),
           ),
-          if (store.hasTexture(id))
-            Wrap(
-              spacing: 8,
-              children: [
-                for (final enabled in [false, true])
-                  ChoiceChip(
-                    label: Text(
-                      enabled
-                          ? t('导入贴图', 'Imported texture', '追加テクスチャ')
-                          : t('原始贴图', 'Original texture', '元のテクスチャ'),
-                    ),
-                    selected: store.usesTexture(id) == enabled,
-                    onSelected: _busy
-                        ? null
-                        : (_) => _run(() async {
-                            await store.setTextureEnabled(id, enabled);
-                            ProtectedCharacterAssets.clearCache();
-                            if (mounted) widget.onTextureChanged();
-                          }),
-                  ),
-              ],
-            ),
+          ?textureChoices,
           if (_busy)
             const Padding(
               padding: EdgeInsets.all(8),

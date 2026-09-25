@@ -58,7 +58,7 @@ import 'runtime_log.dart';
 import 'ryza_loading_indicator.dart';
 import 'tap_reaction.dart';
 import 'tts_text_normalizer.dart';
-import 'skin_import_controls.dart';
+import 'appearance_picker_page.dart';
 import 'character_spine_view.dart';
 
 extension SceneTimeIcon on SceneTime {
@@ -157,6 +157,7 @@ double conversationPanelFractionForText({
 class ChatScreen extends StatefulWidget {
   const ChatScreen({
     this.pageActive = true,
+    this.pauseCharacterAnimation = false,
     super.key,
     required this.controller,
     required this.onMenuPressed,
@@ -175,6 +176,7 @@ class ChatScreen extends StatefulWidget {
   final VoidCallback? onCharacterReady;
   final VoidCallback? onCharacterLoadFailed;
   final bool pageActive;
+  final bool pauseCharacterAnimation;
 
   @override
   State<ChatScreen> createState() => _ChatScreenState();
@@ -362,6 +364,9 @@ class _ChatScreenState extends State<ChatScreen> {
   bool _syntheticSpeech = false;
   StreamSubscription<PlayerState>? _playerStateSubscription;
   final Map<String, ({double x, double y, double rotation})> _rigBase = {};
+  Skeleton? _cachedRigSkeleton;
+  CharacterPerformanceProfile? _cachedRigProfile;
+  final Map<String, Bone> _rigBones = {};
   int _speechPlaybackGeneration = 0;
   Completer<void>? _speechCancellation;
   final Set<String> _temporarySpeechPaths = <String>{};
@@ -560,6 +565,7 @@ class _ChatScreenState extends State<ChatScreen> {
         controller.animationState.getData().setDefaultMix(0.2);
       },
     );
+    _syncCharacterAnimationPause();
     _audioPositionSubscription = _audioPlayer.onPositionChanged.listen(
       _updateLipSyncFromPlaybackPosition,
     );
@@ -580,7 +586,6 @@ class _ChatScreenState extends State<ChatScreen> {
     _scrollController.addListener(_handleConversationScroll);
     _suggestionQuotaTimer = Timer.periodic(const Duration(seconds: 1), (_) {
       _checkIdleUser();
-      if (mounted && !widget.controller.continuousAsmr) setState(() {});
     });
   }
 
@@ -625,7 +630,30 @@ class _ChatScreenState extends State<ChatScreen> {
         });
       },
     );
+    if (widget.pauseCharacterAnimation) spineController.pause();
     return spineController;
+  }
+
+  void _syncCharacterAnimationPause() {
+    if (widget.pauseCharacterAnimation) {
+      _spineController?.pause();
+      _seatObjectController.pause();
+      _idleTimer?.cancel();
+      _microMotionTimer?.cancel();
+      _facialDetailTimer?.cancel();
+      _blinkTimer?.cancel();
+      return;
+    }
+    if (_spineController case final spine? when !spine.isPlaying) {
+      spine.resume();
+    }
+    if (!_seatObjectController.isPlaying) _seatObjectController.resume();
+    if (_spineReady) {
+      _scheduleIdleChange();
+      _scheduleMicroMotion();
+      _scheduleCharacterBlink();
+      _scheduleFacialDetailChange();
+    }
   }
 
   void _handleFrameRateChange() {
@@ -707,6 +735,9 @@ class _ChatScreenState extends State<ChatScreen> {
 
   void _resetConversationWorkForDataReplacement() {
     _recentDialogueActions.clear();
+    _recentAmbientGroupIds.clear();
+    _lastPerformanceActionKey = null;
+    _lastSemanticActionAt = null;
     _lastConsolidatedUser = null;
     _previousSpeechEmotion = 'relaxed';
     _pendingMemoryRefresh = null;
@@ -719,6 +750,33 @@ class _ChatScreenState extends State<ChatScreen> {
     _outfitReactionTimer?.cancel();
     _pendingOutfitReaction = null;
     _cancelSpeechPlayback();
+    _tapReactionTimer?.cancel();
+    _tapReactionActive = false;
+    _tapSuspendedMotions = const [];
+    _bodyGaze.reset();
+    _gazePointer = null;
+    _gazeStartedAt = null;
+    _gazeHeld = false;
+    _postureState.reset();
+    _lastPostureCue = null;
+    _resetMotionOverlays(mixDuration: 0.3);
+    _motionGeneration += 1;
+    _motionLayers.clear();
+    _activeMotionVariants.clear();
+    for (final timer in _motionReleaseTimers.values) {
+      timer.cancel();
+    }
+    _motionReleaseTimers.clear();
+    if (_spineReady && _spineController != null) {
+      _spineController!.animationState.setEmptyAnimation(1, 0.3);
+      _spineController!.animationState.setEmptyAnimation(3, 0.3);
+    }
+    _activeMotionGroupId = null;
+    _motionBusyUntil = null;
+    _expressionIntensity = 'normal';
+    _activeResourceExpression = null;
+    _activeFacialDetail = null;
+    _applyExpression(CharacterExpression.neutral);
     widget.controller.frameRate.setActivity(
       FrameRateActivity.interfaceAnimation,
       false,
@@ -787,7 +845,9 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   void _scheduleIdleChange() {
-    if (widget.controller.continuousAsmr) return;
+    if (widget.controller.continuousAsmr || widget.pauseCharacterAnimation) {
+      return;
+    }
     _idleTimer?.cancel();
     // The bundled original rig locks its base pose. Preserve manual pose choice;
     // emotion and conversation are not reasons to randomly cross sitting axes.
@@ -1744,11 +1804,13 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   void _restoreProceduralRig(SpineWidgetController controller) {
-    for (final entry in _rigBase.entries) {
-      controller.skeleton.findBone(entry.key)
-        ?..setX(entry.value.x)
-        ..setY(entry.value.y)
-        ..setRotation(entry.value.rotation);
+    if (identical(_cachedRigSkeleton, controller.skeleton)) {
+      for (final entry in _rigBase.entries) {
+        _rigBones[entry.key]
+          ?..setX(entry.value.x)
+          ..setY(entry.value.y)
+          ..setRotation(entry.value.rotation);
+      }
     }
     _rigBase.clear();
     _updateSceneWind(controller);
@@ -1810,39 +1872,44 @@ class _ChatScreenState extends State<ChatScreen> {
     // Resolve gaze against this frame's authored world pose, without advancing
     // physics. The drawable steps physics once AFTER these local offsets.
     controller.skeleton.updateWorldTransform(Physics.none);
-
-    void remember(String name) {
-      final bone = resolveOptionalRigBone(name, controller.skeleton.findBone);
-      if (bone == null) return;
-      _rigBase.putIfAbsent(
-        name,
-        () => (x: bone.getX(), y: bone.getY(), rotation: bone.getRotation()),
-      );
-    }
-
     final profile = _performanceDirector.profile;
-
     final aimBones = profile.aimBones;
     final rollBones = profile.rollBones;
-    for (final name in {
-      ...aimBones.values,
-      ...rollBones.values,
-      ...characterBodyGazeBones,
-      'control_aim_eye',
-      'control_aim_head',
-      'control_aim_body',
-      'control_eye',
-      'control_handle_eye',
-      'control_roll_head',
-      'control_roll_neck',
-      'control_roll_body_upper',
-      'control_roll_body_lower',
-      'eyeball_L',
-      'eyeball_R',
-      'head',
-      'neck',
-    }) {
-      remember(name);
+    final skeleton = controller.skeleton;
+    if (!identical(_cachedRigSkeleton, skeleton) ||
+        !identical(_cachedRigProfile, profile)) {
+      _cachedRigSkeleton = skeleton;
+      _cachedRigProfile = profile;
+      _rigBones.clear();
+      for (final name in {
+        ...aimBones.values,
+        ...rollBones.values,
+        ...characterBodyGazeBones,
+        'control_aim_eye',
+        'control_aim_head',
+        'control_aim_body',
+        'control_eye',
+        'control_handle_eye',
+        'control_roll_head',
+        'control_roll_neck',
+        'control_roll_body_upper',
+        'control_roll_body_lower',
+        'eyeball_L',
+        'eyeball_R',
+        'head',
+        'neck',
+      }) {
+        final bone = resolveOptionalRigBone(name, skeleton.findBone);
+        if (bone != null) _rigBones[name] = bone;
+      }
+    }
+    for (final entry in _rigBones.entries) {
+      final bone = entry.value;
+      _rigBase[entry.key] = (
+        x: bone.getX(),
+        y: bone.getY(),
+        rotation: bone.getRotation(),
+      );
     }
     _applyEyeGaze(controller);
 
@@ -2051,7 +2118,9 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   void _scheduleFacialDetailChange() {
-    if (widget.controller.continuousAsmr) return;
+    if (widget.controller.continuousAsmr || widget.pauseCharacterAnimation) {
+      return;
+    }
     _facialDetailTimer?.cancel();
     if (!mounted || !_spineReady) return;
     final profile = _resourceEmotion;
@@ -2126,7 +2195,9 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   void _scheduleCharacterBlink() {
-    if (widget.controller.continuousAsmr) return;
+    if (widget.controller.continuousAsmr || widget.pauseCharacterAnimation) {
+      return;
+    }
     _blinkTimer?.cancel();
     if (!mounted || !_spineReady || !_appearance.animated) return;
     _blinkBeat = chooseCharacterBlink(
@@ -2184,7 +2255,9 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   void _scheduleMicroMotion() {
-    if (widget.controller.continuousAsmr) return;
+    if (widget.controller.continuousAsmr || widget.pauseCharacterAnimation) {
+      return;
+    }
     _microMotionTimer?.cancel();
     if (!_spineReady || !_appearance.animated) return;
     // Speech retains resource-authored torso beats. Explicit gestures keep
@@ -2996,14 +3069,14 @@ class _ChatScreenState extends State<ChatScreen> {
         );
       }
       final capabilities = _buildPerformancePromptContext();
-      final recentDialogue = widget.controller.messages
-          .where((m) => m.text != reply)
-          .toList();
+      final history = widget.controller.messages;
+      final recentDialogue = history.take(max(0, history.length - 1)).toList();
+      final characterState = widget.controller.characterState;
       final sharedContext = <String, dynamic>{
         'current_reply': reply,
         'user_intent_text': text,
         'previous_dialogue': recentDialogue.reversed
-            .take(3)
+            .take(6)
             .toList()
             .reversed
             .map(
@@ -3013,10 +3086,19 @@ class _ChatScreenState extends State<ChatScreen> {
               },
             )
             .toList(),
-        'emotion': widget.controller.characterState.emotion,
-        'state': widget.controller.characterState.values,
+        'emotion': characterState.emotion,
+        'state': characterState.values,
+        'character_state': {
+          'emotion': characterState.emotion,
+          'reason': characterState.reason,
+          'values': characterState.values,
+          'bands': characterState.bands,
+        },
         'current_face': _currentExpression.name,
+        'current_face_intensity': _expressionIntensity,
+        'current_posture': _sittingId,
         'previous_voice_emotion': _previousSpeechEmotion,
+        'recent_actions': _recentDialogueActions.reversed.toList(),
       };
       // Independent of animation planning: run concurrently, never expose
       // the voice tag catalogue to the roleplay request.
@@ -3047,6 +3129,7 @@ class _ChatScreenState extends State<ChatScreen> {
           lightweight: true,
           messages: messages,
         ),
+        sharedContext: sharedContext,
       );
       final stateRevision = widget.controller.dataRevision;
       final stateTurn = '${DateTime.now().microsecondsSinceEpoch}:$generation';
@@ -3089,7 +3172,19 @@ class _ChatScreenState extends State<ChatScreen> {
                   widget.controller.interfaceLanguage.promptLabel,
             },
             storyClockEnabled: widget.controller.storyClockEnabled,
-            onStateProposal: (proposal) => stateProposal = proposal,
+            onStateProposal: (proposal) {
+              stateProposal = proposal;
+              if (!mounted || generation != _replyGeneration) return;
+              final settled = widget.controller.settleCharacterState(
+                stateTurn,
+                proposal,
+                stateRevision,
+              );
+              RuntimeLog.instance.info(
+                'CharacterState',
+                settled ? '本轮状态已更新' : '状态提议无效或存档已改变，保留原值',
+              );
+            },
             recentActions: _recentDialogueActions.reversed.toList(),
             complete: (messages) => _aiClient.complete(
               performancePlanning: true,
@@ -3113,19 +3208,6 @@ class _ChatScreenState extends State<ChatScreen> {
         } on Object catch (error) {
           RuntimeLog.instance.warning('AI', '表演规划跳过，继续原文播放：$error');
         }
-        if (mounted &&
-            generation == _replyGeneration &&
-            stateProposal != null) {
-          final settled = widget.controller.settleCharacterState(
-            stateTurn,
-            stateProposal!,
-            stateRevision,
-          );
-          RuntimeLog.instance.info(
-            'CharacterState',
-            settled ? '本轮状态已更新' : '状态提议无效或存档已改变，保留原值',
-          );
-        }
         if (mounted && generation == _replyGeneration) {
           widget.controller.settleStoryTime(
             stateTurn,
@@ -3144,7 +3226,18 @@ class _ChatScreenState extends State<ChatScreen> {
           _previousSpeechEmotion = speechPlan.lastEmotion;
         } on FormatException catch (error) {
           RuntimeLog.instance.warning('TTS', '语音规划与台词不匹配，回退本地规则：$error');
+          _previousSpeechEmotion = fishEmotionForContinuity(
+            widget.controller.characterState,
+            _previousSpeechEmotion,
+            widget.controller.characterMood,
+          );
         }
+      } else {
+        _previousSpeechEmotion = fishEmotionForContinuity(
+          widget.controller.characterState,
+          _previousSpeechEmotion,
+          widget.controller.characterMood,
+        );
       }
       final singingPlan = await singingPlanning;
       if (!mounted || generation != _replyGeneration) return;
@@ -3482,7 +3575,7 @@ class _ChatScreenState extends State<ChatScreen> {
             asmr: asmr,
             complete: complete,
           )
-          .timeout(const Duration(seconds: 3));
+          .timeout(const Duration(seconds: 8));
       RuntimeLog.instance.info('SpeechPlanner', '独立语音演出规划完成：${plan.lines}');
       return plan;
     } on Object catch (error) {
@@ -3496,30 +3589,15 @@ class _ChatScreenState extends State<ChatScreen> {
         !widget.controller.fishTtsEnabled) {
       return false;
     }
-    final normalized = input.trim().toLowerCase();
-    if (normalized.isEmpty ||
-        RegExp(r'不要唱|别唱|不用唱|不要哼|别哼|不会唱|唱得不好|don.?t sing|do not sing|no singing')
-            .hasMatch(normalized)) {
-      return false;
-    }
-    final singingIntent = RegExp(
-      r'唱歌|唱一首|唱首歌|唱给我|唱出来|歌唱|演唱|哼唱|哼一段|用歌声|唱段|sing(?:ing)?|sing a song|sing for me|hum(?:ming)?',
-    ).hasMatch(normalized);
-    if (!singingIntent) return false;
-    final explicitRequest = RegExp(
-      r'请|给我|为我|现在|能不能|可以吗|想听|来一段|来首|唱歌给我|唱给我听|please|can you|i want you to|sing for me|sing a song',
-    ).hasMatch(normalized);
-    final bareCommand = RegExp(
-      r'(?:^|[，,。！？!\s])(唱歌|哼唱|演唱|sing|hum)(?:吧|一下|给我|$)',
-    ).hasMatch(normalized);
-    return explicitRequest || bareCommand;
+    return isExplicitSingingRequest(input);
   }
 
   Future<SingingPlan?> _planSingingForReply(
     String userInput,
     String reply,
-    AuxiliaryCompletion complete,
-  ) async {
+    AuxiliaryCompletion complete, {
+    Map<String, dynamic> sharedContext = const {},
+  }) async {
     if (!_isStrongSingingRequest(userInput)) return null;
     try {
       if ((await _secretStore.readTtsKey(widget.controller.ttsProvider))
@@ -3528,16 +3606,24 @@ class _ChatScreenState extends State<ChatScreen> {
       }
       RuntimeLog.instance.info('SingingPlanner', '明确歌唱请求，独立歌唱标签规划开始');
       final plan = await SingingPlannerTool()
-          .plan(userInput: userInput, source: reply, complete: complete)
-          .timeout(const Duration(seconds: 3));
+          .plan(
+            userInput: userInput,
+            source: reply,
+            sharedContext: sharedContext,
+            complete: complete,
+          )
+          .timeout(const Duration(seconds: 15));
       RuntimeLog.instance.info(
         'SingingPlanner',
         '歌唱标签规划完成：${plan.tagsBySegment}',
       );
       return plan;
     } on Object catch (error) {
-      RuntimeLog.instance.warning('SingingPlanner', '歌唱标签规划失败，回退普通语音：$error');
-      return null;
+      RuntimeLog.instance.warning('SingingPlanner', '歌唱标签规划失败，回退基础歌唱标签：$error');
+      return SingingPlan.forAllLines(
+        reply,
+        humming: RegExp(r'哼|hum', caseSensitive: false).hasMatch(userInput),
+      );
     }
   }
 
@@ -3578,9 +3664,15 @@ class _ChatScreenState extends State<ChatScreen> {
       _stopSpeakingAnimation();
       return;
     }
+    final fallbackEmotion = fishEmotionForContinuity(
+      widget.controller.characterState,
+      _previousSpeechEmotion,
+      widget.controller.characterMood,
+    );
     final segments = performanceSegmentsForAssistantResponse(
       text,
       fallbackMood: widget.controller.characterMood,
+      fallbackEmotion: fallbackEmotion,
     );
     if (segments.isEmpty) {
       _stopSpeakingAnimation();
@@ -3640,6 +3732,7 @@ class _ChatScreenState extends State<ChatScreen> {
               text,
               planned,
               fallbackMood: widget.controller.characterMood,
+              fallbackEmotion: fallbackEmotion,
             );
             if (aligned == null) {
               RuntimeLog.instance.warning(
@@ -4158,6 +4251,9 @@ class _ChatScreenState extends State<ChatScreen> {
   @override
   void didUpdateWidget(covariant ChatScreen oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (oldWidget.pauseCharacterAnimation != widget.pauseCharacterAnimation) {
+      _syncCharacterAnimationPause();
+    }
     if (oldWidget.pageActive != widget.pageActive) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) _syncBackgroundVoicePolicy();
@@ -4939,24 +5035,31 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   void _showAppearancePicker() {
-    showModalBottomSheet<void>(
+    showGeneralDialog<void>(
       context: context,
-      backgroundColor: Colors.transparent,
-      barrierColor: Colors.black38,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
-      ),
-      builder: (context) => _AppearancePickerSheet(
-        liquidGlass: widget.controller.liquidGlassChatUi,
+      barrierDismissible: true,
+      barrierLabel: MaterialLocalizations.of(context).modalBarrierDismissLabel,
+      barrierColor: Colors.transparent,
+      transitionDuration: const Duration(milliseconds: 240),
+      transitionBuilder: (context, animation, _, child) =>
+          FadeTransition(opacity: animation, child: child),
+      pageBuilder: (pickerContext, _, _) => AppearancePickerPage(
+        appearances: characterAppearances,
         selectedId: _appearance.id,
         language: widget.controller.interfaceLanguage,
+        liquidGlass: widget.controller.liquidGlassChatUi,
+        previewBuilder: (appearance) => _ProtectedAppearancePreview(
+          appearance: appearance,
+          fit: BoxFit.contain,
+          alignment: Alignment.center,
+        ),
         onTextureChanged: () {
           if (mounted) _handleControllerChange(forceAppearanceReload: true);
         },
         onSelected: (appearance) {
           final previous = _appearance;
           widget.controller.setCharacterAppearance(appearance.id);
-          Navigator.pop(context);
+          Navigator.of(pickerContext).pop();
           if (previous.id != appearance.id && widget.controller.aiEnabled) {
             _pendingOutfitReaction =
                 '应用事件：莱莎刚从“${previous.label}”切换为“${appearance.label}”。当前样式：${appearance.promptDescription}。请先用简短旁白描写换装后的神态，再以莱莎口吻回应一两句，遵守当前语言、译文及演出格式。不描述换衣过程，不代写用户评价，不编造未提供的服装细节。';
@@ -5148,12 +5251,7 @@ class _ChatScreenState extends State<ChatScreen> {
                   !_isReplying,
               isContinuing: _isContinuing,
               isSuggestingReply: _isSuggestingReply,
-              suggestionUsesRemaining: widget.controller
-                  .suggestionUsesRemaining(),
-              suggestionRefreshProgress: widget.controller
-                  .suggestionRefreshProgress(),
-              suggestionRefreshWait: widget.controller
-                  .suggestionTimeUntilNextRefresh(),
+              suggestionController: widget.controller,
               activeAssistantSegmentIndex: _activeAssistantSegmentIndex,
               activeSegmentDisplayDuration: _activeSegmentDisplayDuration,
               latestAssistantMessageKey: _latestAssistantMessageKey,
@@ -6269,19 +6367,15 @@ class _GlassPickerTile extends StatelessWidget {
     required this.title,
     required this.onTap,
     this.leading,
-    this.subtitle,
     this.trailing,
     this.dense = false,
-    this.minVerticalPadding,
   });
 
   final bool liquidGlass;
   final Widget title;
   final Widget? leading;
-  final Widget? subtitle;
   final Widget? trailing;
   final bool dense;
-  final double? minVerticalPadding;
   final VoidCallback? onTap;
 
   @override
@@ -6294,10 +6388,8 @@ class _GlassPickerTile extends StatelessWidget {
         fallbackColor: Colors.white.withValues(alpha: 0.08),
         child: ListTile(
           dense: dense,
-          minVerticalPadding: minVerticalPadding,
           leading: leading,
           title: title,
-          subtitle: subtitle,
           trailing: trailing,
           onTap: onTap,
         ),
@@ -6400,112 +6492,6 @@ class _MotionPickerSheet extends StatelessWidget {
                     ),
             ),
           ],
-        ),
-      ),
-    );
-  }
-}
-
-class _AppearancePickerSheet extends StatelessWidget {
-  const _AppearancePickerSheet({
-    required this.liquidGlass,
-    required this.selectedId,
-    required this.onSelected,
-    required this.language,
-    required this.onTextureChanged,
-  });
-
-  final bool liquidGlass;
-  final String selectedId;
-  final ValueChanged<CharacterAppearance> onSelected;
-  final AppLanguage language;
-  final VoidCallback onTextureChanged;
-
-  @override
-  Widget build(BuildContext context) {
-    return SafeArea(
-      top: false,
-      child: GlassSurface(
-        liquidGlass: liquidGlass,
-        borderRadius: const BorderRadius.vertical(top: Radius.circular(18)),
-        fallbackColor: const Color(0xE8201D1B),
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(12, 18, 12, 18),
-          child: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 12),
-                  child: Row(
-                    children: [
-                      const Expanded(
-                        child: Text(
-                          '服装与姿态',
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontSize: 19,
-                            fontWeight: FontWeight.w700,
-                          ),
-                        ),
-                      ),
-                      IconButton(
-                        onPressed: () => Navigator.pop(context),
-                        tooltip: '关闭',
-                        color: Colors.white,
-                        icon: const Icon(Icons.close),
-                      ),
-                    ],
-                  ),
-                ),
-                for (final appearance in characterAppearances)
-                  _GlassPickerTile(
-                    liquidGlass: liquidGlass,
-                    minVerticalPadding: 8,
-                    leading: ClipRRect(
-                      borderRadius: BorderRadius.circular(4),
-                      child: ColoredBox(
-                        color: const Color(0xFFE4E0D8),
-                        child: SizedBox.square(
-                          dimension: 54,
-                          child: _ProtectedAppearancePreview(
-                            appearance: appearance,
-                            fit: BoxFit.cover,
-                            alignment: appearance.animated
-                                ? Alignment.topCenter
-                                : Alignment.bottomCenter,
-                          ),
-                        ),
-                      ),
-                    ),
-                    title: Text(
-                      appearance.label,
-                      style: const TextStyle(color: Colors.white),
-                    ),
-                    subtitle: Text(
-                      appearance.animated ? '完整 Spine 动画资源' : '原包静态预览资源',
-                      style: const TextStyle(color: Colors.white60),
-                    ),
-                    trailing: appearance.id == selectedId
-                        ? const Icon(Icons.check_circle, color: Colors.white)
-                        : Icon(
-                            appearance.animated
-                                ? Icons.animation_outlined
-                                : Icons.image_outlined,
-                            color: Colors.white70,
-                          ),
-                    onTap: () => onSelected(appearance),
-                  ),
-                SkinImportControls(
-                  appearance: characterAppearanceById(selectedId),
-                  language: language,
-                  onImported: onSelected,
-                  onTextureChanged: onTextureChanged,
-                ),
-              ],
-            ),
-          ),
         ),
       ),
     );
@@ -6659,27 +6645,49 @@ class _RotatingIconState extends State<_RotatingIcon>
   );
 }
 
-class _SuggestionQuotaButton extends StatelessWidget {
+class _SuggestionQuotaButton extends StatefulWidget {
   const _SuggestionQuotaButton({
     required this.language,
     required this.liquidGlass,
     required this.isSuggesting,
-    required this.remaining,
-    required this.progress,
-    required this.wait,
+    required this.controller,
     required this.onPressed,
   });
 
   final AppLanguage language;
   final bool liquidGlass;
   final bool isSuggesting;
-  final int remaining;
-  final double progress;
-  final Duration wait;
+  final AppController controller;
   final VoidCallback? onPressed;
 
   @override
+  State<_SuggestionQuotaButton> createState() => _SuggestionQuotaButtonState();
+}
+
+class _SuggestionQuotaButtonState extends State<_SuggestionQuotaButton> {
+  late final Timer _ticker;
+
+  @override
+  void initState() {
+    super.initState();
+    _ticker = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (widget.controller.suggestionUseTimes.isNotEmpty) setState(() {});
+    });
+  }
+
+  @override
+  void dispose() {
+    _ticker.cancel();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final now = DateTime.now();
+    final remaining = widget.controller.suggestionUsesRemaining(now: now);
+    final progress = widget.controller.suggestionRefreshProgress(now: now);
+    final wait = widget.controller.suggestionTimeUntilNextRefresh(now: now);
+    final language = widget.language;
     final waitText = wait == Duration.zero
         ? ''
         : ' ${wait.inMinutes}:${wait.inSeconds.remainder(60).toString().padLeft(2, '0')}';
@@ -6717,15 +6725,15 @@ class _SuggestionQuotaButton extends StatelessWidget {
           Positioned(
             left: 2,
             child: GlassIconButton(
-              liquidGlass: liquidGlass,
-              icon: isSuggesting
+              liquidGlass: widget.liquidGlass,
+              icon: widget.isSuggesting
                   ? Icons.autorenew_rounded
                   : Icons.auto_awesome_rounded,
-              iconWidget: isSuggesting
+              iconWidget: widget.isSuggesting
                   ? const _RotatingIcon(Icons.autorenew_rounded)
                   : null,
               tooltip: tooltip,
-              onPressed: onPressed,
+              onPressed: remaining > 0 ? widget.onPressed : null,
               size: 36,
             ),
           ),
@@ -6798,9 +6806,7 @@ class _LiquidGlassConversation extends StatelessWidget {
     required this.canContinue,
     required this.isContinuing,
     required this.isSuggestingReply,
-    required this.suggestionUsesRemaining,
-    required this.suggestionRefreshProgress,
-    required this.suggestionRefreshWait,
+    required this.suggestionController,
     required this.activeAssistantSegmentIndex,
     required this.activeSegmentDisplayDuration,
     required this.latestAssistantMessageKey,
@@ -6854,9 +6860,7 @@ class _LiquidGlassConversation extends StatelessWidget {
   final bool canContinue;
   final bool isContinuing;
   final bool isSuggestingReply;
-  final int suggestionUsesRemaining;
-  final double suggestionRefreshProgress;
-  final Duration suggestionRefreshWait;
+  final AppController suggestionController;
   final int? activeAssistantSegmentIndex;
   final Duration activeSegmentDisplayDuration;
   final GlobalKey latestAssistantMessageKey;
@@ -7000,14 +7004,11 @@ class _LiquidGlassConversation extends StatelessWidget {
                     language: language,
                     liquidGlass: liquidGlass,
                     isSuggesting: isSuggestingReply,
-                    remaining: suggestionUsesRemaining,
-                    progress: suggestionRefreshProgress,
-                    wait: suggestionRefreshWait,
+                    controller: suggestionController,
                     onPressed:
                         !isReplying &&
                             !selectingCollection &&
-                            !isSuggestingReply &&
-                            suggestionUsesRemaining > 0
+                            !isSuggestingReply
                         ? onSuggestReply
                         : null,
                   ),

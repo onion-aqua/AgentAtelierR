@@ -467,6 +467,27 @@ class SettingsScreenState extends State<SettingsScreen> {
                     ],
                   ),
                 ),
+                SwitchListTile(
+                  key: const ValueKey('pause-character-animation-fullscreen'),
+                  value: controller.pauseCharacterAnimationOnFullscreenPages,
+                  onChanged:
+                      controller.setPauseCharacterAnimationOnFullscreenPages,
+                  secondary: const Icon(Icons.pause_circle_outline_rounded),
+                  title: Text(
+                    language.text(
+                      '全屏页面暂停人物动画',
+                      'Pause character on full-screen pages',
+                      '全画面でキャラクターの動きを停止',
+                    ),
+                  ),
+                  subtitle: Text(
+                    language.text(
+                      '打开设置等全屏页面时冻结主界面人物，返回聊天后恢复',
+                      'Freeze the main character behind full-screen pages; resume in chat',
+                      '設定などの全画面では動きを止め、会話に戻ると再開します',
+                    ),
+                  ),
+                ),
                 const Divider(indent: 16, endIndent: 16),
                 _SectionLabel(language.text('场景', 'Scene', 'シーン')),
                 SwitchListTile(

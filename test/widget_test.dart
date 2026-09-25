@@ -2108,13 +2108,19 @@ void main() {
     final controller = await AppController.load();
 
     controller.setLiquidGlassChatUi(true);
+    controller.setPauseCharacterAnimationOnFullscreenPages(false);
     controller.setShowMicrophoneButton(true);
     await Future<void>.delayed(Duration.zero);
     final restored = await AppController.load();
 
     expect(restored.liquidGlassChatUi, isTrue);
+    expect(restored.pauseCharacterAnimationOnFullscreenPages, isFalse);
     expect(restored.showMicrophoneButton, isTrue);
     expect(restored.exportData()['liquidGlassChatUi'], isTrue);
+    expect(
+      restored.exportData()['pauseCharacterAnimationOnFullscreenPages'],
+      isFalse,
+    );
     expect(restored.exportData()['showMicrophoneButton'], isTrue);
   });
 

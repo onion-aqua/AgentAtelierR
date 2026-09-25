@@ -852,6 +852,7 @@ class AppController extends ChangeNotifier {
   bool ambientEnabled = false;
   double ambientVolume = 0.45;
   bool liquidGlassChatUi = false;
+  bool pauseCharacterAnimationOnFullscreenPages = true;
   bool gazeTrackingEnabled = true;
   bool showMicrophoneButton = false;
   bool unlockInputWhileReplying = false;
@@ -1140,6 +1141,9 @@ class AppController extends ChangeNotifier {
     ambientEnabled = _preferences.getBool('ambient_enabled') ?? false;
     ambientVolume = _preferences.getDouble('ambient_volume') ?? 0.45;
     liquidGlassChatUi = _preferences.getBool('liquid_glass_chat_ui') ?? false;
+    pauseCharacterAnimationOnFullscreenPages =
+        _preferences.getBool('pause_character_animation_on_fullscreen_pages') ??
+        true;
     gazeTrackingEnabled = _preferences.getBool('gaze_tracking_enabled') ?? true;
     showMicrophoneButton =
         _preferences.getBool('show_microphone_button') ?? false;
@@ -2560,6 +2564,8 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
     'ambientEnabled': ambientEnabled,
     'ambientVolume': ambientVolume,
     'liquidGlassChatUi': liquidGlassChatUi,
+    'pauseCharacterAnimationOnFullscreenPages':
+        pauseCharacterAnimationOnFullscreenPages,
     'showMicrophoneButton': showMicrophoneButton,
     'unlockInputWhileReplying': unlockInputWhileReplying,
     'frameRateMode': frameRateMode.name,
@@ -2812,6 +2818,8 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
       }
       ..['dynamicQuests'] = <Map<String, dynamic>>[]
       ..['alchemy'] = AlchemyState.empty().toJson();
+    _dataRevision += 1;
+    notifyListeners();
     _applyGameState(snapshot);
     _changed();
     await saveToLocalSlot(
@@ -3188,6 +3196,8 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
     ambientEnabled = data['ambientEnabled'] as bool? ?? false;
     ambientVolume = (data['ambientVolume'] as num?)?.toDouble() ?? 0.45;
     liquidGlassChatUi = data['liquidGlassChatUi'] as bool? ?? false;
+    pauseCharacterAnimationOnFullscreenPages =
+        data['pauseCharacterAnimationOnFullscreenPages'] as bool? ?? true;
     showMicrophoneButton = data['showMicrophoneButton'] as bool? ?? false;
     unlockInputWhileReplying =
         data['unlockInputWhileReplying'] as bool? ?? false;
@@ -4056,6 +4066,11 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
     _changed();
   }
 
+  void setPauseCharacterAnimationOnFullscreenPages(bool value) {
+    pauseCharacterAnimationOnFullscreenPages = value;
+    _changed();
+  }
+
   void setGazeTrackingEnabled(bool value) {
     gazeTrackingEnabled = value;
     _changed();
@@ -4285,6 +4300,9 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
   }
 
   Future<void> _save() async {
+    // Shadow the store so the existing snapshot only writes changed values.
+    // ignore: no_leading_underscores_for_local_identifiers
+    final _preferences = _ChangedPreferences(this._preferences);
     await Future.wait<void>([
       _preferences.setString('accent_theme', accentTheme.name),
       _preferences.setString('text_color_theme', textColorTheme?.name ?? ''),
@@ -4425,6 +4443,10 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
       _preferences.setBool('ambient_enabled', ambientEnabled),
       _preferences.setDouble('ambient_volume', ambientVolume),
       _preferences.setBool('liquid_glass_chat_ui', liquidGlassChatUi),
+      _preferences.setBool(
+        'pause_character_animation_on_fullscreen_pages',
+        pauseCharacterAnimationOnFullscreenPages,
+      ),
       _preferences.setBool('gaze_tracking_enabled', gazeTrackingEnabled),
       _preferences.setBool('show_microphone_button', showMicrophoneButton),
       _preferences.setBool(
@@ -4479,4 +4501,34 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
     frameRate.dispose();
     super.dispose();
   }
+}
+
+class _ChangedPreferences {
+  const _ChangedPreferences(this.preferences);
+
+  final SharedPreferences preferences;
+
+  Future<bool> setString(String key, String value) =>
+      preferences.getString(key) == value
+      ? Future<bool>.value(true)
+      : preferences.setString(key, value);
+
+  Future<bool> setBool(String key, bool value) =>
+      preferences.getBool(key) == value
+      ? Future<bool>.value(true)
+      : preferences.setBool(key, value);
+
+  Future<bool> setInt(String key, int value) => preferences.getInt(key) == value
+      ? Future<bool>.value(true)
+      : preferences.setInt(key, value);
+
+  Future<bool> setDouble(String key, double value) =>
+      preferences.getDouble(key) == value
+      ? Future<bool>.value(true)
+      : preferences.setDouble(key, value);
+
+  Future<bool> setStringList(String key, List<String> value) =>
+      listEquals(preferences.getStringList(key), value)
+      ? Future<bool>.value(true)
+      : preferences.setStringList(key, value);
 }

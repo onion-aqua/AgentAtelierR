@@ -72,6 +72,7 @@ class GlassSurface extends StatelessWidget {
     this.tone = GlassTone.dark,
     this.blurSigma = 16,
     this.backdropBlur = true,
+    this.transparentFill = false,
   });
 
   final bool liquidGlass;
@@ -82,6 +83,7 @@ class GlassSurface extends StatelessWidget {
   final GlassTone tone;
   final double blurSigma;
   final bool backdropBlur;
+  final bool transparentFill;
 
   @override
   Widget build(BuildContext context) {
@@ -94,10 +96,12 @@ class GlassSurface extends StatelessWidget {
     )!;
     final material = DecoratedBox(
       decoration: BoxDecoration(
-        color: liquidGlass
+        color: transparentFill
+            ? Colors.transparent
+            : liquidGlass
             ? surfaceTint.withValues(alpha: darkMode ? .42 : .34)
             : fallbackColor,
-        gradient: liquidGlass
+        gradient: liquidGlass && !transparentFill
             ? LinearGradient(
                 begin: Alignment.topLeft,
                 end: Alignment.bottomRight,

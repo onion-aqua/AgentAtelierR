@@ -160,7 +160,22 @@ void main() {
       final controller = await AppController.load();
       addTearDown(controller.dispose);
 
+      final oldRevision = controller.dataRevision;
+      final previousTurn = {
+        'state_delta': {'mood': -5},
+        'emotion': 'sad',
+        'reason': '上一段旅程的难过',
+      };
+      expect(
+        controller.settleCharacterState('old', previousTurn, oldRevision),
+        isTrue,
+      );
       await controller.createLocalSlot(0, name: '新旅程');
+      expect(controller.dataRevision, oldRevision + 1);
+      expect(
+        controller.settleCharacterState('late', previousTurn, oldRevision),
+        isFalse,
+      );
       expect(controller.activeLocalSaveSlot, 0);
       expect(controller.localSaveSlots[0]?.name, '新旅程');
       expect(controller.characterState.values, {
@@ -170,6 +185,8 @@ void main() {
         'curiosity': 20,
       });
       expect(controller.relationshipPoints, 0);
+      expect(controller.characterState.emotion, 'neutral');
+      expect(controller.characterState.reason, isEmpty);
 
       controller.characterState = CharacterState(
         values: const {

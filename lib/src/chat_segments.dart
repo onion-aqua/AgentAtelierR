@@ -1,6 +1,7 @@
 import 'app_controller.dart';
 import 'character_expression.dart';
 import 'character_performance.dart';
+import 'character_state.dart';
 
 enum ChatSpeaker { narrator, ryza, character, translation }
 
@@ -361,9 +362,45 @@ String fishEmotionForMood(CharacterMood mood) => switch (mood) {
   CharacterMood.excited => '[excited]',
 };
 
-String ensureFishEmotionCue(String text, CharacterMood fallbackMood) {
+String fishEmotionForContinuity(
+  CharacterState state,
+  String previousVoiceEmotion,
+  CharacterMood fallbackMood,
+) {
+  final stateEmotion = switch (state.emotion) {
+    'shy' => 'ashamed',
+    'neutral' => null,
+    final emotion => emotion,
+  };
+  if (stateEmotion != null && _fishEmotionCues.contains(stateEmotion)) {
+    return stateEmotion;
+  }
+  if (previousVoiceEmotion != 'relaxed' &&
+      _fishEmotionCues.contains(previousVoiceEmotion)) {
+    return previousVoiceEmotion;
+  }
+  final moodCue = fishEmotionForMood(fallbackMood);
+  return moodCue.substring(1, moodCue.length - 1);
+}
+
+String ensureFishEmotionCue(
+  String text,
+  CharacterMood fallbackMood, {
+  String? fallbackEmotion,
+}) {
   final trimmed = text.replaceAll(_appCue, '').trim();
-  if (trimmed.isEmpty || _leadingFishCue.hasMatch(trimmed)) return trimmed;
+  if (trimmed.isEmpty) return trimmed;
+  if (fallbackEmotion != null && _fishEmotionCues.contains(fallbackEmotion)) {
+    var remaining = trimmed;
+    while (true) {
+      final cue = _leadingFishCue.firstMatch(remaining);
+      if (cue == null) break;
+      if (_primaryFishEmotion(cue.group(0)!.trim()) != null) return trimmed;
+      remaining = remaining.substring(cue.end).trimLeft();
+    }
+    return '[$fallbackEmotion] $trimmed';
+  }
+  if (_leadingFishCue.hasMatch(trimmed)) return trimmed;
   return '${fishEmotionForMood(fallbackMood)} $trimmed';
 }
 
@@ -701,6 +738,7 @@ class RyzaPerformanceSegment {
 List<RyzaPerformanceSegment> performanceSegmentsForAssistantResponse(
   String response, {
   required CharacterMood fallbackMood,
+  String? fallbackEmotion,
 }) {
   final result = <RyzaPerformanceSegment>[];
   for (final segment in parseAssistantSegments(response)) {
@@ -728,7 +766,11 @@ List<RyzaPerformanceSegment> performanceSegmentsForAssistantResponse(
       action = characterActionFromTag(raw);
       if (action != CharacterAction.none) actions.add(action);
     }
-    final speechText = ensureFishEmotionCue(segment.text, fallbackMood);
+    final speechText = ensureFishEmotionCue(
+      segment.text,
+      fallbackMood,
+      fallbackEmotion: fallbackEmotion,
+    );
     if (speechText.isEmpty) continue;
     result.add(
       RyzaPerformanceSegment(
@@ -749,14 +791,17 @@ List<RyzaPerformanceSegment>? performanceSegmentsMatchingSpeech(
   String speechResponse,
   String plannedResponse, {
   required CharacterMood fallbackMood,
+  String? fallbackEmotion,
 }) {
   final speech = performanceSegmentsForAssistantResponse(
     speechResponse,
     fallbackMood: fallbackMood,
+    fallbackEmotion: fallbackEmotion,
   );
   final planned = performanceSegmentsForAssistantResponse(
     plannedResponse,
     fallbackMood: fallbackMood,
+    fallbackEmotion: fallbackEmotion,
   );
   if (speech.length != planned.length) return null;
   for (var i = 0; i < speech.length; i++) {

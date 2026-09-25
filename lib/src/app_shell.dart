@@ -231,10 +231,16 @@ class _AppShellState extends State<AppShell>
           AppDestination.shop => true,
           _ => false,
         };
+        final pauseCharacterAnimation =
+            widget.controller.pauseCharacterAnimationOnFullscreenPages &&
+            (_destination != AppDestination.chat ||
+                _chatFullscreen ||
+                ModalRoute.isCurrentOf(context) == false);
         // Keep chat at a stable tree location so switching pages never
         // disposes its draft, replayable audio, or active performance state.
         final chat = ChatScreen(
           pageActive: _destination == AppDestination.chat,
+          pauseCharacterAnimation: pauseCharacterAnimation,
           controller: widget.controller,
           onMenuPressed: _openMenu,
           onShopPressed: () => _selectDestination(AppDestination.shop),

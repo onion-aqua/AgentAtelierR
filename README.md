@@ -1,6 +1,6 @@
 # AgentAtelierR
 
-Current source version: **1.0.3-beta4+27**.
+Current source version: **1.0.3-beta5+28**.
 
 Local-first AI character companion for Android and Windows. It combines
 streaming LLM chat, local memory, optional TTS, animated character interaction,
@@ -20,7 +20,7 @@ and scene-aware audio while keeping service credentials on the device.
 - Local long-term memory summary and character mood/relationship state
 - Fish Audio `POST /v1/tts` reply playback
 - DashScope Qwen-TTS playback and guided voice-cloning setup
-- Versioned JSON backup import/export without API credentials
+- Versioned JSON backup import/export with optional API credentials
 - Native Android exact alarms with lock-screen ringing and voice audio
 - Stage-aware looping BGM, day/night ambience, and time-band Spine scene layers
 
@@ -47,8 +47,9 @@ has been raised to 36 for compatibility with the current Flutter toolchain.
 ## Scope
 
 AI and speech services remain disabled until configured in Settings. API keys are
-stored with the platform secure-storage implementation and are excluded from
-JSON backups. There is no cloud synchronization; migration is file-based.
+stored with the platform secure-storage implementation and can be included in
+an exported JSON backup only when selected. There is no cloud synchronization;
+migration is file-based.
 
 Release signing and store publication are intentionally not configured. Public
 distribution requires the relevant character, artwork, audio, and Spine Runtime

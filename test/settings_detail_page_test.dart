@@ -199,6 +199,24 @@ void main() {
   });
 
   testWidgets(
+    'appearance settings can pause character animation on full pages',
+    (tester) async {
+      final controller = await setup(tester);
+      await tapVisible(
+        tester,
+        find.byKey(const ValueKey('settings-category-appearance')),
+      );
+      final toggle = find.byKey(
+        const ValueKey('pause-character-animation-fullscreen'),
+      );
+      await tapVisible(tester, toggle);
+      expect(controller.pauseCharacterAnimationOnFullscreenPages, isFalse);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
+
+  testWidgets(
     'detail route keeps backdrop ticking and uses translucent fallback',
     (tester) async {
       final c = await setup(tester);

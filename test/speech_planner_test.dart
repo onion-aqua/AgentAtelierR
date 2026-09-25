@@ -3,9 +3,42 @@ import 'dart:convert';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ryza_chat_mvp/src/app_controller.dart';
 import 'package:ryza_chat_mvp/src/chat_segments.dart';
+import 'package:ryza_chat_mvp/src/character_state.dart';
 import 'package:ryza_chat_mvp/src/speech_planner.dart';
 
 void main() {
+  test('saved sadness survives speech planning fallback and delivery cues', () {
+    final fallback = fishEmotionForContinuity(
+      CharacterState(emotion: 'sad'),
+      'relaxed',
+      CharacterMood.neutral,
+    );
+    expect(fallback, 'sad');
+    expect(
+      ensureFishEmotionCue(
+        '[singing]我还在难过。',
+        CharacterMood.neutral,
+        fallbackEmotion: fallback,
+      ),
+      '[sad] [singing]我还在难过。',
+    );
+    expect(
+      ensureFishEmotionCue(
+        '[happy]我好多了。',
+        CharacterMood.neutral,
+        fallbackEmotion: fallback,
+      ),
+      '[happy]我好多了。',
+    );
+    expect(
+      fishEmotionForContinuity(
+        CharacterState(emotion: 'neutral'),
+        'sad',
+        CharacterMood.neutral,
+      ),
+      'sad',
+    );
+  });
   test('inline emotion survives while unsupported cues are isolated', () async {
     final result = await SpeechPlanner().plan(
       source: '莱莎：别怕，继续吧。',
@@ -159,5 +192,27 @@ void main() {
       asmr: false,
       complete: (_) async => throw StateError('must not request'),
     );
+  });
+
+  test('speech planner receives the settled emotion and its reason', () async {
+    final plan = await SpeechPlanner().plan(
+      source: '莱莎：我明白了。',
+      previousEmotion: 'sad',
+      intensity: TtsEmotionIntensity.natural,
+      density: TtsCueDensity.normal,
+      asmr: false,
+      sharedContext: const {
+        'character_state': {'emotion': 'sad', 'reason': '刚得知坏消息'},
+        'current_face': 'sad',
+      },
+      complete: (messages) async {
+        final input = jsonDecode(messages.last['content']!);
+        expect(input['previous_emotion'], 'sad');
+        expect(input['shared_context']['character_state']['reason'], '刚得知坏消息');
+        expect(input['shared_context']['current_face'], 'sad');
+        return '{"segments":[{"id":0,"emotion":"sad","cues":[]}]}';
+      },
+    );
+    expect(plan.apply('莱莎：我明白了。'), '莱莎：[sad]我明白了。');
   });
 }
