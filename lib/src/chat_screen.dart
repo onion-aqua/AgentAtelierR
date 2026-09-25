@@ -1125,6 +1125,7 @@ class _ChatScreenState extends State<ChatScreen> {
   bool _playMotionGroup(
     CharacterMotionGroup group, {
     bool pairFace = false,
+    double alphaScale = 1.0,
     Map<int, double> trackTimes = const {},
     Set<int>? allowedTracks,
     Duration? remainingDuration,
@@ -1177,7 +1178,7 @@ class _ChatScreenState extends State<ChatScreen> {
               loop: false,
               mixDuration: blend,
             )
-            ..setAlpha(animation.alpha)
+            ..setAlpha((animation.alpha * alphaScale).clamp(0.0, 1.0))
             ..setTimeScale(animation.speed)
             ..setMixBlend(MixBlend.replace)
             ..setMixDuration(blend);
@@ -2209,6 +2210,10 @@ class _ChatScreenState extends State<ChatScreen> {
       _random,
     );
     _activePoseType = poseType;
+    final allowSpeakingLeg =
+        _isCharacterSpeaking &&
+        _sittingId == 'sitting_normal' &&
+        _random.nextDouble() < 0.15;
     final idleWeights = <String, double>{
       if (torso != null)
         for (final group in _motionGroups.where(
@@ -2217,6 +2222,11 @@ class _ChatScreenState extends State<ChatScreen> {
           group.id: torso[group.id] is num
               ? (torso[group.id] as num).toDouble()
               : 0,
+      if (allowSpeakingLeg)
+        for (final group in _motionGroups.where(
+          (g) => isSpeakingLegMotion(g.occupancy, g.id),
+        ))
+          group.id: speakingLegAmbientWeight(group.occupancy, group.id),
     };
     // Idle uses authored weights only; explicit zero means disabled. Semantic
     // actions still have access to the full compatible gesture catalogue.
@@ -2225,7 +2235,9 @@ class _ChatScreenState extends State<ChatScreen> {
           (group) =>
               _isPromptPlayableMotionGroup(group) &&
               (!_isCharacterSpeaking ||
-                  isSpeakingTorsoMotion(group.occupancy, torso?[group.id])) &&
+                  isSpeakingTorsoMotion(group.occupancy, torso?[group.id]) ||
+                  (allowSpeakingLeg &&
+                      isSpeakingLegMotion(group.occupancy, group.id))) &&
               (idleWeights[group.id] ??
                       group.weightFor(_currentExpression, poseType: poseType)) >
                   0,
@@ -2240,6 +2252,7 @@ class _ChatScreenState extends State<ChatScreen> {
       random: _random,
       allowLargePostureChanges:
           !_isCharacterSpeaking && !_resourceBehavior.fixedBasePoseMode,
+      allowSubtleLegChanges: allowSpeakingLeg,
       authoredOnly: true,
       sittingId: _sittingId,
       poseType: poseType,
@@ -2252,7 +2265,10 @@ class _ChatScreenState extends State<ChatScreen> {
     if (_recentAmbientGroupIds.length > 5) {
       _recentAmbientGroupIds.removeAt(0);
     }
-    _playMotionGroup(group);
+    _playMotionGroup(
+      group,
+      alphaScale: _isCharacterSpeaking && group.occupancy == 'C' ? 0.45 : 1.0,
+    );
   }
 
   void _applyPerformanceFromResponse(String response) {
@@ -3616,6 +3632,15 @@ class _ChatScreenState extends State<ChatScreen> {
               );
             }
             if (!playbackFinished) applyPerformanceAt(activeIndex);
+            if (activeIndex < 0 &&
+                completedSegments.length == segments.length) {
+              if (aligned.last.expression case final expression?) {
+                _applyExpression(
+                  expression,
+                  intensity: aligned.last.expressionIntensity,
+                );
+              }
+            }
             if (playbackFinished &&
                 _lastSpeechSource == (displaySource ?? text)) {
               _lastSpeech = List<_CachedSpeechSegment>.unmodifiable(
@@ -8768,7 +8793,12 @@ class _MessageList extends StatelessWidget {
                 message.isUser && !showRawOutput
                     ? _UserComposerBody(text: message.text, glass: glass)
                     : Text(
-                        message.text,
+                        message.isUser
+                            ? message.text
+                            : conversationTextForAssistantResponse(
+                                message.text,
+                                showRawOutput: true,
+                              ),
                         style: TextStyle(
                           color: glass ? Colors.white : const Color(0xFF262521),
                           height: 1.4,

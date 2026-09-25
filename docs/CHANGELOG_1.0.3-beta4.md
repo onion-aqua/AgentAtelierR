@@ -1,11 +1,28 @@
-# 1.0.3 beta4
+# AgentAtelierR 1.0.3 beta4 测试版
 
-- Added a save-specific story clock and time proposals from dialogue and narration.
-- Fixed continuous ASMR segment ordering and added a generated voice list area.
-- Improved character gaze, pose selection, gesture track ownership, and restoration after touch reactions.
-- Expanded local save navigation and loading feedback.
-- Updated the protected build script to target device `a43d2d7a` explicitly when installing.
+这是 Android debug 测试包，使用 Android 调试密钥签名，不是商店发布包。版本号保持 `1.0.3-beta4+27`；本次覆盖同名 beta4 测试附件。
 
-Validation: Flutter analysis and 442 tests passed; 10 resource-dependent tests were skipped. The protected debug APK built successfully. Device installation was not verified because the device was not connected.
+## 本次更新
 
-The APK 1.1.1 action runtime is not fully replicated. Server motion protocol, arm transitions, sleep/wake behavior, and full lip closure remain outside this release.
+- 修复表情规划某一段无效时整轮表情被丢弃的问题；无效强度回退到 `normal`，有效段落继续生效。
+- 修复表情规划晚于语音播放结束时，角色没有应用最后一段表情的问题。
+- 对话框过滤 `<think>`、`<tool_call>`、`<function_call>` 及其内部内容；`<answer>`、`<code>` 只去掉标签并保留正文。流式未闭合标签和历史原始输出视图也会过滤。
+- 普通坐姿对话期间允许原资源的 `grp_c_01` 双脚轻晃和 `grp_c_03` 膝盖轻微开合。应用侧为这两组设置低触发权重、15% 候选门限和 45% 播放透明度；姿态调整与盘腿切换不会自动触发。资源或当前姿态不兼容时不播放。
+
+## beta4 已有功能
+
+- 按存档保存剧情时钟，并依据对话及旁白提出时间变化。
+- 修复持续 ASMR 语音段顺序，增加已生成语音列表区域。
+- 改进人物视线、姿态选择、动作轨道管理和触碰后的动作恢复。
+- 扩展本地存档导航与加载反馈。
+- 加密构建脚本安装时明确指定设备 `a43d2d7a`。
+
+## 验证与使用
+
+使用 `tool/build_protected.ps1 -Target apk -Mode debug` 加密构建。APK 保存在 `build/app/outputs/flutter-apk/app-debug.apk`。连接设备后，可用 `tool/build_protected.ps1 -Target apk -Mode debug -DeviceId a43d2d7a -Install` 构建并安装。
+
+本次 Flutter 测试结果为 448 项通过、10 项因资源条件跳过；静态分析无问题。debug APK 的 SHA-256 为 `CF0896B5295CDCC373E483FAB9562E71F5252C45B2941DFB1999C86DFBF5FB7D`。当前 `adb devices -l` 未发现 `a43d2d7a`，因此真机安装及画面验收尚未完成。
+
+## 已知范围
+
+APK 1.1.1 的完整动作运行时尚未全部融合：服务端动作协议、手臂过渡、睡眠/唤醒以及完整的嘴部闭合行为仍未覆盖。对话腿部微动作仅适用于普通坐姿且必须有对应 Spine 动画，站姿与盘腿姿态不会自动播放这两组动作。

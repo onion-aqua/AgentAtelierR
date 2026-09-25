@@ -10,6 +10,18 @@ bool isSpeakingTorsoMotion(String occupancy, double? authoredWeight) =>
     authoredWeight.isFinite &&
     authoredWeight > 0;
 
+/// These leg groups can play under speech; other C groups change posture.
+bool isSpeakingLegMotion(String occupancy, String groupId) {
+  if (occupancy != 'C') return false;
+  final normalized = groupId.trim().toLowerCase();
+  return normalized == 'grp_c_01' || normalized == 'grp_c_03';
+}
+
+double speakingLegAmbientWeight(String occupancy, String groupId) {
+  if (!isSpeakingLegMotion(occupancy, groupId)) return 0;
+  return groupId.trim().toLowerCase() == 'grp_c_01' ? 0.45 : 0.15;
+}
+
 /// New resources scope torso motion to the current base pose type. An empty
 /// authored map disables motion; only a missing map uses the legacy schema.
 Map<String, double>? idleTorsoWeights(

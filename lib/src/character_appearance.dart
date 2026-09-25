@@ -4,6 +4,7 @@ import 'dart:math';
 import 'package:flutter/services.dart';
 
 import 'character_expression.dart';
+import 'character_idle_behavior.dart';
 import 'protected_character_assets.dart';
 import 'local_skin_store.dart';
 
@@ -390,6 +391,7 @@ CharacterMotionGroup? selectCharacterAmbientMotionGroup({
   required Set<String> recentGroupIds,
   required Random random,
   required bool allowLargePostureChanges,
+  bool allowSubtleLegChanges = false,
   double explorationChance = 0.2,
   bool authoredOnly = false,
   String sittingId = 'sitting_normal',
@@ -402,7 +404,10 @@ CharacterMotionGroup? selectCharacterAmbientMotionGroup({
       group.supportsPose(pose) &&
       group.supportsSitting(sittingId) &&
       group.occupiedTracks.isNotEmpty &&
-      (allowLargePostureChanges || !group.occupancy.contains('C')) &&
+      (allowLargePostureChanges ||
+          !group.occupancy.contains('C') ||
+          (allowSubtleLegChanges &&
+              isSpeakingLegMotion(group.occupancy, group.id))) &&
       (!authoredOnly || weight(group) > 0);
   var compatible = groups
       .where((group) => allowed(group) && !recentGroupIds.contains(group.id))

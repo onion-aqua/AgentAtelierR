@@ -35,4 +35,15 @@ void main() {
     );
     expect(idleTorsoWeights({}, []), isNull);
   });
+
+  test('speech permits only subtle authored leg beats', () {
+    expect(isSpeakingLegMotion('C', 'grp_c_01'), isTrue);
+    expect(isSpeakingLegMotion('C', 'grp_c_03'), isTrue);
+    expect(isSpeakingLegMotion('C', 'grp_c_02'), isFalse);
+    expect(isSpeakingLegMotion('C', 'grp_c_05'), isFalse);
+    expect(isSpeakingLegMotion('E', 'grp_c_01'), isFalse);
+    expect(speakingLegAmbientWeight('C', 'grp_c_01'), 0.45);
+    expect(speakingLegAmbientWeight('C', 'grp_c_03'), 0.15);
+    expect(speakingLegAmbientWeight('C', 'grp_c_02'), 0);
+  });
 }

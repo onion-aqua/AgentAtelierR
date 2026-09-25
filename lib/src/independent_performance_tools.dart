@@ -85,15 +85,32 @@ class ExpressionPlannerTool {
       onStateProposal?.call(data);
     }
     final result = <int, String>{};
-    for (final row in _rows(data, ids)) {
-      final face = row['face'];
-      final intensity = row['intensity'] ?? 'normal';
-      if (!PerformancePlanner.faces.contains(face) ||
-          !(intensities[face] ?? ['normal']).contains(intensity)) {
-        throw const FormatException('Invalid expression capability');
+    final rows = data['segments'];
+    if (rows is! List) {
+      throw const FormatException('Missing expression segments');
+    }
+    for (final row in rows) {
+      if (row is! Map<String, dynamic> ||
+          row['id'] is! int ||
+          !ids.contains(row['id']) ||
+          result.containsKey(row['id'])) {
+        continue;
       }
+      final face = row['face'];
+      if (!PerformancePlanner.faces.contains(face)) continue;
+      final requestedIntensity = row['intensity'];
+      final intensity = (intensities[face] ?? const ['normal'])
+              .contains(requestedIntensity)
+          ? requestedIntensity as String
+          : 'normal';
       result[row['id']] =
           '[face:$face${intensity == 'normal' ? '' : '/$intensity'}]';
+    }
+    if (result.length != ids.length) {
+      RuntimeLog.instance.warning(
+        name,
+        '表情规划仅解析 ${result.length}/${ids.length} 段，保留其余段落现有表情',
+      );
     }
     return result;
   }

@@ -153,6 +153,58 @@ final RegExp _metadataLine = RegExp(
   r'^\s*(?:<\|[^\r\n|]+\|>|```+|(?:###\s*)?(?:assistant|user|system)\s*:?)\s*$',
   caseSensitive: false,
 );
+final RegExp _controlTag = RegExp(
+  r'\\?<\s*(/?)\s*(think|answer|tool_call|function_call|code)\b[^>]*>',
+  caseSensitive: false,
+);
+final RegExp _partialControlTag = RegExp(
+  r'^\\?<\s*/?\s*([a-z_]+)',
+  caseSensitive: false,
+);
+const _controlTagNames = {
+  'think',
+  'answer',
+  'tool_call',
+  'function_call',
+  'code',
+};
+
+String filterAssistantControlMarkup(String response) {
+  final visible = StringBuffer();
+  final hidden = <String>[];
+  var cursor = 0;
+  for (final match in _controlTag.allMatches(response)) {
+    if (hidden.isEmpty) visible.write(response.substring(cursor, match.start));
+    final tag = match.group(2)!.toLowerCase();
+    if (tag != 'answer' && tag != 'code') {
+      if (match.group(1) == '/') {
+        final index = hidden.lastIndexOf(tag);
+        if (index >= 0) hidden.removeRange(index, hidden.length);
+      } else if (!match.group(0)!.trimRight().endsWith('/>')) {
+        hidden.add(tag);
+      }
+    }
+    cursor = match.end;
+  }
+  if (hidden.isEmpty) {
+    var tail = response.substring(cursor);
+    final opening = tail.lastIndexOf('<');
+    if (opening >= 0) {
+      final start = opening > 0 && tail[opening - 1] == r'\'
+          ? opening - 1
+          : opening;
+      final partial = _partialControlTag.firstMatch(tail.substring(start));
+      if (partial != null &&
+          _controlTagNames.any(
+            (name) => name.startsWith(partial.group(1)!.toLowerCase()),
+          )) {
+        tail = tail.substring(0, start);
+      }
+    }
+    visible.write(tail);
+  }
+  return visible.toString();
+}
 
 /// Preserve multiline user narration independently from spoken dialogue.
 ({String narration, String speech, String bottomNarration})
@@ -180,6 +232,7 @@ parseUserComposerParts(String text) {
 }
 
 List<ChatSegment> parseAssistantSegments(String response) {
+  response = filterAssistantControlMarkup(response);
   final segments = <ChatSegment>[];
   ChatSpeaker? activeSpeaker;
   String? activeCharacterId;
@@ -274,8 +327,10 @@ List<List<ChatSegment>> groupAssistantSegmentsForDisplay(String response) {
       .where((segment) => displayTextForAssistantSegment(segment).isNotEmpty)
       .toList(growable: false);
   if (segments.isEmpty && response.trim().isNotEmpty) {
+    final clean = filterAssistantControlMarkup(response).trim();
+    if (clean.isEmpty) return const [];
     return [
-      [ChatSegment(speaker: ChatSpeaker.ryza, text: response.trim())],
+      [ChatSegment(speaker: ChatSpeaker.ryza, text: clean)],
     ];
   }
   final runs = <List<ChatSegment>>[];
@@ -785,6 +840,7 @@ String ttsTextForAssistantResponse(
 }
 
 String displayTextForAssistantResponse(String response) {
+  response = filterAssistantControlMarkup(response);
   final segments = parseAssistantSegments(response);
   if (segments.isEmpty) return response.trim();
   final hasExplicitSpeaker = _speakerPrefix.hasMatch(response);
@@ -808,13 +864,15 @@ String displayTextForAssistantResponse(String response) {
 }
 
 String displayTextForAssistantSegment(ChatSegment segment) =>
-    segment.text.replaceAll(_fishCue, '').trim();
+    filterAssistantControlMarkup(segment.text).replaceAll(_fishCue, '').trim();
 
 String conversationTextForAssistantResponse(
   String response, {
   required bool showRawOutput,
 }) {
-  return showRawOutput ? response : displayTextForAssistantResponse(response);
+  return showRawOutput
+      ? filterAssistantControlMarkup(response)
+      : displayTextForAssistantResponse(response);
 }
 
 /// Display indices only: never remove original segments from storage or speech.

@@ -88,6 +88,25 @@ void main() {
     });
   }
 
+  test('a malformed expression row does not discard other faces', () async {
+    final result = await ExpressionPlannerTool().plan(
+      userInput: '你好',
+      source: '莱莎：你好。\n莱莎：太好了。\n莱莎：再见。',
+      ids: [0, 1, 2],
+      currentFace: 'neutral',
+      currentIntensity: 'normal',
+      intensities: const {'happy': ['normal', 'strong']},
+      complete: (_) async => jsonEncode({
+        'segments': [
+          {'id': 0, 'face': 'happy', 'intensity': 'strong'},
+          {'id': 1, 'face': 'invalid'},
+          {'id': 2, 'face': 'shy', 'intensity': 'strong'},
+        ],
+      }),
+    );
+    expect(result, {0: '[face:happy/strong]', 2: '[face:shy]'});
+  });
+
   test('posture switch suppresses actions from previous snapshot', () async {
     final result = await ActionPlannerTool().plan(
       userInput: '盘腿坐',

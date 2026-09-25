@@ -1,0 +1,52 @@
+import 'package:flutter_test/flutter_test.dart';
+import 'package:ryza_chat_mvp/src/app_controller.dart';
+import 'package:ryza_chat_mvp/src/chat_segments.dart';
+
+void main() {
+  test('private control blocks are removed and answer/code bodies remain', () {
+    const response = '莱莎：<think>secret</think><answer>你好，<code>print(1)</code></answer>'
+        '<tool_call>{"token":"hidden"}</tool_call>'
+        '<function_call>run()</function_call>！';
+
+    expect(displayTextForAssistantResponse(response), '莱莎：你好，print(1)！');
+    expect(
+      ttsTextForAssistantResponse(
+        response,
+        fallbackMood: CharacterMood.neutral,
+      ),
+      '[relaxed] 你好，print(1)！',
+    );
+    expect(
+      conversationTextForAssistantResponse(response, showRawOutput: true),
+      '莱莎：你好，print(1)！',
+    );
+  });
+
+  test('streaming fragments never expose partial control tags or hidden text', () {
+    expect(displayTextForAssistantResponse('莱莎：你好 <thi'), '莱莎：你好');
+    expect(
+      displayTextForAssistantResponse('莱莎：你好 <think>hidden'),
+      '莱莎：你好',
+    );
+    expect(
+      displayTextForAssistantResponse('莱莎：你好 <think>hidden</think> 再见'),
+      '莱莎：你好  再见',
+    );
+    expect(
+      displayTextForAssistantResponse(r'莱莎：\<answer>好\</answer>'),
+      '莱莎：好',
+    );
+    expect(displayTextForAssistantResponse(r'莱莎：好\<thi'), '莱莎：好');
+    expect(filterAssistantControlMarkup('莱莎：a <'), '莱莎：a <');
+    expect(groupAssistantSegmentsForDisplay('<think>private'), isEmpty);
+    expect(displayTextForAssistantResponse('莱莎：<thinking>保留</thinking>'),
+        '莱莎：<thinking>保留</thinking>');
+  });
+
+  test('hidden multiline blocks cannot become dialogue segments', () {
+    const response = '莱莎：你好。\n<tool_call>\n莱莎：不要显示\n</tool_call>\n莱莎：再见。';
+    final segments = parseAssistantSegments(response);
+    expect(segments.map((segment) => segment.text), ['你好。', '再见。']);
+    expect(displayTextForAssistantResponse(response), '莱莎：你好。\n莱莎：再见。');
+  });
+}

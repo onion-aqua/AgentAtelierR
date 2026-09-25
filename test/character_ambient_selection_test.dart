@@ -132,6 +132,26 @@ void main() {
     expect(singles / 5000, closeTo(0.5, 0.03));
   });
 
+  test('speech can select approved leg groups without enabling posture changes', () {
+    final groups = [
+      motion('grp_c_01', weight: 0.45, occupancy: 'C'),
+      motion('grp_c_02', weight: 1, occupancy: 'C'),
+    ];
+    expect(
+      selectCharacterAmbientMotionGroup(
+        groups: groups,
+        expression: CharacterExpression.neutral,
+        pose: null,
+        recentGroupIds: {},
+        random: Random(1),
+        allowLargePostureChanges: false,
+        allowSubtleLegChanges: true,
+        authoredOnly: true,
+      )?.id,
+      'grp_c_01',
+    );
+  });
+
   test(
     'pose type tables override defaults including zero and missing groups',
     () {
