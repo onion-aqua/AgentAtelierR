@@ -5,6 +5,8 @@ param(
     [ValidateSet("debug", "profile", "release")]
     [string]$Mode = "debug",
 
+    [string]$DeviceId = "a43d2d7a",
+
     [switch]$Install
 )
 
@@ -39,7 +41,7 @@ try {
         $apkName = if ($Mode -eq "debug") { "app-debug.apk" } elseif ($Mode -eq "profile") { "app-profile.apk" } else { "app-release.apk" }
         $apkPath = Join-Path $projectRoot "build\app\outputs\flutter-apk\$apkName"
         if (-not (Test-Path -LiteralPath $apkPath)) { throw "APK was not found: $apkPath" }
-        & adb install -r $apkPath
+        & adb -s $DeviceId install -r $apkPath
         if ($LASTEXITCODE -ne 0) { throw "APK installation failed." }
     }
 }

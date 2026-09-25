@@ -32,6 +32,7 @@ import 'speech_envelope_loader.dart';
 import 'character_speech_driver.dart';
 import 'character_resource_behavior.dart';
 import 'character_motion_dynamics.dart';
+import 'character_motion_layers.dart';
 import 'character_track_transition.dart';
 import 'character_idle_behavior.dart';
 import 'character_posture.dart';
@@ -162,6 +163,8 @@ class ChatScreen extends StatefulWidget {
     required this.onShopPressed,
     required this.hideUi,
     this.onFullscreenChanged,
+    this.onCharacterReady,
+    this.onCharacterLoadFailed,
   });
 
   final AppController controller;
@@ -169,6 +172,8 @@ class ChatScreen extends StatefulWidget {
   final VoidCallback onShopPressed;
   final bool hideUi;
   final ValueChanged<bool>? onFullscreenChanged;
+  final VoidCallback? onCharacterReady;
+  final VoidCallback? onCharacterLoadFailed;
   final bool pageActive;
 
   @override
@@ -180,6 +185,20 @@ class _PreparedSpeech {
 
   final String path;
   final AudioAmplitudeEnvelope? envelope;
+}
+
+class _SuspendedMotionGroup {
+  const _SuspendedMotionGroup({
+    required this.group,
+    required this.remaining,
+    required this.trackTimes,
+    required this.tracks,
+  });
+
+  final CharacterMotionGroup group;
+  final Duration remaining;
+  final Map<int, double> trackTimes;
+  final Set<int> tracks;
 }
 
 class _CachedSpeechSegment {
@@ -248,6 +267,7 @@ class _ChatScreenState extends State<ChatScreen> {
   Timer? _suggestionQuotaTimer;
   StreamSubscription<Duration>? _audioPositionSubscription;
   String? _currentIdleAnimation;
+  String? _activePoseType;
   final _postureState = CharacterPostureState();
   String? _lastPostureCue;
 
@@ -315,6 +335,11 @@ class _ChatScreenState extends State<ChatScreen> {
   );
   DateTime? _motionBusyUntil;
   String? _activeMotionGroupId;
+  final _motionLayers = CharacterMotionLayers();
+  final _motionReleaseTimers = <int, Timer>{};
+  final _activeMotionVariants = <int, CharacterMotionGroup>{};
+  List<_SuspendedMotionGroup> _tapSuspendedMotions = const [];
+  int _tapSuspendedMotionLoadGeneration = 0;
   String? _windAnimationName;
   CharacterWindEnvelope _windEnvelope = CharacterWindEnvelope();
   // 0 base, 1 tap, 2–10 gestures, 11–16 face. Wind never owns pose bones.
@@ -585,6 +610,13 @@ class _ChatScreenState extends State<ChatScreen> {
           _scheduleIdleChange();
           setState(() => _spineReady = true);
           _applyExpression(_currentExpression);
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted &&
+                _spineReady &&
+                identical(spineController, _spineController)) {
+              widget.onCharacterReady?.call();
+            }
+          });
           if (_isCharacterSpeaking) {
             _scheduleFacialDetailChange();
             _scheduleCharacterBlink();
@@ -633,6 +665,14 @@ class _ChatScreenState extends State<ChatScreen> {
     _windAnimationName = null;
     _windEnvelope = CharacterWindEnvelope();
     _activeMotionGroupId = null;
+    _activePoseType = null;
+    _motionLayers.clear();
+    _activeMotionVariants.clear();
+    _tapSuspendedMotions = const [];
+    for (final timer in _motionReleaseTimers.values) {
+      timer.cancel();
+    }
+    _motionReleaseTimers.clear();
     _activeResourceExpression = null;
     _activeFacialDetail = null;
     _motionBusyUntil = null;
@@ -805,6 +845,7 @@ class _ChatScreenState extends State<ChatScreen> {
     _resetMotionOverlays(mixDuration: mix);
     spineController.animationState.setEmptyAnimation(1, mix);
     _currentIdleAnimation = animation;
+    _activePoseType = null;
     spineController.animationState.setAnimationByName(0, animation, true)
       ..setMixDuration(mix)
       ..setTimeScale(_resourceEmotion?.baseAnimTimeScale ?? 1);
@@ -1081,7 +1122,13 @@ class _ChatScreenState extends State<ChatScreen> {
     return details;
   }
 
-  bool _playMotionGroup(CharacterMotionGroup group, {bool pairFace = false}) {
+  bool _playMotionGroup(
+    CharacterMotionGroup group, {
+    bool pairFace = false,
+    Map<int, double> trackTimes = const {},
+    Set<int>? allowedTracks,
+    Duration? remainingDuration,
+  }) {
     final spineController = _spineController;
     if (!_spineReady ||
         spineController == null ||
@@ -1102,11 +1149,6 @@ class _ChatScreenState extends State<ChatScreen> {
           group.blendTime,
       group.blendTime,
     );
-    // Replace shared tracks directly: inserting an empty clip first blends
-    // through setup pose and can produce hand jumps during rapid switching.
-    _resetMotionOverlays(mixDuration: blend, replacingTracks: tracks);
-    _activeMotionGroupId = group.id;
-
     final generation = ++_motionGeneration;
     final state = spineController.animationState;
     state.setEmptyAnimation(1, blend);
@@ -1118,9 +1160,11 @@ class _ChatScreenState extends State<ChatScreen> {
     ];
     TrackEntry? longestEntry;
     var longestDuration = -1.0;
+    final appliedTracks = <int>[];
     for (var index = 0; index < animations.length; index++) {
       final animation = animations[index];
       if (index >= tracks.length ||
+          (allowedTracks != null && !allowedTracks.contains(tracks[index])) ||
           spineController.skeletonData.findAnimation(animation.name) == null) {
         continue;
       }
@@ -1137,6 +1181,10 @@ class _ChatScreenState extends State<ChatScreen> {
             ..setTimeScale(animation.speed)
             ..setMixBlend(MixBlend.replace)
             ..setMixDuration(blend);
+      if (trackTimes[tracks[index]] case final time?) {
+        entry.setTrackTime(time);
+      }
+      appliedTracks.add(tracks[index]);
 
       final speed = animation.speed.abs() < 0.01 ? 1.0 : animation.speed.abs();
       final duration = entry.getAnimation().getDuration() / speed;
@@ -1145,8 +1193,23 @@ class _ChatScreenState extends State<ChatScreen> {
         longestEntry = entry;
       }
     }
-    longestEntry?.setListener((type, _, _) {
-      if (type != EventType.complete || generation != _motionGeneration) return;
+    if (longestEntry == null) return false;
+    final fullDuration = Duration(
+      milliseconds:
+          ((max(0, longestDuration) + max(0.3, group.blendTime)) * 1000).ceil(),
+    );
+    final motionDuration = remainingDuration ?? fullDuration;
+    _motionLayers.claim(
+      generation,
+      group.id,
+      appliedTracks,
+      DateTime.now().add(motionDuration),
+    );
+    _activeMotionVariants[generation] = group;
+    _activeMotionGroupId = _motionLayers.latestGroupId;
+    _motionBusyUntil = _motionLayers.latestExpiry;
+    void finish() {
+      if (!mounted) return;
       RuntimeLog.instance.info(
         'ActionPlanner',
         '动作完成：${group.id}；generation=$generation',
@@ -1160,28 +1223,108 @@ class _ChatScreenState extends State<ChatScreen> {
             group.blendTime,
         group.blendTime,
       );
-      _resetMotionOverlays(mixDuration: release);
-      _motionBusyUntil = DateTime.now().add(
-        Duration(milliseconds: (release * 1000).ceil()),
-      );
+      _releaseMotionLease(generation, release);
+    }
+
+    longestEntry.setListener((type, _, _) {
+      if (type == EventType.complete) finish();
     });
-    final motionDuration = Duration(
-      milliseconds:
-          ((max(0, longestDuration) + max(0.3, group.blendTime)) * 1000).ceil(),
+    _motionReleaseTimers[generation] = Timer(motionDuration, finish);
+    RuntimeLog.instance.info(
+      'ActionPlanner',
+      '动作开始：${group.id}；动画=${animations.map((a) => a.name).join(',')}；轨道=$appliedTracks；时长=${longestDuration.toStringAsFixed(2)}秒；混合=$blend；generation=$generation',
     );
-    _motionBusyUntil = DateTime.now().add(motionDuration);
-    if (longestEntry != null) {
-      RuntimeLog.instance.info(
-        'ActionPlanner',
-        '动作开始：${group.id}；动画=${animations.map((a) => a.name).join(',')}；轨道=$tracks；时长=${longestDuration.toStringAsFixed(2)}秒；混合=$blend；generation=$generation',
-      );
-      widget.controller.frameRate.boost(
-        FrameRateActivity.characterMotion,
-        duration: motionDuration,
+    widget.controller.frameRate.boost(
+      FrameRateActivity.characterMotion,
+      duration: motionDuration,
+    );
+    _scheduleIdleChange();
+    return true;
+  }
+
+  void _releaseMotionLease(int token, double mixDuration) {
+    _motionReleaseTimers.remove(token)?.cancel();
+    _activeMotionVariants.remove(token);
+    final tracks = _motionLayers.release(token);
+    if (tracks.isEmpty) return;
+    final state = _spineController?.animationState;
+    if (state != null) {
+      for (final track in tracks) {
+        if (track == 3 && _sittingId == 'sitting_agura') continue;
+        state.setEmptyAnimation(track, mixDuration);
+      }
+    }
+    _activeMotionGroupId = _motionLayers.latestGroupId;
+    _motionBusyUntil =
+        _motionLayers.latestExpiry ??
+        DateTime.now().add(Duration(milliseconds: (mixDuration * 1000).ceil()));
+    _restoreSittingRestTracks(tracks, mixDuration);
+    _scheduleIdleChange();
+  }
+
+  List<_SuspendedMotionGroup> _captureTapMotions() {
+    final state = _spineController?.animationState;
+    if (state == null) return const [];
+    final now = DateTime.now();
+    return [
+      for (final lease in _motionLayers.active)
+        if (lease.expiresAt.isAfter(now))
+          if (_activeMotionVariants[lease.token] case final group?)
+            _SuspendedMotionGroup(
+              group: group,
+              remaining: lease.expiresAt.difference(now),
+              tracks: lease.tracks,
+              trackTimes: {
+                for (final track in lease.tracks)
+                  if (state.getCurrent(track) case final entry?)
+                    track: entry.getTrackTime(),
+              },
+            ),
+    ];
+  }
+
+  void _restoreTapMotions() {
+    final suspended = _tapSuspendedMotions;
+    _tapSuspendedMotions = const [];
+    if (_tapSuspendedMotionLoadGeneration != _motionLoadGeneration) return;
+    for (final motion in suspended) {
+      if (_motionGroups.contains(motion.group) &&
+          _canPlayMotionGroup(motion.group)) {
+        _playMotionGroup(
+          motion.group,
+          trackTimes: motion.trackTimes,
+          allowedTracks: motion.tracks,
+          remainingDuration: motion.remaining,
+        );
+      }
+    }
+  }
+
+  void _restoreSittingRestTracks(Set<int> released, double mixDuration) {
+    if (_sittingId != 'sitting_agura') return;
+    final restId = _resourceBehavior.restGroupsBySitting[_sittingId];
+    final rest = _motionGroups
+        .where(
+          (group) =>
+              group.id == restId &&
+              group.occupancy == 'FG' &&
+              _canPlayMotionGroup(group),
+        )
+        .firstOrNull;
+    if (rest == null) return;
+    final names = [rest.animation1, rest.animation2];
+    for (var index = 0; index < rest.occupiedTracks.length; index++) {
+      final track = rest.occupiedTracks[index];
+      final name = names[index];
+      if (name == null || !released.contains(track)) continue;
+      _setFacialAnimation(
+        track,
+        name,
+        alpha: index == 0 ? rest.alpha1 : rest.alpha2,
+        timeScale: index == 0 ? rest.speed1 : rest.speed2,
+        mixDuration: mixDuration,
       );
     }
-    _scheduleIdleChange();
-    return longestEntry != null;
   }
 
   bool _canPlayRecipe(MotionRecipe recipe) {
@@ -1284,6 +1427,12 @@ class _ChatScreenState extends State<ChatScreen> {
       );
     }
     _motionGeneration += 1;
+    _motionLayers.clear();
+    _activeMotionVariants.clear();
+    for (final timer in _motionReleaseTimers.values) {
+      timer.cancel();
+    }
+    _motionReleaseTimers.clear();
     _motionBusyUntil = null;
     _activeMotionGroupId = null;
     for (var track = 2; track <= 10; track++) {
@@ -1306,30 +1455,10 @@ class _ChatScreenState extends State<ChatScreen> {
         spineController.animationState.setEmptyAnimation(track, mixDuration);
       }
     }
-    if (_sittingId == 'sitting_agura') {
-      final restId = _resourceBehavior.restGroupsBySitting[_sittingId];
-      final rest = _motionGroups
-          .where(
-            (g) =>
-                g.id == restId && g.occupancy == 'FG' && _canPlayMotionGroup(g),
-          )
-          .firstOrNull;
-      if (rest != null) {
-        final names = [rest.animation1, rest.animation2];
-        for (var index = 0; index < rest.occupiedTracks.length; index++) {
-          final track = rest.occupiedTracks[index];
-          final name = names[index];
-          if (name == null || replacingTracks.contains(track)) continue;
-          _setFacialAnimation(
-            track,
-            name,
-            alpha: index == 0 ? rest.alpha1 : rest.alpha2,
-            timeScale: index == 0 ? rest.speed1 : rest.speed2,
-            mixDuration: mixDuration,
-          );
-        }
-      }
-    }
+    _restoreSittingRestTracks({
+      for (var track = 2; track <= 10; track++)
+        if (!replacingTracks.contains(track)) track,
+    }, mixDuration);
   }
 
   void _setFacialAnimation(
@@ -1422,7 +1551,7 @@ class _ChatScreenState extends State<ChatScreen> {
       );
       _setFacialAnimation(
         13,
-        isStableIdleMouth(resourceMouth) ? resourceMouth! : preset.mouth,
+        stableIdleMouthOr(resourceMouth, preset.mouth),
         mixDuration: _resourceEmotion?.mixDurationEye ?? 0.16,
       );
     }
@@ -1942,13 +2071,15 @@ class _ChatScreenState extends State<ChatScreen> {
       _applyFacialDetails();
       if (!_isCharacterSpeaking) {
         final mouth = _resolveResourceClip(_activeResourceExpression?.mouth);
-        if (isStableIdleMouth(mouth)) {
-          _setFacialAnimation(
-            13,
-            mouth!,
-            mixDuration: _resourceEmotion?.mixDurationEye ?? 0.16,
-          );
-        }
+        final preset = characterExpressionPreset(
+          _appearance.baseAppearanceId ?? _appearance.id,
+          _currentExpression,
+        );
+        _setFacialAnimation(
+          13,
+          stableIdleMouthOr(mouth, preset.mouth),
+          mixDuration: _resourceEmotion?.mixDurationEye ?? 0.16,
+        );
       }
       _scheduleFacialDetailChange();
       return;
@@ -2072,7 +2203,12 @@ class _ChatScreenState extends State<ChatScreen> {
             .expand((pose) => pose.poseTypeIds)
             .toList();
     final torso = idleTorsoWeights(band, poseTypes);
-    final poseType = poseTypes.firstOrNull;
+    final poseType = _resourceBehavior.choosePoseType(
+      poseTypes,
+      _activePoseType,
+      _random,
+    );
+    _activePoseType = poseType;
     final idleWeights = <String, double>{
       if (torso != null)
         for (final group in _motionGroups.where(
@@ -2250,7 +2386,20 @@ class _ChatScreenState extends State<ChatScreen> {
     final coolingDown =
         _lastSemanticActionAt != null &&
         now.difference(_lastSemanticActionAt!) < const Duration(seconds: 3);
-    if (_motionBusy || coolingDown) {
+    final queued = _performanceQueue.peek(now);
+    final queuedGroup = queued?.motionGroupId == null
+        ? null
+        : _motionGroups
+              .where(
+                (group) =>
+                    group.id == queued!.motionGroupId &&
+                    _isPromptPlayableMotionGroup(group),
+              )
+              .firstOrNull;
+    final canOverlap =
+        queuedGroup != null &&
+        _motionLayers.canOverlap(queuedGroup.occupiedTracks);
+    if ((_motionBusy || coolingDown) && !canOverlap) {
       if (_performanceQueue.isNotEmpty) {
         final reason =
             '等待：当前动作=$_activeMotionGroupId；忙碌=$_motionBusy；冷却=$coolingDown';
@@ -2284,7 +2433,7 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   void _playMotionGroupNow(String motionGroupId) {
-    if (!_spineReady || _tapReactionActive || _motionBusy) {
+    if (!_spineReady || _tapReactionActive) {
       RuntimeLog.instance.warning(
         'ActionPlanner',
         '播放前拦截：$motionGroupId；ready=$_spineReady，触碰=$_tapReactionActive，忙碌=$_motionBusy',
@@ -2295,6 +2444,7 @@ class _ChatScreenState extends State<ChatScreen> {
         .where((r) => r.id == motionGroupId && _canPlayRecipe(r))
         .firstOrNull;
     if (recipe != null) {
+      if (_motionBusy) return;
       RuntimeLog.instance.info(
         'ActionPlanner',
         '播放组合：${recipe.id} ${recipe.name}（${recipe.stages.length}阶段）',
@@ -2314,6 +2464,11 @@ class _ChatScreenState extends State<ChatScreen> {
           _isPromptPlayableMotionGroup(candidate!),
       orElse: () => null,
     );
+    if (_motionBusy &&
+        (group == null || !_motionLayers.canOverlap(group.occupiedTracks))) {
+      RuntimeLog.instance.warning('ActionPlanner', '动作占用冲突：$motionGroupId');
+      return;
+    }
     // The model already chose face explicitly. Auto-pairing is for manual
     // previews only; otherwise an action silently replaces the dialogue face.
     if (group != null && _playMotionGroup(group)) {
@@ -2462,6 +2617,10 @@ class _ChatScreenState extends State<ChatScreen> {
     _effectPlayer.dispose();
     _idleTimer?.cancel();
     _tapReactionTimer?.cancel();
+    for (final timer in _motionReleaseTimers.values) {
+      timer.cancel();
+    }
+    _motionReleaseTimers.clear();
     _microMotionTimer?.cancel();
     _facialDetailTimer?.cancel();
     _blinkTimer?.cancel();
@@ -2485,6 +2644,10 @@ class _ChatScreenState extends State<ChatScreen> {
     widget.controller.recordCharacterTouch();
     var restoreDelay = const Duration(milliseconds: 350);
     if (_spineReady && _spineController != null) {
+      if (!_tapReactionActive) {
+        _tapSuspendedMotions = _captureTapMotions();
+        _tapSuspendedMotionLoadGeneration = _motionLoadGeneration;
+      }
       _tapReactionActive = true;
       _blinkRestoreTimer?.cancel();
       _speechBlinkClosed = false;
@@ -2512,12 +2675,14 @@ class _ChatScreenState extends State<ChatScreen> {
         // A skin may omit an optional touch animation. Keep the tap feedback
         // and voice without calling Spine with an unknown animation name.
         _tapReactionActive = false;
+        _restoreTapMotions();
       }
     }
     _tapReactionTimer?.cancel();
     _tapReactionTimer = Timer(restoreDelay, () {
       if (!mounted) return;
       _tapReactionActive = false;
+      _restoreTapMotions();
       _applyExpression(_currentExpression);
       if (_isCharacterSpeaking) {
         _scheduleFacialDetailChange();
@@ -2878,9 +3043,12 @@ class _ChatScreenState extends State<ChatScreen> {
             characterState: {
               'values': widget.controller.characterState.values,
               'emotion': widget.controller.characterState.emotion,
+              if (widget.controller.storyClockEnabled)
+                'story_clock': widget.controller.storyClock.toJson(),
               'reason_language':
                   widget.controller.interfaceLanguage.promptLabel,
             },
+            storyClockEnabled: widget.controller.storyClockEnabled,
             onStateProposal: (proposal) => stateProposal = proposal,
             recentActions: _recentDialogueActions.reversed.toList(),
             complete: (messages) => _aiClient.complete(
@@ -2916,6 +3084,13 @@ class _ChatScreenState extends State<ChatScreen> {
           RuntimeLog.instance.info(
             'CharacterState',
             settled ? '本轮状态已更新' : '状态提议无效或存档已改变，保留原值',
+          );
+        }
+        if (mounted && generation == _replyGeneration) {
+          widget.controller.settleStoryTime(
+            stateTurn,
+            stateProposal,
+            stateRevision,
           );
         }
         return performanceText;
@@ -4266,6 +4441,18 @@ class _ChatScreenState extends State<ChatScreen> {
                             ),
                           ),
                         ),
+                        if (widget.controller.storyClockEnabled)
+                          Text(
+                            language.text(
+                              '第${widget.controller.storyClock.day}天 · ${widget.controller.storyClock.timeLabel}',
+                              'Day ${widget.controller.storyClock.day} · ${widget.controller.storyClock.timeLabel}',
+                              '${widget.controller.storyClock.day}日目 · ${widget.controller.storyClock.timeLabel}',
+                            ),
+                            style: const TextStyle(
+                              color: Colors.white70,
+                              fontSize: 12,
+                            ),
+                          ),
                         IconButton(
                           onPressed: () => Navigator.pop(dialogContext),
                           tooltip: language.text('关闭', 'Close', '閉じる'),
@@ -4287,6 +4474,13 @@ class _ChatScreenState extends State<ChatScreen> {
                               language,
                             ),
                           ),
+                          if (widget.controller.storyClockEnabled)
+                            _CharacterStatusRow(
+                              icon: Icons.restaurant_rounded,
+                              label: language.text('饱食度', 'Satiety', '満腹度'),
+                              value:
+                                  '${widget.controller.storyClock.satiety}/100',
+                            ),
                           if (widget
                               .controller
                               .characterState
@@ -5014,6 +5208,11 @@ class _ChatScreenState extends State<ChatScreen> {
       future: _appearanceBundleFuture,
       builder: (context, snapshot) {
         if (snapshot.hasError) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted && identical(spineController, _spineController)) {
+              widget.onCharacterLoadFailed?.call();
+            }
+          });
           return Center(
             child: ConstrainedBox(
               constraints: const BoxConstraints(maxWidth: 280),
@@ -5049,6 +5248,7 @@ class _ChatScreenState extends State<ChatScreen> {
               skeleton: _appearance.skeletonAsset,
               controller: spineController,
               bundle: bundle,
+              onLoadFailed: widget.onCharacterLoadFailed,
               key: ValueKey(spineController),
             ),
           ],

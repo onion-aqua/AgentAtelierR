@@ -103,5 +103,10 @@ class CharacterPerformanceQueue {
     return item;
   }
 
+  QueuedPerformance? peek(DateTime now) {
+    _expire(now);
+    return _items.isEmpty ? null : _items.first;
+  }
+
   bool get isNotEmpty => _items.isNotEmpty;
 }

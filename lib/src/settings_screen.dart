@@ -469,6 +469,21 @@ class SettingsScreenState extends State<SettingsScreen> {
                 const Divider(indent: 16, endIndent: 16),
                 _SectionLabel(language.text('场景', 'Scene', 'シーン')),
                 SwitchListTile(
+                  value: controller.storyClockEnabled,
+                  onChanged: controller.setStoryClockEnabled,
+                  secondary: const Icon(Icons.hourglass_bottom_rounded),
+                  title: Text(
+                    language.text('启用剧情时钟', 'Story clock', '物語時計を有効にする'),
+                  ),
+                  subtitle: Text(
+                    language.text(
+                      '对话与互动推进游戏时间；饱食度随时间下降，低饱食度影响精力。随存档保存。',
+                      'Dialogue and interactions advance game time. Hunger affects energy. Saved per slot.',
+                      '会話や交流でゲーム内時間が進み、空腹は元気に影響します。セーブごとに保存。',
+                    ),
+                  ),
+                ),
+                SwitchListTile(
                   value: controller.automaticSceneTime,
                   onChanged: controller.setAutomaticSceneTime,
                   secondary: const Icon(Icons.schedule_outlined),

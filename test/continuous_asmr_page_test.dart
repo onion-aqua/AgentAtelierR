@@ -69,6 +69,11 @@ void main() {
       expect(find.text('倒计时关闭'), findsOneWidget);
       expect(find.text('指定时刻关闭'), findsOneWidget);
       expect(find.byKey(const ValueKey('asmr-countdown')), findsOneWidget);
+      expect(find.byKey(const ValueKey('asmr-voice-area')), findsOneWidget);
+      expect(
+        tester.getSize(find.byKey(const ValueKey('asmr-voice-area'))).height,
+        300,
+      );
       await tester.tap(find.text('指定时刻关闭'));
       await tester.pumpAndSettle();
       expect(find.byKey(const ValueKey('asmr-clock')), findsOneWidget);

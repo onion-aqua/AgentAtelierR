@@ -12,11 +12,13 @@ class CharacterSpineView extends StatefulWidget {
     required this.skeleton,
     required this.bundle,
     required this.controller,
+    this.onLoadFailed,
   });
   final String atlas;
   final String skeleton;
   final AssetBundle bundle;
   final SpineWidgetController controller;
+  final VoidCallback? onLoadFailed;
 
   @override
   State<CharacterSpineView> createState() => _CharacterSpineViewState();
@@ -77,6 +79,7 @@ class _CharacterSpineViewState extends State<CharacterSpineView> {
       if (!mounted || generation != _generation) return;
       RuntimeLog.instance.error('CharacterAssets', error, stack);
       setState(() => _error = error);
+      widget.onLoadFailed?.call();
     }
   }
 

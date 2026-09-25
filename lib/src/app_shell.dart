@@ -14,6 +14,7 @@ import 'folding_button_group.dart';
 import 'glass_ui.dart';
 import 'mission_screen.dart';
 import 'page_navigation.dart';
+import 'ryza_loading_indicator.dart';
 import 'settings_screen.dart';
 import 'shop_screen.dart';
 import 'soundscape_controller.dart';
@@ -55,15 +56,23 @@ extension AppDestinationData on AppDestination {
 }
 
 class AppShell extends StatefulWidget {
-  const AppShell({super.key, required this.controller});
+  const AppShell({
+    super.key,
+    required this.controller,
+    this.onCharacterReady,
+    this.onCharacterLoadFailed,
+  });
 
   final AppController controller;
+  final VoidCallback? onCharacterReady;
+  final VoidCallback? onCharacterLoadFailed;
 
   @override
   State<AppShell> createState() => _AppShellState();
 }
 
-class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
+class _AppShellState extends State<AppShell>
+    with WidgetsBindingObserver, SingleTickerProviderStateMixin {
   final _scaffoldKey = GlobalKey<ScaffoldState>();
   final _soundscape = SoundscapeController();
   final _navigation = PageNavigation(AppDestination.chat);
@@ -75,11 +84,18 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
   bool _chatFullscreen = false;
   bool _alwaysOnTop = false;
   bool _borderless = false;
+  late final AnimationController _pageTransition;
+  bool _pageTransitionActive = false;
   final Set<int> _activePointers = <int>{};
 
   @override
   void initState() {
     super.initState();
+    _pageTransition = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 260),
+      reverseDuration: const Duration(milliseconds: 260),
+    );
     WidgetsBinding.instance.addObserver(this);
   }
 
@@ -107,12 +123,14 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _pageTransition.dispose();
     widget.controller.frameRate.setActivity(FrameRateActivity.touch, false);
     unawaited(_soundscape.dispose());
     super.dispose();
   }
 
   void _openMenu() {
+    if (_pageTransitionActive) return;
     widget.controller.frameRate.boost(FrameRateActivity.interfaceAnimation);
     setState(() => _menuOpen = !_menuOpen);
   }
@@ -125,17 +143,38 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
   }
 
   void _selectDestination(AppDestination value) {
-    widget.controller.frameRate.boost(FrameRateActivity.interfaceAnimation);
-    if (value == AppDestination.worldMap && _destination != value) {
-      widget.controller.recordMapVisit();
+    if (_pageTransitionActive) return;
+    if (value == _destination) {
+      if (_menuOpen) setState(() => _menuOpen = false);
+      return;
     }
+    unawaited(
+      _transitionTo(() {
+        if (value == AppDestination.worldMap) {
+          widget.controller.recordMapVisit();
+        }
+        _navigation.select(value);
+      }),
+    );
+  }
+
+  Future<void> _transitionTo(VoidCallback changePage) async {
     setState(() {
-      _navigation.select(value);
+      _pageTransitionActive = true;
       _menuOpen = false;
     });
+    widget.controller.frameRate.boost(FrameRateActivity.interfaceAnimation);
+    await _pageTransition.forward();
+    if (!mounted) return;
+    setState(changePage);
+    await WidgetsBinding.instance.endOfFrame;
+    if (!mounted) return;
+    await _pageTransition.reverse();
+    if (mounted) setState(() => _pageTransitionActive = false);
   }
 
   void _handleBack() {
+    if (_pageTransitionActive) return;
     // One owner handles root back events. Nested PopScopes on the same route
     // would all be notified, potentially closing two levels in one gesture.
     if (_menuOpen) {
@@ -155,8 +194,7 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
       return;
     }
     if (_navigation.canGoBack) {
-      widget.controller.frameRate.boost(FrameRateActivity.interfaceAnimation);
-      setState(_navigation.goBack);
+      unawaited(_transitionTo(_navigation.goBack));
     }
   }
 
@@ -200,6 +238,8 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
           controller: widget.controller,
           onMenuPressed: _openMenu,
           onShopPressed: () => _selectDestination(AppDestination.shop),
+          onCharacterReady: widget.onCharacterReady,
+          onCharacterLoadFailed: widget.onCharacterLoadFailed,
           hideUi: _chatUiHidden || overlayDestination,
           onFullscreenChanged: (value) => setState(() {
             _chatFullscreen = value;
@@ -240,95 +280,110 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
         final content = Stack(
           children: [
             chat,
-            Positioned.fill(
-              child: AnimatedSwitcher(
-                duration: const Duration(milliseconds: 320),
-                reverseDuration: const Duration(milliseconds: 240),
-                switchInCurve: Curves.easeOutCubic,
-                switchOutCurve: Curves.easeInCubic,
-                transitionBuilder: (child, animation) =>
-                    FadeTransition(opacity: animation, child: child),
-                child: KeyedSubtree(
-                  key: ValueKey<AppDestination>(_destination),
-                  child: page,
-                ),
-              ),
-            ),
+            Positioned.fill(child: page),
           ],
         );
         final safeTop = MediaQuery.paddingOf(context).top;
         return TickerMode(
           enabled: !widget.controller.continuousAsmr,
           child: PopScope(
-            canPop: !_navigation.canGoBack && !_menuOpen && !_chatUiHidden,
+            canPop:
+                !_pageTransitionActive &&
+                !_navigation.canGoBack &&
+                !_menuOpen &&
+                !_chatUiHidden,
             onPopInvokedWithResult: (didPop, _) {
               if (!didPop) _handleBack();
             },
             child: Scaffold(
               resizeToAvoidBottomInset: false,
               key: _scaffoldKey,
-              body: Column(
+              body: Stack(
+                fit: StackFit.expand,
                 children: [
-                  if (Platform.isWindows && _borderless) _buildWindowControls(),
-                  Expanded(
-                    child: Listener(
-                      behavior: HitTestBehavior.translucent,
-                      onPointerDown: _handlePointerDown,
-                      onPointerUp: _handlePointerEnd,
-                      onPointerCancel: _handlePointerEnd,
-                      child: Stack(
-                        children: [
-                          content,
-                          if (!_chatUiHidden &&
-                              !(_chatFullscreen &&
-                                  _destination == AppDestination.chat))
-                            Positioned(
-                              left: 16,
-                              top: safeTop + 8,
-                              child: GlassIconButton(
-                                liquidGlass:
-                                    widget.controller.liquidGlassChatUi,
-                                size: 48,
-                                icon: _menuOpen
-                                    ? Icons.close_rounded
-                                    : Icons.menu_rounded,
-                                tooltip: widget.controller.interfaceLanguage
-                                    .text(
-                                      _menuOpen ? '关闭菜单' : '打开菜单',
-                                      _menuOpen ? 'Close menu' : 'Open menu',
-                                      _menuOpen ? 'メニューを閉じる' : 'メニューを開く',
-                                    ),
-                                onPressed: _openMenu,
+                  Column(
+                    children: [
+                      if (Platform.isWindows && _borderless)
+                        _buildWindowControls(),
+                      Expanded(
+                        child: Listener(
+                          behavior: HitTestBehavior.translucent,
+                          onPointerDown: _handlePointerDown,
+                          onPointerUp: _handlePointerEnd,
+                          onPointerCancel: _handlePointerEnd,
+                          child: Stack(
+                            children: [
+                              content,
+                              if (!_chatUiHidden &&
+                                  !(_chatFullscreen &&
+                                      _destination == AppDestination.chat))
+                                Positioned(
+                                  left: 16,
+                                  top: safeTop + 8,
+                                  child: GlassIconButton(
+                                    liquidGlass:
+                                        widget.controller.liquidGlassChatUi,
+                                    size: 48,
+                                    icon: _menuOpen
+                                        ? Icons.close_rounded
+                                        : Icons.menu_rounded,
+                                    tooltip: widget.controller.interfaceLanguage
+                                        .text(
+                                          _menuOpen ? '关闭菜单' : '打开菜单',
+                                          _menuOpen
+                                              ? 'Close menu'
+                                              : 'Open menu',
+                                          _menuOpen ? 'メニューを閉じる' : 'メニューを開く',
+                                        ),
+                                    onPressed: _openMenu,
+                                  ),
+                                ),
+                              if (_destination == AppDestination.chat &&
+                                  !_chatFullscreen)
+                                Positioned(
+                                  left: 72,
+                                  top: safeTop + 8,
+                                  child: GlassIconButton(
+                                    liquidGlass:
+                                        widget.controller.liquidGlassChatUi,
+                                    size: 48,
+                                    icon: _chatUiHidden
+                                        ? Icons.visibility_rounded
+                                        : Icons.visibility_off_rounded,
+                                    tooltip: widget.controller.interfaceLanguage
+                                        .text(
+                                          _chatUiHidden ? '恢复界面' : '隐藏界面',
+                                          _chatUiHidden
+                                              ? 'Restore interface'
+                                              : 'Hide interface',
+                                          _chatUiHidden ? 'UIを表示' : 'UIを隠す',
+                                        ),
+                                    onPressed: _toggleChatUiVisibility,
+                                  ),
+                                ),
+                              _buildFoldMenu(),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  if (_pageTransitionActive)
+                    Positioned.fill(
+                      child: FadeTransition(
+                        opacity: _pageTransition,
+                        child: AbsorbPointer(
+                          child: ColoredBox(
+                            color: Colors.black,
+                            child: Center(
+                              child: RyzaLoadingPanel(
+                                language: widget.controller.interfaceLanguage,
                               ),
                             ),
-                          if (_destination == AppDestination.chat &&
-                              !_chatFullscreen)
-                            Positioned(
-                              left: 72,
-                              top: safeTop + 8,
-                              child: GlassIconButton(
-                                liquidGlass:
-                                    widget.controller.liquidGlassChatUi,
-                                size: 48,
-                                icon: _chatUiHidden
-                                    ? Icons.visibility_rounded
-                                    : Icons.visibility_off_rounded,
-                                tooltip: widget.controller.interfaceLanguage
-                                    .text(
-                                      _chatUiHidden ? '恢复界面' : '隐藏界面',
-                                      _chatUiHidden
-                                          ? 'Restore interface'
-                                          : 'Hide interface',
-                                      _chatUiHidden ? 'UIを表示' : 'UIを隠す',
-                                    ),
-                                onPressed: _toggleChatUiVisibility,
-                              ),
-                            ),
-                          _buildFoldMenu(),
-                        ],
+                          ),
+                        ),
                       ),
                     ),
-                  ),
                 ],
               ),
             ),

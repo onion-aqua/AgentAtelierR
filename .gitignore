@@ -10,6 +10,7 @@ coverage/
 *.iml
 .idea/
 .vscode/
+**/.cxx/
 
 # Local machine configuration and secrets
 android/local.properties
@@ -77,6 +78,8 @@ assets/**/*
 !assets/branding/
 !assets/branding/agent_atelier_logo.png
 !assets/branding/app_icon_source.png
+!assets/branding/loading/
+!assets/branding/loading/frame_0[0-5].png
 !assets/images/shop/gift-box.png
 !assets/images/shop/energy-potion.png
 !assets/images/shop/reconciliation-voucher.png
@@ -90,10 +93,12 @@ assets/**/*
 # Do not vendor third-party runtime source or extracted application files.
 packages/
 downloaded_skin_resources/
+/windows.__codex_build_backup/
 /windows/flutter/ephemeral/
 /windows/flutter/generated_*
 *.dex
 *.arsc
+
 # Local-only downloaded outfits: all revisions, textures, skeletons and gestures.
 **/crf_skn_002_000[2-5]_01*
 **/firebase_distribution_test_*/

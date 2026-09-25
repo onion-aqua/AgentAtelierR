@@ -1,201 +1,55 @@
 # AgentAtelierR
 
-**让角色的对话、声音、表情和场景一起参与互动。**
+Current source version: **1.0.3-beta4+27**.
 
-AgentAtelierR 是一个以 **Android 为主要开发平台**的 Flutter AI 角色陪伴实验项目，同时提供 Windows 本地构建路径。它将 LLM 对话、Spine 角色动画、语音合成、地图场景和本地记忆结合起来，探索更有连续感的角色互动体验。
+Local-first AI character companion for Android and Windows. It combines
+streaming LLM chat, local memory, optional TTS, animated character interaction,
+and scene-aware audio while keeping service credentials on the device.
 
-**AgentAtelierR**，仓库也已从 `LLMAtelier-` 迁移至 `AgentAtelierR`；Dart 包名 `ryza_chat_mvp` 保留历史命名。现有角色设定以莱莎为参考，属于非官方实验项目，不代表原作官方产品或剧情。
+## Implemented
 
-> **本仓库提供代码和实现方式，不提供原版游戏资源包。** 克隆代码不等于获得完整的角色体验。模型、纹理、地图、音频和动作映射需要自行准备具有相应使用权的资源，具体文件和目录见[资源接入与构建指南](docs/RESOURCE_SETUP_AND_BUILD.md)。
+- Spine 4.2 character rendering, idle animation, tap reaction, and tap voice
+- Local chat demo with persistent history
+- Automatic and manual scene time selection
+- Drawer navigation
+- World hierarchy, area artwork, stage selection, and NPC hints
+- Welcome missions, progress tracking, rewards, and persistent state
+- Voice, volume, scene, and local-data settings
+- OpenAI-compatible `/chat/completions` SSE streaming
+- Google Gemini through the official OpenAI-compatible endpoint
+- Local long-term memory summary and character mood/relationship state
+- Fish Audio `POST /v1/tts` reply playback
+- DashScope Qwen-TTS playback and guided voice-cloning setup
+- Versioned JSON backup import/export without API credentials
+- Native Android exact alarms with lock-screen ringing and voice audio
+- Stage-aware looping BGM, day/night ambience, and time-band Spine scene layers
 
-## 当前版本与范围
-
-当前公开代码版本为 **1.0.0+20（正式版）**，更新于 **2026-09-16**。本次更新包括三级设置页面、旧数据转换、角色资源加密加载和地图显示调整，见[1.0.0 更新记录](docs/CHANGELOG_1.0.0.md)。完整的本地资源路径见[缺失资源清单](docs/LOCAL_RESOURCE_MANIFEST.md)，打包请使用[加密构建脚本](docs/PROTECTED_CHARACTER_ASSETS.md)。
-
-- 下述功能以当前公开代码为准，不表示所有机型、模型与服务组合都经过验证。
-- MiMo TTS、Gemini 原生 Interactions 等本地新增功能列在文末“后续开发进展”，尚未随本次文档更新发布源码。
-- 尚未面向应用商店发布；没有配置正式发行签名，也不附带完整资源授权。
-
-## 对话与叙事
-
-- **真实流式对话**：连接 OpenAI 兼容 Chat Completions 服务，逐步展示回复，支持停止生成。
-- **旁白与台词分离**：旁白在角色消息区域外展示；角色台词和译文通过横线区分，译文带有明确标识。
-- **多人文字对话**：根据角色目录、地图候选 NPC 和上下文组织其他角色的发言，可调整全局 NPC 互动频率。其他角色目前以文字为主，不具备莱莎完整的 TTS、骨骼和触碰互动能力。
-- **建议回复**：让模型生成建议并填入输入框，用户自行修改或发送，不会自动代替用户发言。每 10 分钟最多使用 3 次，按钮显示剩余次数和刷新进度。
-- **继续、撤回与重播**：支持让角色继续当前情境、撤回上一条消息、重播上一段语音。
-- **图片、文件与拍照**：附件按钮提供文件选择和拍照入口，图片显示缩略图；单个附件上限为 10 MB。具体文档格式是否可识别取决于服务端能力。
-- **长文本阅读**：提供手动滚动与未读到底部的提示。无 TTS 对话已移除固定 5～10 秒等待，不再人为拖慢显示。
-
-## 角色表现与镜头
-
-角色使用 **Spine 4.2** 运行时。现有代码支持待机、身体部位触碰、表情、动作、服装和姿态切换，并解析 LLM 的情绪/表情/动作标签，将它们映射到具体动画轨道。
-
-- TTS 播放时协调文字、表情和动作，利用音频能量包络驱动嘴部开合，结合头颈和上身细节。
-- 按住触摸时可追踪视线，松手后回正；高光联动及视线追踪可通过设置控制。
-- 双指缩放和上下移动镜头，支持更近距离观察角色。
-- 坐姿可关联椅子等物件；服装与姿态通过折叠菜单选择。
-
-**口型是音量包络驱动的近似效果，不是音素级唇形识别。** 动作和服装效果依赖实际资源。预览图、候选菜单入口和可播放的完整骨骼套装并不等价；每套动画需配齐匹配的骨骼、图集、纹理和动作配置。
-
-实现记录：[表情与动作映射](docs/CHARACTER_PERFORMANCE_MAPPING.md) · [语音动画](docs/SPEECH_ANIMATION_2026-09-05.md) · [视线与 Windows 修复](docs/WINDOWS_GAZE_FIX_2026-09-05.md)。历史文档中的行为以当前源码为准。
-
-## 语音合成与 ASMR
-
-| 当前公开代码中的服务 | 主要用途 | 配置重点 |
-| --- | --- | --- |
-| Fish Audio | 角色语音与情绪/句内演绎标签 | API 地址、模型、普通及 ASMR Voice model ID |
-| 百炼 DashScope Qwen-TTS | 语音合成与引导式音色克隆配置 | 服务地址、模型、音色及克隆参数 |
-| 通用 OpenAI TTS | 兼容 `/audio/speech` 的语音服务 | API 地址、模型、Voice ID |
-
-设置中可编辑试音文字，单独点击试音；试音区域与保存、取消等操作分离。
-
-**感情程度**与**句内情绪演出密度**分别调节：前者控制表达强度，后者控制句内标签的使用程度。不同服务支持的方式不同，不是所有平台都有同名的官方数值参数。
-
-主页可切换普通和 ASMR 模式。Fish Audio 支持独立的 ASMR 音色，提示词相应调整气声、轻声和停顿倾向；本地资源齐全时，触碰语音也会切换到 ASMR 版本。演绎标签不能保证每次得到相同的听感，也不能完全改变参考音色自身的发声特征。
-
-## 地图、场景与声音
-
-- 分层浏览世界地图、区域和地点，展开小地图并查看可能遇见的角色。
-- 地名和候选角色名称跟随界面语言；实际内容由本地地图与角色映射提供。
-- 点击前往后返回聊天界面，将地点信息与切换事件注入对话上下文。
-- 支持早晨、午后、傍晚、夜晚，以及按时间自动选择场景。
-- 按地点映射切换背景、BGM 和昼夜环境音；背景音乐与环境音独立播放。
-- 地点专属音乐缺失时按共享背景和默认曲目回退，不会自动补齐未提供的素材。
-
-例如，地点音乐位于 `assets/audio/bgm/bgm_<stageId>.m4a`；环境映射集中在 `lib/src/stage_environment_catalog.dart`。完整要求见资源指南，而不是直接复制原版音频到仓库。
-
-## 记忆、用户设定与语言
-
-- 本地保存聊天记录、偏好、角色状态与长期记忆，可查看和修改长期记忆。
-- 记忆带有时间信息，根据当前对话选取相关内容，并通过整理限制累积规模。重要事件的保留依赖模型判断，不能视为永不丢失的档案系统。
-- 用户设定包含称呼、自画像文字描述、关系定位、互动偏好和边界说明，随对话注入系统提示词；部分项目支持预设选择与手动输入。
-- 分别设置 **界面语言、旁白语言、角色回复语言、翻译语言**，支持中文、英文、日文，翻译可关闭。其他角色的回复与译文也遵守对应语言设置。
-- 无账户登录或应用自建云端同步，使用版本化 JSON 文件导入/导出迁移数据；备份不包含 API Key。
-
-## Agent、设备工具与闹钟
-
-Agent 是可选功能，可调用联网搜索和有限的设备工具，包括当前时间、当前位置、周边服务调查与可启动应用列表。
-
-- 相关权限按操作需要申请，不作为初次启动或基础聊天的必要条件。
-- 工具调用有轮数和单轮数量限制，定位被拒绝时返回失败，不应推测用户位置。
-- 应用列表用于提供选择建议，不代表能够操作其他应用、读取其内部数据或任意执行系统命令。
-- 兼容服务必须支持标准工具调用，不支持时应关闭 Agent。
-
-语音闹钟支持提醒类型与对应本地音频，Android 端接入系统闹钟和锁屏提醒。实际响铃还受通知、精确闹钟权限及厂商后台策略影响；Windows 不承诺拥有相同的系统能力。
-
-## 界面与调试
-
-- 半透明/液态玻璃风格浮层、折叠按钮组、可拖动对话框和随内容变化的尺寸动画。
-- 浅色、暗色、跟随系统主题，以及聊天 UI 隐藏/恢复控制。
-- 独立运行日志页展示 LLM/TTS 通信与错误，帮助定位地址、模型、响应内容和音频问题。
-- 支持检查模型原始输出，便于排查旁白、译文和角色控制标签的解析。
-
-## 服务配置与隐私
-
-首次使用建议按以下顺序完成：
-
-1. 准备兼容且有权使用的资源，确认角色和地图能够加载。
-2. 配置 LLM 的地址、有效模型 ID 和 API Key，先测试普通文字聊天。
-3. 配置 TTS，使用短文本试音，再启用回复自动播放。
-4. 根据需要启用 Agent、翻译、追踪及场景声音。
-5. 定期导出数据；接口失败时检查响应正文，而不只看状态码。
-
-当前公开版的 Gemini **仍使用官方 OpenAI 兼容接口**，设置地址为：
-
-```text
-https://generativelanguage.googleapis.com/v1beta/openai
-```
-
-不要在这一公开版本直接填写 `/interactions`，旧客户端会错误追加 `/chat/completions`。原生协议迁移见后续进展。
-
-**本地优先不等于全部离线。** 对话、相关记忆、用户设定、地图信息和附件可能随 LLM 请求发送到你配置的服务；TTS 会接收朗读文本及相应音色参数。API Key 使用平台安全存储并从备份排除，但备份和日志仍可能包含私人信息，不要直接公开上传。
-
-## 获取代码与构建
+## Run
 
 ```powershell
-git clone https://github.com/onion-aqua/AgentAtelierR.git
-cd AgentAtelierR
-flutter doctor -v
+powershell -ExecutionPolicy Bypass -File .\tool\run_protected.ps1 -Device emulator-5554
 ```
 
-工程要求 Dart `^3.13.2`，建议使用匹配的 Flutter 3.47 系列或经验证的兼容版本。Android 需配置 JDK、Android SDK 和相关许可；具体 SDK 以工程配置为准。
+Character outfits are encrypted before they enter an APK. Use
+`tool/build_protected.ps1` for every Android or Windows package; a direct
+`flutter build` does not inject the local decryption key. See
+`docs/PROTECTED_CHARACTER_ASSETS.md` for source placement and build commands.
 
-**先按[资源指南](docs/RESOURCE_SETUP_AND_BUILD.md)补齐资源，再运行：**
+Optional chat-scene music belongs in `assets/audio/bgm/`. Name a track
+`bgm_<stageId>.m4a`, for example `bgm_stage_01_002_01.m4a`. The exact stage
+track is preferred, followed by its shared-background stage track and finally
+`bgm_opening.m4a`. These local media files are excluded from source control.
 
-```powershell
-flutter pub get
-flutter analyze
-flutter test
-flutter devices
-flutter run -d <设备ID>
-```
+The vendored `packages/spine_flutter` dependency stays on the 4.2 runtime because
+the character skeleton was exported with Spine 4.2.43. Its Android compile SDK
+has been raised to 36 for compatibility with the current Flutter toolchain.
 
-构建 Android 调试包：
+## Scope
 
-```powershell
-flutter build apk --debug
-```
+AI and speech services remain disabled until configured in Settings. API keys are
+stored with the platform secure-storage implementation and are excluded from
+JSON backups. There is no cloud synchronization; migration is file-based.
 
-输出位置：`build/app/outputs/flutter-apk/app-debug.apk`。这些是构建步骤，不是对缺失资源环境或任意机器上测试成功的保证。
-
-Windows 还需要 **Visual Studio 的 C++ 桌面开发工作负载**和 Windows SDK，仅安装 VS Code 扩展不够。工程生成、构建和插件兼容说明见[构建指南](docs/RESOURCE_SETUP_AND_BUILD.md)。分发桌面程序时需要完整输出目录，不能只复制 EXE。
-
-## 代码导航
-
-| 位置 | 主要职责 |
-| --- | --- |
-| `lib/src/app_controller.dart` | 状态、偏好、系统提示词、记忆与本地备份 |
-| `lib/src/chat_screen.dart` | 对话界面、附件、播放协调和角色互动 |
-| `lib/src/ai_services.dart` | LLM/TTS 请求、密钥存储接口与搜索 |
-| `lib/src/chat_segments.dart` | 台词、旁白、译文和控制标签解析 |
-| `lib/src/character_*.dart` | 角色目录、服装、镜头、表情、视线与说话动作 |
-| `lib/src/audio_envelope.dart` | 音频能量包络分析 |
-| `lib/src/world_map_screen.dart` | 地图层级与地点选择 |
-| `lib/src/stage_environment_catalog.dart` | 地点、背景和环境音映射 |
-| `lib/src/soundscape_controller.dart` | BGM 与环境音管理 |
-| `lib/src/device_agent_tools.dart` | 按需调用的设备工具 |
-| `lib/src/runtime_log.dart` | 通信日志与错误记录 |
-| `packages/spine_flutter/` | 随工程维护的 Spine 4.2 运行时依赖 |
-| `android/`、`test/`、`docs/` | Android 工程、自动测试和实现文档 |
-
-## 版本演进
-
-按公开提交历史整理，以下是阶段变化，不是逐条提交清单。
-
-| 日期 | 阶段 | 主要变化 |
-| --- | --- | --- |
-| 2026-09-01 | 初始源码公开 | 分离代码与受限资源，补充构建方式；推进触碰互动和用户个性化 |
-| 2026-09-03 | 互动与语音扩展 | 交互 UI、TTS、多语言和动画稳定性调整 |
-| 2026-09-04 | 地图与场景联动 | 地名本地化、地点音频映射、视线互动及旁白分离 |
-| 2026-09-05 | 角色与桌面修复 | 视线回正、高光跟随、说话动作与 Windows 稳定性 |
-| 2026-09-07 | 0.7.0 | 聊天 UI 隐藏/恢复及版本标识整理 |
-| 2026-09-08 | 对话节奏调整 | 移除无语音对话的固定等待 |
-
-详细记录：[9 月 4 日更新日志](docs/CHANGELOG_2026-09-04.md) · [完整提交历史](https://github.com/onion-aqua/AgentAtelierR/commits/main/)。
-
-### 后续开发进展
-
-截至本文整理，下列内容已在本地开发版推进，**相应源码或资源尚未进入本次公开文档提交**：
-
-- **MiMo TTS 独立设置**：参考音频克隆、预置音色、文字音色设计、ASMR 演绎与试音，跟随角色回复语言发送发音要求。
-- **Gemini 原生 Interactions**：认证、请求/响应、流式事件和工具回传迁移，覆盖建议回复和记忆整理。
-- **后续动画调整**：参考原始行为组织方式，收敛随机说话动作并处理头部轻微震动。
-- **新应用图标**：本地多尺寸图标已经生成，等待对应资源提交。
-
-MiMo 和 Gemini 新接入已进行模拟协议测试与构建检查，但尚未完成真实密钥的线上合成/对话验证。请以之后实际发布的代码为准，不要仅根据这一节配置当前公开版。
-
-## 资源与许可边界
-
-- 不提交原版人物图片、地图、音频、Spine 骨骼、图集、纹理、动作数据及 APK 解包文件。
-- 品牌目录中用户明确允许提交的 Logo/图标属于特定例外，不代表其他角色素材也可公开分发。
-- 文件名和映射仅说明接口，不能视为资源下载或再分发授权。
-- Spine Runtime、Flutter 插件、图片、音频和声音克隆分别受其适用许可或授权约束；代码公开不代表整个应用可以无条件商用。
-- 更换自有角色时，应同步调整提示词、角色 ID、骨骼轨道、动作映射、头像和场景资料，而不只是替换纹理。
-
-详见[资源审计](docs/ORIGINAL_ASSET_AUDIT.md)及[资源接入、版权边界与构建指南](docs/RESOURCE_SETUP_AND_BUILD.md)。
-
-## 反馈与参与
-
-提交问题时请提供应用版本、平台/系统版本、复现步骤、预期和实际表现。接口问题附上去除隐私后的请求地址、模型 ID、HTTP 状态及响应正文；动画问题说明服装、姿态、语音模式和触发条件。
-
-请勿提交 API Key、完整私人对话、未授权资源或包含这些内容的构建包。修复和新功能优先保持 Android 体验、本地数据可迁移性，以及不同服务能力的清晰边界。
+Release signing and store publication are intentionally not configured. Public
+distribution requires the relevant character, artwork, audio, and Spine Runtime
+licenses.

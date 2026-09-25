@@ -7,6 +7,7 @@ import 'package:file_picker/file_picker.dart';
 
 import 'app_controller.dart';
 import 'app_localization.dart';
+import 'app_theme.dart';
 import 'glass_ui.dart';
 
 Future<void> showLocalSaveDialog(
@@ -16,7 +17,10 @@ Future<void> showLocalSaveDialog(
   await showDialog<void>(
     context: context,
     barrierColor: Colors.black45,
-    builder: (dialogContext) => _LocalSaveDialog(controller: controller),
+    builder: (dialogContext) => Theme(
+      data: atelierTheme(controller.accentTheme, Brightness.dark),
+      child: _LocalSaveDialog(controller: controller),
+    ),
   );
 }
 

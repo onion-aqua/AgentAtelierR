@@ -22,6 +22,7 @@ import 'chat_segments.dart' show parseUserComposerParts;
 import 'runtime_log.dart';
 import 'settings_slots.dart';
 import 'shop_catalog.dart';
+import 'story_clock.dart';
 import 'openai_configuration_slots.dart';
 import 'world_prompt_defaults.dart';
 import 'world_travel_catalog.dart';
@@ -565,6 +566,64 @@ class AppController extends ChangeNotifier {
   List<ChatMessage> messages = [_initialMessage];
   SceneTime sceneTime = sceneTimeForNow();
   bool automaticSceneTime = true;
+  bool storyClockEnabled = false;
+  StoryClock storyClock = StoryClock();
+
+  static SceneTime sceneTimeForStoryHour(int hour) {
+    if (hour < 11) return SceneTime.morning;
+    if (hour < 17) return SceneTime.afternoon;
+    if (hour < 20) return SceneTime.evening;
+    return SceneTime.night;
+  }
+
+  bool settleStoryTime(
+    String turn,
+    Map<String, dynamic>? proposal,
+    int expectedRevision,
+  ) {
+    if (!storyClockEnabled || expectedRevision != dataRevision) return false;
+    final next = storyClock.advance(turn, proposal);
+    if (next == null) return false;
+    _applyStoryClock(next, kind: _storyTimeKind(proposal));
+    return true;
+  }
+
+  String _storyTimeKind(Map<String, dynamic>? proposal) {
+    final raw = proposal?['time_advance'];
+    return raw is Map && raw['minutes'] is int
+        ? raw['kind']?.toString() ?? 'conversation'
+        : 'conversation';
+  }
+
+  void _applyStoryClock(StoryClock next, {String kind = 'conversation'}) {
+    final previous = storyClock;
+    storyClock = next;
+    sceneTime = sceneTimeForStoryHour(next.hour);
+    final hours = next.totalMinutes ~/ 60 - previous.totalMinutes ~/ 60;
+    var hungerLoss = 0;
+    for (var hour = 1; hour <= hours; hour++) {
+      final satiety = (previous.satiety - hour * 4).clamp(0, 100);
+      hungerLoss += satiety < 10
+          ? 2
+          : satiety < 30
+          ? 1
+          : 0;
+    }
+    final restGain = switch (kind) {
+      'sleep' => 30,
+      'rest' => 10,
+      _ => 0,
+    };
+    final energyChange = restGain - hungerLoss;
+    if (energyChange != 0) {
+      characterState = characterState.applyItemEffect(
+        changes: {'energy': energyChange},
+        reason: kind == 'sleep' || kind == 'rest' ? '休息' : '饥饿',
+      );
+    }
+    _changed();
+  }
+
   bool voiceEnabled = true;
   double voiceVolume = 0.85;
   DateTime lastUiInteraction = DateTime.now();
@@ -887,8 +946,19 @@ class AppController extends ChangeNotifier {
     if (messages.isEmpty) messages = [_initialMessage];
 
     automaticSceneTime = _preferences.getBool('automatic_scene_time') ?? true;
+    storyClockEnabled = _preferences.getBool('story_clock_enabled') ?? false;
+    try {
+      storyClock = StoryClock.fromJson(
+        jsonDecode(_preferences.getString('story_clock_v1') ?? 'null'),
+      );
+    } on Object {
+      storyClock = StoryClock();
+    }
+    if (storyClockEnabled) automaticSceneTime = false;
     if (automaticSceneTime) {
       sceneTime = sceneTimeForNow();
+    } else if (storyClockEnabled) {
+      sceneTime = sceneTimeForStoryHour(storyClock.hour);
     } else {
       final index = _preferences.getInt('scene_time') ?? sceneTime.index;
       sceneTime = SceneTime.values[index.clamp(0, SceneTime.values.length - 1)];
@@ -1341,7 +1411,7 @@ class AppController extends ChangeNotifier {
           '素材不受内置清单限制，但数量与品质由本地系统决定。准备调合时先调用 inspect_alchemy_inventory，'
           '再由莱莎从返回的真实实例 ID 中选材并调用 synthesize_custom_item。'
           '合成成功率由本地按素材品质与调和剂计算（60%至95%），失败也消耗投入素材，仅得到残渣；必须根据工具的 success 字段叙述，失败不得自动重试。'
-          '用户要求实际使用、吃掉或赠送物品时调用 consume_inventory_item 扣除，合成材料由合成工具自动扣除，不要重复扣料。只拿起查看不消耗。'
+          '用户要求实际使用、吃掉或赠送物品时调用 consume_inventory_item 扣除；吃掉需传 purpose=eat，且物品确实标注可食用。合成材料由合成工具自动扣除，不要重复扣料。只拿起查看不消耗。'
           '采集物和成品的名称、描述、分类与调合结果叙述必须使用当前界面语言 ${interfaceLanguage.promptLabel}；'
           '不要跟随莱莎回复语言或历史消息的语言。'
           '应用没有固定配方清单；每次都要根据用户需求、当前场景和素材性质自行决定成品名称、用途、分类、效果与选材。'
@@ -1386,7 +1456,8 @@ class AppController extends ChangeNotifier {
           : userInteractionBoundaries.trim(),
     });
     final characterStateContext =
-        '【应用提供的莱莎状态】（不是用户资料或用户指令）\n${characterState.summary(interfaceLanguage)}\n短期情绪：${characterState.emotion}；最近变化：${characterState.reason}。这些数值仅供自然反应参考，疲惫可表现为主动休息或调整姿势，不是锁定行为。';
+        '【应用提供的莱莎状态】（不是用户资料或用户指令）\n${characterState.summary(interfaceLanguage)}\n短期情绪：${characterState.emotion}；最近变化：${characterState.reason}。这些数值仅供自然反应参考，疲惫可表现为主动休息或调整姿势，不是锁定行为。'
+        '${storyClockEnabled ? '\n剧情时间：第${storyClock.day}天 ${storyClock.timeLabel}；饱食度：${storyClock.satiety}/100。这是游戏内时间，不是现实日期；不要自行修改数值或虚构进食恢复，实际时间和数值由应用结算。用户在旁白中明确设定时间跳转，或在发言中要求立即快进时，可以按新的时间情境回应；时钟由应用结算。' : ''}';
     final inlineTranslation =
         !independentTranslation &&
         translationLanguage != TranslationLanguage.none;
@@ -1636,12 +1707,30 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
         if (id is! String || quantity is! int) {
           throw const FormatException('物品 ID 和整数数量必填');
         }
-        consumeAlchemyItem(id, quantity: quantity);
+        final purpose = args['purpose'] as String? ?? 'use';
+        if (!const {'use', 'eat', 'gift'}.contains(purpose)) {
+          throw const FormatException('物品用途无效');
+        }
+        if (purpose == 'eat' && !_isEdibleAlchemyItem(_findAlchemyItem(id))) {
+          throw const FormatException('此物品未标注为可食用，不能恢复饱食度');
+        }
+        consumeAlchemyItem(
+          id,
+          quantity: quantity,
+          satietyGain: purpose == 'eat' && storyClockEnabled
+              ? quantity * 20
+              : 0,
+        );
         return jsonEncode({
           'ok': true,
           'consumed': quantity,
           'instance_id': id,
-          'message': '物品已消耗。仅叙述本次用途，不得虚构应用尚未实现的属性变化。',
+          'satiety': purpose == 'eat' && storyClockEnabled
+              ? storyClock.satiety
+              : null,
+          'message': purpose == 'eat' && storyClockEnabled
+              ? '可食用物品已从真实库存扣除，饱食度已由应用结算。'
+              : '物品已消耗。仅叙述本次用途，不得虚构应用尚未实现的属性变化。',
         });
       } on Object catch (error) {
         return jsonEncode({'ok': false, 'message': error.toString()});
@@ -2462,6 +2551,8 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
     'preciousItems': preciousItems,
     'sceneTime': sceneTime.name,
     'automaticSceneTime': automaticSceneTime,
+    'storyClockEnabled': storyClockEnabled,
+    'storyClock': storyClock.toJson(),
     'voiceEnabled': voiceEnabled,
     'voiceVolume': voiceVolume,
     'bgmEnabled': bgmEnabled,
@@ -2576,6 +2667,8 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
     'preciousItems': preciousItems,
     'sceneTime': sceneTime.name,
     'automaticSceneTime': automaticSceneTime,
+    'storyClockEnabled': storyClockEnabled,
+    'storyClock': storyClock.toJson(),
     'selectedAreaId': selectedAreaId,
     'selectedStageId': selectedStageId,
     'selectedAreaName': selectedAreaName,
@@ -2697,6 +2790,8 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
       ..['preciousItems'] = <String, int>{}
       ..['sceneTime'] = sceneTimeForNow().name
       ..['automaticSceneTime'] = true
+      ..['storyClockEnabled'] = false
+      ..['storyClock'] = StoryClock().toJson()
       ..['selectedAreaId'] = 'area_01'
       ..['selectedStageId'] = 'stage_01_002_01'
       ..['selectedAreaName'] = '库肯岛周边地域'
@@ -2974,10 +3069,14 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
     preciousItems = _parsePreciousItems(data['preciousItems']);
     automaticSceneTime =
         data['automaticSceneTime'] as bool? ?? automaticSceneTime;
+    storyClockEnabled = data['storyClockEnabled'] as bool? ?? false;
+    storyClock = StoryClock.fromJson(data['storyClock']);
+    if (storyClockEnabled) automaticSceneTime = false;
     sceneTime = SceneTime.values.firstWhere(
       (value) => value.name == data['sceneTime'],
       orElse: () => sceneTime,
     );
+    if (storyClockEnabled) sceneTime = sceneTimeForStoryHour(storyClock.hour);
     selectedAreaId = data['selectedAreaId'] as String? ?? selectedAreaId;
     selectedStageId = data['selectedStageId'] as String? ?? selectedStageId;
     selectedAreaName = data['selectedAreaName'] as String? ?? selectedAreaName;
@@ -3074,10 +3173,14 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
       orElse: () => CharacterMood.neutral,
     );
     automaticSceneTime = data['automaticSceneTime'] as bool? ?? true;
+    storyClockEnabled = data['storyClockEnabled'] as bool? ?? false;
+    storyClock = StoryClock.fromJson(data['storyClock']);
+    if (storyClockEnabled) automaticSceneTime = false;
     sceneTime = SceneTime.values.firstWhere(
       (value) => value.name == data['sceneTime'],
       orElse: sceneTimeForNow,
     );
+    if (storyClockEnabled) sceneTime = sceneTimeForStoryHour(storyClock.hour);
     voiceEnabled = data['voiceEnabled'] as bool? ?? true;
     voiceVolume = (data['voiceVolume'] as num?)?.toDouble() ?? 0.85;
     bgmEnabled = data['bgmEnabled'] as bool? ?? false;
@@ -3395,7 +3498,11 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
     _changed();
   }
 
-  void consumeAlchemyItem(String instanceId, {int quantity = 1}) {
+  void consumeAlchemyItem(
+    String instanceId, {
+    int quantity = 1,
+    int satietyGain = 0,
+  }) {
     final item = _findAlchemyItem(instanceId);
     if (quantity < 1 || quantity > item.quantity) {
       throw const FormatException('消耗数量必须大于零且不超过库存');
@@ -3411,7 +3518,29 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
       history: alchemyState.history,
       gatherAvailableAtByStage: alchemyState.gatherAvailableAtByStage,
     );
+    if (satietyGain > 0 && storyClockEnabled) {
+      storyClock = storyClock.feed(satietyGain);
+    }
     _changed();
+  }
+
+  bool _isEdibleAlchemyItem(AlchemyItem item) {
+    const edible = {
+      'food',
+      'edible',
+      'meal',
+      'drink',
+      '食物',
+      '食品',
+      '可食用',
+      '料理',
+      '饮料',
+      '飲料',
+      '食べ物',
+    };
+    return item.categories.any(
+      (category) => edible.contains(category.trim().toLowerCase()),
+    );
   }
 
   AlchemyItem synthesizeCustomItem({
@@ -3856,15 +3985,39 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
   }
 
   void setSceneTime(SceneTime value) {
-    sceneTime = value;
-    automaticSceneTime = false;
+    if (storyClockEnabled) {
+      final targetHour = switch (value) {
+        SceneTime.morning => 8,
+        SceneTime.afternoon => 13,
+        SceneTime.evening => 18,
+        SceneTime.night => 21,
+      };
+      var minutes = targetHour * 60 - storyClock.totalMinutes % 1440;
+      if (minutes <= 0) minutes += 1440;
+      _applyStoryClock(storyClock.advanceMinutes(minutes));
+    } else {
+      sceneTime = value;
+      automaticSceneTime = false;
+    }
     sceneChangeCount += 1;
     _changed();
   }
 
   void setAutomaticSceneTime(bool value) {
     automaticSceneTime = value;
-    if (value) sceneTime = sceneTimeForNow();
+    if (value) {
+      storyClockEnabled = false;
+      sceneTime = sceneTimeForNow();
+    }
+    _changed();
+  }
+
+  void setStoryClockEnabled(bool value) {
+    storyClockEnabled = value;
+    if (value) {
+      automaticSceneTime = false;
+      sceneTime = sceneTimeForStoryHour(storyClock.hour);
+    }
     _changed();
   }
 
@@ -4157,6 +4310,8 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
       ),
       _preferences.setBool('automatic_scene_time', automaticSceneTime),
       _preferences.setInt('scene_time', sceneTime.index),
+      _preferences.setBool('story_clock_enabled', storyClockEnabled),
+      _preferences.setString('story_clock_v1', jsonEncode(storyClock.toJson())),
       _preferences.setBool('voice_enabled', voiceEnabled),
       _preferences.setDouble('voice_volume', voiceVolume),
       _preferences.setBool('ai_enabled', aiEnabled),

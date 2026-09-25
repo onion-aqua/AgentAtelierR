@@ -105,9 +105,11 @@ void main() {
 
   testWidgets('settings exposes the runtime log viewer', (tester) async {
     SharedPreferences.setMockInitialValues({});
-    await RuntimeLog.instance.initialize();
-    await RuntimeLog.instance.clear();
-    RuntimeLog.instance.info('Test', '运行日志测试事件');
+    await tester.runAsync(() async {
+      await RuntimeLog.instance.initialize();
+      await RuntimeLog.instance.clear();
+      RuntimeLog.instance.info('Test', '运行日志测试事件');
+    });
     await tester.pumpWidget(
       MaterialApp(
         home: RuntimeLogScreen(
@@ -120,7 +122,7 @@ void main() {
     expect(find.textContaining('运行日志测试事件'), findsOneWidget);
     expect(find.byIcon(Icons.copy_outlined), findsOneWidget);
     expect(find.byIcon(Icons.delete_outline), findsOneWidget);
-    await RuntimeLog.instance.clear();
+    await tester.runAsync(() => RuntimeLog.instance.clear());
   });
 
   test('mission becomes claimable after its activity is recorded', () async {
@@ -2248,6 +2250,14 @@ void main() {
     expect(isStableIdleMouth('facial_mouth_019'), isFalse);
     expect(isStableIdleMouth('facial_mouth_019_idle'), isFalse);
     expect(isStableIdleMouth('facial_mouth_016'), isTrue);
+    expect(
+      stableIdleMouthOr('facial_mouth_019', 'facial_mouth_001_idle'),
+      'facial_mouth_001_idle',
+    );
+    expect(
+      stableIdleMouthOr('facial_mouth_016', 'facial_mouth_001_idle'),
+      'facial_mouth_016',
+    );
   });
 
   test('motion occupancy letters map to independent Spine tracks', () {

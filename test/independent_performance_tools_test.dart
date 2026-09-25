@@ -1,4 +1,5 @@
 import 'dart:convert';
+
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -98,5 +99,58 @@ void main() {
     );
     expect(result[0], '[action:none][posture:sitting_agura]');
     expect(result[1], '[action:none]');
+  });
+
+  test('narration-only reply still proposes a story time skip', () async {
+    Map<String, dynamic>? proposal;
+    var calls = 0;
+    final output = await IndependentPerformanceTools().plan(
+      userInput: '旁白：六小时后，天已经黑了。',
+      source: '旁白：夜色降临，莱莎点亮了灯。',
+      capabilities: capabilities,
+      currentFace: 'neutral',
+      recentActions: [],
+      storyClockEnabled: true,
+      characterState: const {
+        'story_clock': {'totalMinutes': 540, 'satiety': 80},
+      },
+      onStateProposal: (value) => proposal = value,
+      complete: (messages) async {
+        calls++;
+        final input = jsonDecode(messages.last['content']!);
+        expect(input['line_ids'], isEmpty);
+        expect(messages.first['content'], contains('time_skip'));
+        return '{"segments":[],"time_advance":{"kind":"time_skip","minutes":360}}';
+      },
+    );
+    expect(calls, 1);
+    expect(output, '旁白：夜色降临，莱莎点亮了灯。');
+    expect(proposal?['time_advance'], {'kind': 'time_skip', 'minutes': 360});
+  });
+
+  test('spoken request can propose an immediate story time skip', () async {
+    Map<String, dynamic>? proposal;
+    final output = await IndependentPerformanceTools().plan(
+      userInput: '发言：现在快进到下午三点。',
+      source: '莱莎：好，我们下午再见。',
+      capabilities: capabilities,
+      currentFace: 'neutral',
+      recentActions: [],
+      storyClockEnabled: true,
+      characterState: const {
+        'story_clock': {'totalMinutes': 540, 'satiety': 80},
+      },
+      onStateProposal: (value) => proposal = value,
+      complete: (messages) async {
+        final input = jsonDecode(messages.last['content']!);
+        expect(input['user'], '发言：现在快进到下午三点。');
+        if (input.containsKey('candidates')) {
+          return '{"segments":[{"id":0,"action":"none","match":"none"}]}';
+        }
+        return '{"segments":[{"id":0,"face":"happy"}],"time_advance":{"kind":"time_skip","minutes":360}}';
+      },
+    );
+    expect(output, '莱莎：[face:happy][action:none]好，我们下午再见。');
+    expect(proposal?['time_advance'], {'kind': 'time_skip', 'minutes': 360});
   });
 }

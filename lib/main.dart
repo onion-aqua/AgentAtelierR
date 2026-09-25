@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:ui';
 
 import 'package:alarm/alarm.dart';
@@ -15,6 +16,7 @@ import 'src/app_shell.dart';
 import 'src/runtime_log.dart';
 import 'src/local_skin_store.dart';
 import 'src/character_appearance.dart';
+import 'src/ryza_loading_indicator.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -54,11 +56,38 @@ class _BootstrapApp extends StatefulWidget {
 class _BootstrapAppState extends State<_BootstrapApp> {
   AppController? _controller;
   Object? _error;
+  Timer? _logoTimer;
+  bool _showLogo = true;
+  bool _characterReady = false;
 
   @override
   void initState() {
     super.initState();
+    _logoTimer = Timer(const Duration(seconds: 3), () {
+      if (mounted) setState(() => _showLogo = false);
+    });
     _initialize();
+  }
+
+  @override
+  void dispose() {
+    _logoTimer?.cancel();
+    _controller?.removeListener(_handleControllerChanged);
+    super.dispose();
+  }
+
+  void _handleControllerChanged() {
+    if (mounted) setState(() {});
+  }
+
+  void _handleCharacterReady() {
+    if (!_characterReady && mounted) setState(() => _characterReady = true);
+  }
+
+  void _handleCharacterLoadFailed() {
+    // The chat page owns the actionable skin error; reveal it instead of
+    // leaving the startup loader over it indefinitely.
+    _handleCharacterReady();
   }
 
   Future<void> _initialize() async {
@@ -80,7 +109,11 @@ class _BootstrapAppState extends State<_BootstrapApp> {
       await LocalSkinStore.instance.initialize();
       registerLocalSkinAppearances();
       final controller = await AppController.load();
-      if (mounted) setState(() => _controller = controller);
+      if (mounted) {
+        _controller?.removeListener(_handleControllerChanged);
+        controller.addListener(_handleControllerChanged);
+        setState(() => _controller = controller);
+      }
     } on Object catch (error, stackTrace) {
       RuntimeLog.instance.error('Startup', error, stackTrace);
       if (mounted) setState(() => _error = error);
@@ -101,36 +134,84 @@ class _BootstrapAppState extends State<_BootstrapApp> {
   @override
   Widget build(BuildContext context) {
     final controller = _controller;
-    if (controller != null) return AgentAtelierRApp(controller: controller);
     return MaterialApp(
       debugShowCheckedModeBanner: false,
-      home: ColoredBox(
-        color: Colors.white,
-        child: SizedBox.expand(
-          child: _error == null
-              ? Stack(
-                  fit: StackFit.expand,
-                  children: [
-                    // Keep the logo above the startup backdrop while the app
-                    // finishes initializing in the background.
-                    const ColoredBox(color: Colors.white),
-                    const IgnorePointer(
-                      child: Center(
-                        child: FractionallySizedBox(
-                          widthFactor: 0.85,
-                          child: Image(
-                            image: AssetImage(
-                              'assets/branding/agent_atelier_logo.png',
-                            ),
-                            fit: BoxFit.contain,
-                            semanticLabel: 'AgentAtelierR',
-                          ),
+      title: 'AgentAtelierR',
+      theme: controller == null
+          ? ThemeData.light()
+          : withDialogueAppearance(
+              atelierTheme(controller.accentTheme, Brightness.light),
+              controller.textColorTheme,
+              controller.translationOnly &&
+                  controller.translationLanguage.name != 'none',
+              controller.dialogueFontScale,
+              controller.textColorChoice,
+            ),
+      darkTheme: controller == null
+          ? null
+          : withDialogueAppearance(
+              atelierTheme(controller.accentTheme, Brightness.dark),
+              controller.textColorTheme,
+              controller.translationOnly &&
+                  controller.translationLanguage.name != 'none',
+              controller.dialogueFontScale,
+              controller.textColorChoice,
+            ),
+      themeMode: switch (controller?.themePreference) {
+        AppThemePreference.system || null => ThemeMode.system,
+        AppThemePreference.light => ThemeMode.light,
+        AppThemePreference.dark => ThemeMode.dark,
+      },
+      home: Stack(
+        fit: StackFit.expand,
+        children: [
+          if (controller != null)
+            AppShell(
+              controller: controller,
+              onCharacterReady: _handleCharacterReady,
+              onCharacterLoadFailed: _handleCharacterLoadFailed,
+            )
+          else
+            const ColoredBox(color: Colors.black),
+          if (_error == null && !_characterReady)
+            Positioned.fill(
+              child: AbsorbPointer(
+                child: ColoredBox(
+                  color: Colors.black,
+                  child: Center(
+                    child: RyzaLoadingPanel(
+                      language:
+                          controller?.interfaceLanguage ?? AppLanguage.chinese,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          if (_error == null && _showLogo)
+            const Positioned.fill(
+              child: AbsorbPointer(
+                child: ColoredBox(
+                  color: Colors.white,
+                  child: Center(
+                    child: FractionallySizedBox(
+                      widthFactor: 0.85,
+                      child: Image(
+                        image: AssetImage(
+                          'assets/branding/agent_atelier_logo.png',
                         ),
+                        fit: BoxFit.contain,
+                        semanticLabel: 'AgentAtelierR',
                       ),
                     ),
-                  ],
-                )
-              : Center(
+                  ),
+                ),
+              ),
+            ),
+          if (_error != null)
+            Positioned.fill(
+              child: ColoredBox(
+                color: Colors.white,
+                child: Center(
                   child: Padding(
                     padding: const EdgeInsets.all(24),
                     child: Column(
@@ -160,46 +241,9 @@ class _BootstrapAppState extends State<_BootstrapApp> {
                     ),
                   ),
                 ),
-        ),
-      ),
-    );
-  }
-}
-
-class AgentAtelierRApp extends StatelessWidget {
-  const AgentAtelierRApp({super.key, required this.controller});
-
-  final AppController controller;
-
-  @override
-  Widget build(BuildContext context) {
-    return AnimatedBuilder(
-      animation: controller,
-      builder: (context, _) => MaterialApp(
-        debugShowCheckedModeBanner: false,
-        title: 'AgentAtelierR',
-        theme: withDialogueAppearance(
-          atelierTheme(controller.accentTheme, Brightness.light),
-          controller.textColorTheme,
-          controller.translationOnly &&
-              controller.translationLanguage.name != 'none',
-          controller.dialogueFontScale,
-          controller.textColorChoice,
-        ),
-        darkTheme: withDialogueAppearance(
-          atelierTheme(controller.accentTheme, Brightness.dark),
-          controller.textColorTheme,
-          controller.translationOnly &&
-              controller.translationLanguage.name != 'none',
-          controller.dialogueFontScale,
-          controller.textColorChoice,
-        ),
-        themeMode: switch (controller.themePreference) {
-          AppThemePreference.system => ThemeMode.system,
-          AppThemePreference.light => ThemeMode.light,
-          AppThemePreference.dark => ThemeMode.dark,
-        },
-        home: AppShell(controller: controller),
+              ),
+            ),
+        ],
       ),
     );
   }

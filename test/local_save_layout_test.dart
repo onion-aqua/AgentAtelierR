@@ -3,8 +3,50 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:ryza_chat_mvp/src/app_controller.dart';
 import 'package:ryza_chat_mvp/src/local_save_dialog.dart';
+import 'package:ryza_chat_mvp/src/glass_ui.dart';
 
 void main() {
+  testWidgets('local saves remain dark under a light application theme', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues({});
+    final controller = (await tester.runAsync(() => AppController.load()))!;
+    addTearDown(controller.dispose);
+    await controller.saveToLocalSlot(0);
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: ThemeData.light(),
+        home: Scaffold(
+          body: Builder(
+            builder: (context) => TextButton(
+              onPressed: () => showLocalSaveDialog(context, controller),
+              child: const Text('Open'),
+            ),
+          ),
+        ),
+      ),
+    );
+
+    await tester.tap(find.text('Open'));
+    await tester.pumpAndSettle();
+    expect(
+      Theme.of(tester.element(find.text('本地存档'))).brightness,
+      Brightness.dark,
+    );
+    expect(
+      tester.widget<GlassSurface>(find.byType(GlassSurface).first).tone,
+      GlassTone.dark,
+    );
+    await tester.tap(find.text('保存').first);
+    await tester.pumpAndSettle();
+    expect(find.text('覆盖存档？'), findsOneWidget);
+    expect(
+      Theme.of(tester.element(find.text('覆盖存档？'))).brightness,
+      Brightness.dark,
+    );
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets(
     'save actions and last slot remain accessible on narrow large-text screens',
     (tester) async {

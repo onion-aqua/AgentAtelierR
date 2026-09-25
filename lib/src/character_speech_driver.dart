@@ -31,6 +31,7 @@ class CharacterPerformanceProfile {
     this.emotionProfiles = const {},
     this.decayRates = const {},
     this.ambientGaze = const {},
+    this.attitudeDrivers = const {},
   ]);
 
   final List<Map<String, dynamic>> drivers;
@@ -39,6 +40,7 @@ class CharacterPerformanceProfile {
   final Map<String, dynamic> emotionProfiles;
   final Map<String, dynamic> decayRates;
   final Map<String, dynamic> ambientGaze;
+  final Map<String, List<Map<String, dynamic>>> attitudeDrivers;
 
   RigMotion constrainAmbient(RigMotion motion) {
     double limit(String key, double fallback) {
@@ -69,7 +71,8 @@ class CharacterPerformanceProfile {
     return result is Map ? Map<String, dynamic>.from(result) : const {};
   }
 
-  bool get hasResourceDrivers => drivers.isNotEmpty;
+  bool get hasResourceDrivers =>
+      drivers.isNotEmpty || attitudeDrivers.isNotEmpty;
 
   /// No bone mappings are guessed when a resource lacks legacy DriverDefs.
   factory CharacterPerformanceProfile.fallback() =>
@@ -96,6 +99,28 @@ class CharacterPerformanceProfile {
         // One malformed optional driver must not disable all character motion.
       }
     }
+    final ambient = Map<String, dynamic>.from(
+      (json['projectConfig'] as Map?)?['ambientGaze'] as Map? ?? {},
+    );
+    final patterns = <String, Map<String, dynamic>>{
+      for (final row in gesture?['GesturePatternDefs'] as List? ?? const [])
+        if (row is Map && row['patternId'] is String)
+          row['patternId'] as String: Map<String, dynamic>.from(row),
+    };
+    final attitudes = <String, List<Map<String, dynamic>>>{};
+    for (final row in gesture?['AttitudePatterns'] as List? ?? const []) {
+      if (row is! Map || row['attitude'] is! String) continue;
+      final weight = row['weight'];
+      if (weight is! num || !weight.isFinite || weight <= 0) continue;
+      final pattern = patterns[row['patternId']];
+      if (pattern == null) continue;
+      final attitude = row['attitude'] as String;
+      attitudes
+          .putIfAbsent(attitude, () => [])
+          .add(
+            _schemaFourDriver(pattern, Map<String, dynamic>.from(row), ambient),
+          );
+    }
     return CharacterPerformanceProfile._(
       drivers,
       bones('aimSlots'),
@@ -107,11 +132,92 @@ class CharacterPerformanceProfile {
                 as Map? ??
             {},
       ),
-      Map<String, dynamic>.from(
-        (json['projectConfig'] as Map?)?['ambientGaze'] as Map? ?? {},
-      ),
+      ambient,
+      {
+        for (final entry in attitudes.entries)
+          entry.key: List.unmodifiable(entry.value),
+      },
     );
   }
+}
+
+Map<String, dynamic> _schemaFourDriver(
+  Map<String, dynamic> pattern,
+  Map<String, dynamic> attitude,
+  Map<String, dynamic> ambient,
+) {
+  double setting(String key, double fallback) {
+    final value = ambient[key];
+    return value is num && value.isFinite ? value.toDouble() : fallback;
+  }
+
+  final size = switch (attitude['size']) {
+    '小' => setting('sizeSmall', 0.6),
+    '大' => setting('sizeLarge', 1),
+    _ => setting('sizeMedium', 0.85),
+  };
+  final dwell = switch (attitude['dwell']) {
+    '短' => setting('dwellShort', 0.6),
+    '長' => setting('dwellLong', 4),
+    _ => setting('dwellMedium', 1.5),
+  };
+  final speed = switch (attitude['moveSpeed']) {
+    '速い' => setting('speedFast', 2),
+    '遅い' => setting('speedSlow', 0.5),
+    _ => setting('speedNormal', 1),
+  };
+  final directions = (pattern['directions'] as List? ?? const [])
+      .whereType<String>()
+      .toList();
+  final horizontal = directions.any(
+    (value) => value.contains('横') || value.contains('斜め'),
+  );
+  final up = directions.any((value) => value.contains('上'));
+  final down = directions.any((value) => value.contains('下'));
+  final yaw = horizontal ? setting('yawLimit', 0.8) * size : 0.0;
+  final pitchUp = up ? setting('pitchUpLimit', 1).abs() * size : 0.0;
+  final pitchDown = down ? setting('pitchDownLimit', -1).abs() * size : 0.0;
+  double followScale(Object? value) => switch (value) {
+    '追従（強）' => setting('followScaleStrong', 0.9),
+    '追従（中）' => setting('followScaleMedium', 0.7),
+    '追従（弱）' => setting('followScaleWeak', 0.5),
+    '逆方向' => setting('followScaleOpposite', -0.2),
+    _ => 0.0,
+  };
+  final headFollow = followScale(pattern['faceMovement']);
+  final bodyFollow = followScale(pattern['bodyMovement']);
+  final baseMove = setting('moveBaseSeconds', 0.15);
+  return {
+    'id': '${attitude['attitude']}_${pattern['patternId']}',
+    'driver': 'eye',
+    'weight': attitude['weight'],
+    'yawMin': -yaw,
+    'yawMax': yaw,
+    'pitchMin': -pitchDown,
+    'pitchMax': pitchUp,
+    'rollMin': -setting('rollMinusLimit', -0.8).abs() * size * 0.3,
+    'rollMax': setting('rollPlusLimit', 0.8).abs() * size * 0.3,
+    'transitionMin': (baseMove / speed).clamp(0.12, 2.0),
+    'transitionMax': (baseMove * 2 / speed).clamp(0.2, 3.0),
+    'holdMin': dwell * 0.8,
+    'holdMax': dwell * 1.2,
+    'route': pattern['route'],
+    'points': pattern['points'],
+    'followers': [
+      if (headFollow != 0)
+        {
+          'part': 'head',
+          'scale': headFollow,
+          'delay': setting('headFollowDelay', 0.1),
+        },
+      if (bodyFollow != 0)
+        {
+          'part': 'body',
+          'scale': bodyFollow,
+          'delay': setting('bodyFollowDelay', 0.6),
+        },
+    ],
+  };
 }
 
 /// Samples local resource drivers with bounded, non-accumulating offsets.
@@ -130,7 +236,10 @@ class CharacterPerformanceDirector {
   double _tension = 0;
   String _band = 'low';
   String? _driverBand;
+  String? _driverAttitude;
   int _repeatsLeft = 0;
+  int _routeStepsLeft = 0;
+  bool _routeReverse = false;
   bool _usingBindings = false;
   String get tensionBand => _band;
   Map<String, RigMotion> _from = {};
@@ -196,18 +305,49 @@ class CharacterPerformanceDirector {
         ? 'mid'
         : 'high';
     final bandProfile = profile.tensionProfile(emotion, _band);
+    final attitude = '${speaking ? 'talk' : 'idle'}_$_band';
     if (_driver == null ||
         _emotion != emotion ||
         _driverBand != _band ||
+        _driverAttitude != attitude ||
         _elapsed >= _transition + _hold) {
-      final samePattern = _emotion == emotion && _driverBand == _band;
+      final samePattern =
+          _emotion == emotion &&
+          _driverBand == _band &&
+          _driverAttitude == attitude;
       final bindings = bandProfile['ambientBindings'];
-      _usingBindings = bindings is List;
-      if (_usingBindings) {
+      final authored = profile.attitudeDrivers[attitude] ?? const [];
+      final continueRoute = samePattern && _routeStepsLeft > 0;
+      _usingBindings = bindings is List || authored.isNotEmpty;
+      if (continueRoute) {
+        _routeStepsLeft--;
+        _routeReverse = !_routeReverse;
+      } else if (authored.isNotEmpty) {
+        var ticket =
+            _random.nextDouble() *
+            authored.fold<double>(
+              0,
+              (sum, row) => sum + _number(row, 'weight', 0),
+            );
+        _driver = authored.last;
+        for (final row in authored) {
+          ticket -= _number(row, 'weight', 0);
+          if (ticket <= 0) {
+            _driver = row;
+            break;
+          }
+        }
+        _routeStepsLeft = (_number(_driver!, 'points', 1).round() - 1).clamp(
+          0,
+          8,
+        );
+        _routeReverse = false;
+      } else if (bindings is List) {
+        _routeStepsLeft = 0;
         if (samePattern && _repeatsLeft > 0) {
           _repeatsLeft--;
         } else {
-          final valid = (bindings as List)
+          final valid = bindings
               .whereType<Map>()
               .where(
                 (b) =>
@@ -238,6 +378,7 @@ class CharacterPerformanceDirector {
           _repeatsLeft = lo + _random.nextInt(hi - lo + 1) - 1;
         }
       } else {
+        _routeStepsLeft = 0;
         var candidates = profile.drivers
             .where((d) => (d['id'] as String).startsWith('${emotion}_n_'))
             .toList();
@@ -257,7 +398,7 @@ class CharacterPerformanceDirector {
       _from = Map.of(_parts);
       final motion = profile.constrainAmbient(
         RigMotion(
-          _range(_driver!, 'yaw', 0, -1, 1),
+          _range(_driver!, 'yaw', 0, -1, 1) * (_routeReverse ? -1 : 1),
           _range(_driver!, 'pitch', 0, -1, 1),
           _range(_driver!, 'roll', 0, -1, 1),
         ),
@@ -284,6 +425,7 @@ class CharacterPerformanceDirector {
       _hold = _range(_driver!, 'hold', 1.5, 0.2, 12);
       _emotion = emotion;
       _driverBand = _band;
+      _driverAttitude = attitude;
       _elapsed = 0;
     }
     _elapsed += dt;

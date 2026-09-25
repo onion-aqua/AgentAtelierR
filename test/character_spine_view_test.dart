@@ -63,4 +63,28 @@ void main() {
     await tester.pump();
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets('active skin load failure notifies the startup layer', (
+    tester,
+  ) async {
+    final bundle = DelayedSkinBundle();
+    var failures = 0;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: CharacterSpineView(
+          atlas: 'missing.atlas',
+          skeleton: 'missing.skel',
+          bundle: bundle,
+          controller: SpineWidgetController(),
+          onLoadFailed: () => failures++,
+        ),
+      ),
+    );
+
+    bundle.pending.completeError(StateError('missing skin'));
+    await tester.pump();
+    expect(failures, 1);
+    expect(find.textContaining('皮肤加载失败'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
 }

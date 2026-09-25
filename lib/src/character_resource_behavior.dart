@@ -17,6 +17,7 @@ class CharacterResourceBehavior {
     this.restGroupsBySitting = const {},
     this.intensityProfiles = const {},
     this.effectAnimations = const {},
+    this.poseTypeTransitions = const {},
   });
 
   final Map<String, CharacterResourceEmotionProfile> profiles;
@@ -31,6 +32,27 @@ class CharacterResourceBehavior {
   final CharacterMotionTransitions? transitions;
   final String windAnimationPrefix;
   final Map<String, String> restGroupsBySitting;
+  final Map<String, Map<String, double>> poseTypeTransitions;
+
+  String? choosePoseType(
+    List<String> available,
+    String? previous,
+    Random random,
+  ) {
+    if (available.isEmpty) return null;
+    final source = available.contains(previous) ? previous! : available.first;
+    final transitions = poseTypeTransitions[source];
+    if (transitions == null) return source;
+    final weights = [for (final id in available) transitions[id] ?? 0.0];
+    final total = weights.fold<double>(0, (sum, value) => sum + value);
+    if (total <= 0) return source;
+    var ticket = random.nextDouble() * total;
+    for (var index = 0; index < available.length; index++) {
+      ticket -= weights[index];
+      if (ticket < 0) return available[index];
+    }
+    return available.last;
+  }
 
   factory CharacterResourceBehavior.parse(String source) {
     Object? decoded;
@@ -40,7 +62,8 @@ class CharacterResourceBehavior {
       return const CharacterResourceBehavior._({});
     }
     final root = _map(decoded);
-    final emotions = _map(_map(root['emotionalGesture'])['EmotionProfilesV4']);
+    final gesture = _map(root['emotionalGesture']);
+    final emotions = _map(gesture['EmotionProfilesV4']);
     final config = _map(root['projectConfig']);
     final closedEye = _text(config['closedEyeAnimation']);
     final result = <String, CharacterResourceEmotionProfile>{};
@@ -75,6 +98,18 @@ class CharacterResourceBehavior {
           _map(_map(config['armInOutPartConfig'])['idleGroupIds'])['byPosture'],
         ).entries)
           if (entry.value is String) entry.key: entry.value as String,
+      },
+      poseTypeTransitions: {
+        for (final row in _list(gesture['PoseTypeSets']))
+          if (_text(_map(row)['previousId']).isNotEmpty)
+            _text(_map(row)['previousId']): {
+              for (final candidate in _list(gesture['PoseTypeSets']))
+                if (_text(_map(candidate)['previousId']) ==
+                        _text(_map(row)['previousId']) &&
+                    _text(_map(candidate)['newId']).isNotEmpty &&
+                    _weight(_map(candidate)) > 0)
+                  _text(_map(candidate)['newId']): _weight(_map(candidate)),
+            },
       },
       windAnimationPrefix: _text(config['windAnimationPrefix']).isEmpty
           ? 'effect_wind'

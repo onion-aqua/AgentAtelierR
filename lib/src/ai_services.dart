@@ -741,12 +741,16 @@ class OpenAiCompatibleClient {
     'type': 'function',
     'function': {
       'name': 'consume_inventory_item',
-      'description': '用户明确要求使用、吃掉、赠送或消耗背包物品时调用。先查询库存获取真实实例 ID；只查看或拿在手中不扣除。合成已自动扣料，不得再次调用此工具扣同一批素材。不得未经用户同意丢弃物品。',
+      'description': '用户明确要求使用、吃掉、赠送或消耗背包物品时调用。先查询库存获取真实实例 ID；只查看或拿在手中不扣除。吃东西须传 purpose=eat，且只能使用标注为食物或可食用的真实库存。合成已自动扣料，不得再次调用此工具扣同一批素材。不得未经用户同意丢弃物品。',
       'parameters': {
         'type': 'object',
         'properties': {
           'instance_id': {'type': 'string'},
           'quantity': {'type': 'integer', 'minimum': 1},
+          'purpose': {
+            'type': 'string',
+            'enum': ['use', 'eat', 'gift'],
+          },
         },
         'required': ['instance_id', 'quantity'],
         'additionalProperties': false,

@@ -453,3 +453,6 @@ bool isStableIdleMouth(String? animation) {
       : animation;
   return stem != 'facial_mouth_019';
 }
+
+String stableIdleMouthOr(String? resourceMouth, String fallback) =>
+    isStableIdleMouth(resourceMouth) ? resourceMouth! : fallback;

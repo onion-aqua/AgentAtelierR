@@ -79,6 +79,7 @@ class ContinuousAsmrPage extends StatefulWidget {
 
 class _ContinuousAsmrPageState extends State<ContinuousAsmrPage> {
   final _theme = TextEditingController();
+  final _voiceListController = ScrollController();
   final _player = AudioPlayer();
   final _llm = OpenAiCompatibleClient();
   final _buffer = Queue<_AsmrClip>();
@@ -95,6 +96,7 @@ class _ContinuousAsmrPageState extends State<ContinuousAsmrPage> {
   bool _atTime = false;
   bool _replaying = false;
   final _clips = <_AsmrClip>[];
+  int _nextClipNumber = 1;
   _AsmrClip? _activeClip;
   DateTime? _deadline;
   TimeOfDay? _time;
@@ -143,17 +145,36 @@ class _ContinuousAsmrPageState extends State<ContinuousAsmrPage> {
         }
         final clip = _AsmrClip(
           path,
-          '$topic · ${_clips.length + 1}',
+          '$topic · $_nextClipNumber',
           segment.pauseAfter,
         );
+        _nextClipNumber++;
+        final followLatest =
+            !_voiceListController.hasClients ||
+            _voiceListController.position.extentAfter < 80;
+        _AsmrClip? retired;
         setState(() {
           _clips.add(clip);
           _buffer.add(clip);
+          if (_clips.length > 50) {
+            final index = _clips.indexWhere(
+              (item) => item != _activeClip && !_buffer.contains(item),
+            );
+            if (index >= 0) retired = _clips.removeAt(index);
+          }
         });
-        if (_clips.length > 50) {
-          final old = _clips.removeAt(0);
-          await _deleteClipFile(old.path);
+        if (followLatest) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted && _voiceListController.hasClients) {
+              _voiceListController.animateTo(
+                _voiceListController.position.maxScrollExtent,
+                duration: const Duration(milliseconds: 220),
+                curve: Curves.easeOut,
+              );
+            }
+          });
         }
+        if (retired != null) await _deleteClipFile(retired!.path);
         _wakeBuffer();
       }
     } on Object catch (error) {
@@ -491,6 +512,7 @@ class _ContinuousAsmrPageState extends State<ContinuousAsmrPage> {
       }),
     );
     _theme.dispose();
+    _voiceListController.dispose();
     super.dispose();
   }
 
@@ -652,62 +674,105 @@ class _ContinuousAsmrPageState extends State<ContinuousAsmrPage> {
                   child: Text(_status, textAlign: TextAlign.center),
                 ),
               const SizedBox(height: 16),
-              Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      t('生成的语音', 'Generated audio', '生成した音声'),
-                      style: Theme.of(context).textTheme.titleLarge,
-                    ),
+              DecoratedBox(
+                key: const ValueKey('asmr-voice-area'),
+                decoration: BoxDecoration(
+                  border: Border.all(color: colors.outlineVariant),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: SizedBox(
+                  height: 300,
+                  child: Column(
+                    children: [
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(14, 12, 14, 10),
+                        child: Row(
+                          children: [
+                            const Icon(Icons.graphic_eq_rounded, size: 20),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                t('生成的语音', 'Generated audio', '生成した音声'),
+                                style: Theme.of(context).textTheme.titleMedium,
+                              ),
+                            ),
+                            Text('${_clips.length}'),
+                          ],
+                        ),
+                      ),
+                      Divider(height: 1, color: colors.outlineVariant),
+                      Expanded(
+                        child: _clips.isEmpty
+                            ? Center(
+                                child: Text(
+                                  t(
+                                    '输入主题后开始生成，语音会显示在这里',
+                                    'Generate a topic to see audio here',
+                                    'テーマから生成すると音声がここに表示されます',
+                                  ),
+                                  textAlign: TextAlign.center,
+                                  style: TextStyle(
+                                    color: colors.onSurfaceVariant,
+                                  ),
+                                ),
+                              )
+                            : ListView.builder(
+                                key: const ValueKey('asmr-voice-list'),
+                                controller: _voiceListController,
+                                itemCount: _clips.length,
+                                itemBuilder: (context, index) {
+                                  final clip = _clips[index];
+                                  return ListTile(
+                                    contentPadding: const EdgeInsets.symmetric(
+                                      horizontal: 12,
+                                    ),
+                                    leading: IconButton.filledTonal(
+                                      tooltip:
+                                          identical(_activeClip, clip) && busy
+                                          ? t('停止', 'Stop', '停止')
+                                          : t('播放', 'Play', '再生'),
+                                      onPressed: () =>
+                                          identical(_activeClip, clip) && busy
+                                          ? _stop()
+                                          : _replay(clip),
+                                      icon: Icon(
+                                        identical(_activeClip, clip) && busy
+                                            ? Icons.stop_rounded
+                                            : Icons.play_arrow_rounded,
+                                      ),
+                                    ),
+                                    title: Text(
+                                      clip.title,
+                                      maxLines: 2,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                    subtitle: clip.duration == null
+                                        ? null
+                                        : Text(_clockText(clip.duration!)),
+                                    trailing: IconButton(
+                                      tooltip: t('删除', 'Delete', '削除'),
+                                      icon: const Icon(Icons.delete_outline),
+                                      onPressed: () async {
+                                        if (identical(_activeClip, clip)) {
+                                          await _stop();
+                                        }
+                                        if (!mounted) return;
+                                        setState(() {
+                                          _clips.remove(clip);
+                                          _buffer.remove(clip);
+                                        });
+                                        _wakeSpace();
+                                        await _deleteClipFile(clip.path);
+                                      },
+                                    ),
+                                  );
+                                },
+                              ),
+                      ),
+                    ],
                   ),
-                  Text('${_clips.length}'),
-                ],
+                ),
               ),
-              const SizedBox(height: 8),
-              if (_clips.isEmpty)
-                Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 28),
-                  child: Text(
-                    t(
-                      '输入主题后开始生成，语音会显示在这里',
-                      'Generate a topic to see audio here',
-                      'テーマから生成すると音声がここに表示されます',
-                    ),
-                    style: TextStyle(color: colors.onSurfaceVariant),
-                  ),
-                ),
-              for (final clip in _clips.reversed)
-                ListTile(
-                  contentPadding: EdgeInsets.zero,
-                  leading: IconButton.filledTonal(
-                    onPressed: () => identical(_activeClip, clip) && busy
-                        ? _stop()
-                        : _replay(clip),
-                    icon: Icon(
-                      identical(_activeClip, clip) && busy
-                          ? Icons.stop_rounded
-                          : Icons.play_arrow_rounded,
-                    ),
-                  ),
-                  title: Text(
-                    clip.title,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                  subtitle: clip.duration == null
-                      ? null
-                      : Text(_clockText(clip.duration!)),
-                  trailing: IconButton(
-                    tooltip: t('删除', 'Delete', '削除'),
-                    icon: const Icon(Icons.delete_outline),
-                    onPressed: () async {
-                      if (identical(_activeClip, clip)) await _stop();
-                      if (!mounted) return;
-                      setState(() => _clips.remove(clip));
-                      await _deleteClipFile(clip.path);
-                    },
-                  ),
-                ),
               const SizedBox(height: 18),
               Center(
                 child: IconButton.filled(

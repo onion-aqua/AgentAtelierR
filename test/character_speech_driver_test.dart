@@ -337,6 +337,84 @@ void main() {
     }
   });
 
+  test('schema 4 attitude patterns drive gaze without legacy DriverDefs', () {
+    final profile = CharacterPerformanceProfile.parse(
+      jsonEncode({
+        'projectConfig': {
+          'ambientGaze': {
+            'sizeMedium': 0.8,
+            'dwellMedium': 1.5,
+            'speedNormal': 1.0,
+            'followScaleStrong': 0.9,
+            'headFollowDelay': 0.1,
+          },
+        },
+        'emotionalGesture': {
+          'GesturePatternDefs': [
+            {
+              'patternId': 'A1',
+              'directions': ['上'],
+              'faceMovement': '追従（強）',
+              'bodyMovement': '動かない',
+              'points': 1,
+            },
+            {
+              'patternId': 'A3',
+              'directions': ['下'],
+              'faceMovement': '追従（弱）',
+              'bodyMovement': '動かない',
+              'points': 1,
+            },
+          ],
+          'AttitudePatterns': [
+            for (final attitude in ['talk_low', 'talk_mid', 'talk_high'])
+              {
+                'attitude': attitude,
+                'patternId': 'A1',
+                'size': '中',
+                'dwell': '中',
+                'moveSpeed': '普通',
+                'weight': 1,
+              },
+            for (final attitude in ['idle_low', 'idle_mid', 'idle_high'])
+              {
+                'attitude': attitude,
+                'patternId': 'A3',
+                'size': '中',
+                'dwell': '中',
+                'moveSpeed': '普通',
+                'weight': 1,
+              },
+          ],
+        },
+      }),
+    );
+    expect(profile.drivers, isEmpty);
+    expect(profile.hasResourceDrivers, isTrue);
+    expect(profile.attitudeDrivers['talk_low'], hasLength(1));
+    final director = CharacterPerformanceDirector(profile, random: Random(2));
+    Map<String, RigMotion> frame = {};
+    for (var i = 0; i < 120; i++) {
+      frame = director.sample(
+        delta: 1 / 60,
+        emotion: 'neutral',
+        speaking: true,
+        energy: 0,
+      );
+    }
+    expect(frame['eye']!.pitch, greaterThan(0.2));
+    expect(frame['head']!.pitch, greaterThan(0));
+    for (var i = 0; i < 180; i++) {
+      frame = director.sample(
+        delta: 1 / 60,
+        emotion: 'neutral',
+        speaking: false,
+        energy: 0,
+      );
+    }
+    expect(frame['eye']!.pitch, lessThan(0));
+  });
+
   test('playback interpolation is bounded and audio end closes the mouth', () {
     expect(
       interpolatedSpeechPosition(

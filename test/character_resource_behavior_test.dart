@@ -14,6 +14,25 @@ CharacterResourceBehavior parseProfiles(Map<String, Object?> profiles) =>
     );
 
 void main() {
+  test('pose transitions stay within the current base pose types', () {
+    final behavior = CharacterResourceBehavior.parse(
+      jsonEncode({
+        'emotionalGesture': {
+          'PoseTypeSets': [
+            {'previousId': 'free', 'newId': 'free', 'weight': 0},
+            {'previousId': 'free', 'newId': 'rest', 'weight': 4},
+            {'previousId': 'free', 'newId': 'other', 'weight': 100},
+          ],
+        },
+      }),
+    );
+    expect(
+      behavior.choosePoseType(['free', 'rest'], 'free', Random(1)),
+      'rest',
+    );
+    expect(behavior.choosePoseType(['free'], 'rest', Random(1)), 'free');
+  });
+
   for (final id in [
     '0001_01',
     '0001_99',
