@@ -4,6 +4,7 @@
 
 ## 本次更新
 
+- 本地数据导出时可选择是否包含 AI 与语音服务 API 密钥。服务地址、模型和语音选项沿用原备份格式；选择包含密钥时额外备份 OpenAI 三个配置槽及 Gemini、Fish Audio、DashScope、通用 TTS、MiMo 密钥。导入时恢复所附密钥，旧备份保持设备现有密钥不变。含密钥的 JSON 为明文文件。
 - 修复动作队列播放第一条动作时，表情切换误清空后续待播动作的问题。
 - 动作完成回调和超时计时器只释放一次 Spine 动作轨道，避免重复完成。
 - 动作规划、播放及等待的常规日志按类别每 15 秒最多采集一次；队列入出和去重不再逐条记录，失败与资源不兼容告警仍即时记录。
@@ -24,7 +25,7 @@
 
 使用 `tool/build_protected.ps1 -Target apk -Mode debug` 加密构建。APK 保存在 `build/app/outputs/flutter-apk/app-debug.apk`。连接设备后，可用 `tool/build_protected.ps1 -Target apk -Mode debug -DeviceId a43d2d7a -Install` 构建并安装。
 
-本次 Flutter 单进程全量测试结果为 449 项通过、10 项因资源条件跳过；静态分析无问题。debug APK 的 SHA-256 为 `486794296E5C154160DC95449FA7AD5A11F90E2644A2F45CEEDEB1BE1139E331`。当前 `adb devices -l` 未发现 `a43d2d7a`，因此真机安装及画面验收尚未完成。
+本次 Flutter 单进程全量测试结果为 453 项通过、10 项因资源条件跳过；静态分析无问题。debug APK 的 SHA-256 为 `1160C1AF734A6F255EF77748907D11FF5044E81D2C4E29D44492C077CAE8F8E3`。当前 `adb devices -l` 未发现 `a43d2d7a`，因此真机安装及画面验收尚未完成。
 
 ## 已知范围
 

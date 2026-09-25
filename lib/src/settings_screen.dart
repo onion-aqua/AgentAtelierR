@@ -13,6 +13,7 @@ import 'character_prompt_editor.dart';
 import 'chat_segments.dart';
 import 'frame_rate_controller.dart';
 import 'runtime_log.dart';
+import 'service_api_backup.dart';
 export 'runtime_log_screen.dart';
 import 'platform_slider.dart';
 import 'glass_ui.dart';
@@ -1090,9 +1091,9 @@ class SettingsScreenState extends State<SettingsScreen> {
                   ),
                   subtitle: Text(
                     language.text(
-                      '不包含任何 AI 或语音服务 API Key',
-                      'API keys are never included',
-                      'APIキーは含まれません',
+                      '导出时选择是否包含 AI 与语音服务密钥',
+                      'Choose whether to include AI and voice service keys',
+                      'AI・音声サービスのキーを含めるか選択',
                     ),
                   ),
                   onTap: () => _exportData(context),
@@ -2765,21 +2766,77 @@ class SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<void> _exportData(BuildContext context) async {
-    final bytes = Uint8List.fromList(
-      utf8.encode(
-        const JsonEncoder.withIndent('  ')
-            .convert(controller.exportData(includeAttachmentThumbnails: true)),
+    final language = controller.interfaceLanguage;
+    final includeKeys = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => SimpleDialog(
+        title: Text(
+          language.text('导出本地数据', 'Export local data', 'ローカルデータを書き出す'),
+        ),
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(24, 0, 24, 12),
+            child: Text(
+              language.text(
+                '服务地址、模型和语音选项已包含在备份中。是否同时导出 API 密钥？包含密钥的 JSON 文件为明文，请妥善保管。',
+                'Service URLs, models and voice options are already included. Include API keys too? The JSON file stores keys as plain text.',
+                'サービスURL・モデル・音声設定は含まれます。APIキーも含めますか？JSONには平文で保存されます。',
+              ),
+            ),
+          ),
+          SimpleDialogOption(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: Text(
+              language.text('不包含 API 密钥', 'Without API keys', 'APIキーを含めない'),
+            ),
+          ),
+          SimpleDialogOption(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: Text(
+              language.text('包含 API 密钥', 'Include API keys', 'APIキーを含める'),
+            ),
+          ),
+          SimpleDialogOption(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: Text(language.text('取消', 'Cancel', 'キャンセル')),
+          ),
+        ],
       ),
     );
-    final uri = await FilePicker.saveFile(
-      fileName:
-          'agent-atelier-r-backup-${DateTime.now().millisecondsSinceEpoch}.json',
-      bytes: bytes,
-      mimeType: 'application/json',
-    );
-    if (!context.mounted || uri == null) return;
-    ScaffoldMessenger.of(context)
-        .showSnackBar(const SnackBar(content: Text('本地数据已导出')));
+    if (includeKeys == null || !context.mounted) return;
+    try {
+      final data = controller.exportData(includeAttachmentThumbnails: true);
+      if (includeKeys) {
+        data[ServiceApiBackup.field] = await ServiceApiBackup.capture(
+          const SecretStore(),
+        );
+      }
+      final bytes = Uint8List.fromList(
+        utf8.encode(const JsonEncoder.withIndent('  ').convert(data)),
+      );
+      final uri = await FilePicker.saveFile(
+        fileName:
+            'agent-atelier-r-backup-${DateTime.now().millisecondsSinceEpoch}.json',
+        bytes: bytes,
+        mimeType: 'application/json',
+      );
+      if (!context.mounted || uri == null) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            language.text('本地数据已导出', 'Local data exported', 'ローカルデータを書き出しました'),
+          ),
+        ),
+      );
+    } on Object catch (error) {
+      RuntimeLog.instance.error('Data export', error);
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(language.text('导出失败', 'Export failed', '書き出しに失敗しました')),
+        ),
+      );
+    }
   }
 
   Future<void> _importData(BuildContext context) async {
@@ -2788,18 +2845,53 @@ class SettingsScreenState extends State<SettingsScreen> {
       allowedExtensions: const ['json'],
     );
     if (file == null) return;
+    var dataRestored = false;
     try {
       final bytes = await file.readAsBytes();
       final decoded = jsonDecode(utf8.decode(bytes)) as Map<String, dynamic>;
+      final serviceKeys = ServiceApiBackup.parse(
+        decoded[ServiceApiBackup.field],
+      );
+      if (decoded.containsKey(ServiceApiBackup.field) && serviceKeys == null) {
+        throw const FormatException('备份中的 API 密钥格式无效');
+      }
       await controller.importData(decoded);
+      dataRestored = true;
+      if (serviceKeys != null) {
+        await serviceKeys.restore(const SecretStore());
+      }
       if (!context.mounted) return;
-      ScaffoldMessenger.of(context)
-          .showSnackBar(const SnackBar(content: Text('本地数据已恢复，API Key 保持不变')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            controller.interfaceLanguage.text(
+              serviceKeys == null ? '本地数据已恢复，API 密钥保持不变' : '本地数据与 API 密钥已恢复',
+              serviceKeys == null
+                  ? 'Local data restored; API keys unchanged'
+                  : 'Local data and API keys restored',
+              serviceKeys == null
+                  ? 'データを復元しました。APIキーは変更されません'
+                  : 'データとAPIキーを復元しました',
+            ),
+          ),
+        ),
+      );
     } on Object catch (error) {
       RuntimeLog.instance.error('Data import', error);
       if (!context.mounted) return;
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('导入失败：$error')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            dataRestored
+                ? controller.interfaceLanguage.text(
+                    '本地数据已恢复，但 API 密钥恢复失败',
+                    'Local data restored, but API keys could not be restored',
+                    'データは復元されましたが、APIキーを復元できませんでした',
+                  )
+                : '导入失败：$error',
+          ),
+        ),
+      );
     }
   }
 }
