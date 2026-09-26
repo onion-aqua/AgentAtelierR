@@ -113,6 +113,13 @@ class ProtectedCharacterAssets {
   }
 
   static Future<Uint8List> _loadPreview(String assetName) async {
+    if (LocalSkinStore.instance.skins.any((skin) => skin['id'] == assetName)) {
+      final preview = await LocalSkinStore.instance.previewFor(assetName);
+      if (preview == null) {
+        throw FlutterError('Local character preview not found: $assetName');
+      }
+      return preview;
+    }
     final key = _key();
     final encrypted = await _loadRootBytes(
       'assets/protected/character/previews/$assetName.aarpreview',

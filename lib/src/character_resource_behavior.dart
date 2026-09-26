@@ -18,6 +18,8 @@ class CharacterResourceBehavior {
     this.intensityProfiles = const {},
     this.effectAnimations = const {},
     this.poseTypeTransitions = const {},
+    this.fingerTracking = const CharacterFingerTracking(),
+    this.lipSyncClosure = const CharacterLipSyncClosure(),
   });
 
   final Map<String, CharacterResourceEmotionProfile> profiles;
@@ -33,6 +35,8 @@ class CharacterResourceBehavior {
   final String windAnimationPrefix;
   final Map<String, String> restGroupsBySitting;
   final Map<String, Map<String, double>> poseTypeTransitions;
+  final CharacterFingerTracking fingerTracking;
+  final CharacterLipSyncClosure lipSyncClosure;
 
   String? choosePoseType(
     List<String> available,
@@ -111,11 +115,94 @@ class CharacterResourceBehavior {
                   _text(_map(candidate)['newId']): _weight(_map(candidate)),
             },
       },
+      fingerTracking: CharacterFingerTracking.fromConfig(config),
+      lipSyncClosure: CharacterLipSyncClosure.fromConfig(
+        _map(config['lipSyncClosure']),
+      ),
       windAnimationPrefix: _text(config['windAnimationPrefix']).isEmpty
           ? 'effect_wind'
           : _text(config['windAnimationPrefix']),
     );
   }
+}
+
+class CharacterLipSyncClosure {
+  const CharacterLipSyncClosure({
+    this.enabled = false,
+    this.ratio = 0.1,
+    this.dipThreshold = 0.1,
+    this.minHoldMs = 50,
+    this.refWindowMs = 500,
+    this.rmsCeiling = 1,
+    this.opennessFloorDb = -40,
+    this.opennessCeilingDb = -3,
+    this.opennessOutputScale = 1,
+    this.attackMs = 20,
+    this.releaseMs = 60,
+    this.crossfadeMs = 60,
+  });
+
+  final bool enabled;
+  final double ratio;
+  final double dipThreshold;
+  final double minHoldMs;
+  final double refWindowMs;
+  final double rmsCeiling;
+  final double opennessFloorDb;
+  final double opennessCeilingDb;
+  final double opennessOutputScale;
+  final double attackMs;
+  final double releaseMs;
+  final double crossfadeMs;
+
+  factory CharacterLipSyncClosure.fromConfig(Map<String, Object?> data) =>
+      CharacterLipSyncClosure(
+        enabled: data['enabled'] == true,
+        ratio: _nonNegative(data['ratio'], 0.1),
+        dipThreshold: _nonNegative(data['dipThreshold'], 0.1),
+        minHoldMs: _nonNegative(data['minHoldMs'], 50),
+        refWindowMs: _positive(data['refWindowMs'], 500),
+        rmsCeiling: _positive(data['rmsCeiling'], 1),
+        opennessFloorDb: _number(data['opennessFloorDb']) ?? -40,
+        opennessCeilingDb: _number(data['opennessCeilingDb']) ?? -3,
+        opennessOutputScale: _nonNegative(data['opennessOutputScale'], 1),
+        attackMs: _positive(data['opennessAttackMs'], 20),
+        releaseMs: _positive(data['opennessReleaseMs'], 60),
+        crossfadeMs: _positive(data['crossfadeMs'], 60),
+      );
+}
+
+class CharacterFingerTracking {
+  const CharacterFingerTracking({
+    this.centerBone = 'rig_face',
+    this.maxRange = 514.7,
+    this.delay = 0.1,
+    this.headScale = 1,
+    this.bodyScale = 1,
+    this.headThreshold = 0,
+    this.bodyThreshold = 0,
+  });
+
+  final String centerBone;
+  final double maxRange;
+  final double delay;
+  final double headScale;
+  final double bodyScale;
+  final double headThreshold;
+  final double bodyThreshold;
+
+  factory CharacterFingerTracking.fromConfig(Map<String, Object?> config) =>
+      CharacterFingerTracking(
+        centerBone: _text(config['fingerTrackCenterBone']).isEmpty
+            ? 'rig_face'
+            : _text(config['fingerTrackCenterBone']),
+        maxRange: _positive(config['fingerTrackMaxRange'], 514.7),
+        delay: _positive(config['fingerTrackDelay'], 0.1),
+        headScale: _nonNegative(config['fingerTrackHeadScale'], 1),
+        bodyScale: _nonNegative(config['fingerTrackBodyScale'], 1),
+        headThreshold: _nonNegative(config['fingerTrackHeadThreshold'], 0),
+        bodyThreshold: _nonNegative(config['fingerTrackBodyThreshold'], 0),
+      );
 }
 
 class CharacterResourceEmotionProfile {

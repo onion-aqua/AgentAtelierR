@@ -29,8 +29,10 @@ import 'app_localization.dart';
 import 'attachment_thumbnail_store.dart';
 import 'audio_envelope.dart';
 import 'speech_envelope_loader.dart';
+import 'speech_loudness.dart';
 import 'character_speech_driver.dart';
 import 'character_resource_behavior.dart';
+import 'character_lipsync.dart';
 import 'character_motion_dynamics.dart';
 import 'character_motion_layers.dart';
 import 'character_track_transition.dart';
@@ -41,6 +43,7 @@ import 'mimo_tts_client.dart';
 import 'protected_character_assets.dart';
 import 'device_agent_tools.dart';
 import 'character_appearance.dart';
+import 'local_skin_store.dart';
 import 'character_catalog.dart';
 import 'character_camera.dart';
 import 'character_expression.dart';
@@ -355,6 +358,7 @@ class _ChatScreenState extends State<ChatScreen> {
   DateTime? _lastSemanticActionAt;
   final Stopwatch _speechStopwatch = Stopwatch();
   AudioAmplitudeEnvelope? _activeSpeechEnvelope;
+  CharacterLipSyncDynamics? _lipSyncDynamics;
   TrackEntry? _lipSyncEntry;
   double _currentSpeechEnergy = 0;
   CharacterPerformanceDirector _performanceDirector =
@@ -520,7 +524,6 @@ class _ChatScreenState extends State<ChatScreen> {
   int _replyGeneration = 0;
   final _memoryRefreshGate = MemoryRefreshGate();
   Future<void> Function()? _pendingMemoryRefresh;
-  ChatMessage? _lastConsolidatedUser;
   String _previousSpeechEmotion = 'relaxed';
   int _suggestionGeneration = 0;
   late int _observedDataRevision;
@@ -738,7 +741,6 @@ class _ChatScreenState extends State<ChatScreen> {
     _recentAmbientGroupIds.clear();
     _lastPerformanceActionKey = null;
     _lastSemanticActionAt = null;
-    _lastConsolidatedUser = null;
     _previousSpeechEmotion = 'relaxed';
     _pendingMemoryRefresh = null;
     _replyGeneration += 1;
@@ -1165,6 +1167,18 @@ class _ChatScreenState extends State<ChatScreen> {
         addDetail(parts.join(', '));
       }
       return details;
+    }
+
+    if (attitude != null) {
+      for (final driver in _performanceDirector.profile.oneShotAttitudes(
+        attitude,
+      )) {
+        if (_resolveResourceClip(driver['oneShotAnimation'] as String) !=
+            null) {
+          addDetail('单次反馈资源可用');
+        }
+      }
+      if (details.isNotEmpty) return details;
     }
 
     for (final group in _motionGroups) {
@@ -1760,6 +1774,9 @@ class _ChatScreenState extends State<ChatScreen> {
       ..stop()
       ..reset();
     _activeSpeechEnvelope = envelope;
+    _lipSyncDynamics = CharacterLipSyncDynamics(
+      _resourceBehavior.lipSyncClosure,
+    );
     _currentSpeechEnergy = envelope == null ? 0.45 : 0;
     widget.controller.frameRate.setActivity(FrameRateActivity.speech, true);
     if (_isCharacterSpeaking) {
@@ -1780,6 +1797,7 @@ class _ChatScreenState extends State<ChatScreen> {
     _syntheticSpeech = false;
     _positionClock.stop();
     _activeSpeechEnvelope = null;
+    _lipSyncDynamics?.reset();
     _currentSpeechEnergy = 0;
     _lipSyncEntry?.setTrackTime(0);
   }
@@ -1795,6 +1813,7 @@ class _ChatScreenState extends State<ChatScreen> {
     _isCharacterSpeaking = false;
     widget.controller.frameRate.setActivity(FrameRateActivity.speech, false);
     _activeSpeechEnvelope = null;
+    _lipSyncDynamics?.reset();
     _lipSyncEntry = null;
     _currentSpeechEnergy = 0;
     _applyExpression(_currentExpression);
@@ -1920,7 +1939,10 @@ class _ChatScreenState extends State<ChatScreen> {
       emotion: _currentExpression.name,
       speaking: _isCharacterSpeaking,
       energy: _currentSpeechEnergy,
-      suppressed: _tapReactionActive || _gazePointer != null || _motionBusy,
+      suppressed:
+          _tapReactionActive ||
+          _gazePointer != null ||
+          (_motionBusy && !_performanceDirector.hasActiveAttitudeCue),
     );
     for (final entry in parts.entries) {
       if (_tapReactionActive) break;
@@ -1993,10 +2015,16 @@ class _ChatScreenState extends State<ChatScreen> {
       return;
     }
 
-    final face = skeleton.findBone('rig_face') ?? skeleton.findBone('head');
+    final finger = _resourceBehavior.fingerTracking;
+    final face =
+        skeleton.findBone(finger.centerBone) ?? skeleton.findBone('head');
     if (face == null) return;
     final origin = Offset(face.getWorldX(), face.getWorldY());
-    final offset = gazeControlOffset(face: origin, pointer: pointer);
+    final offset = gazeControlOffset(
+      face: origin,
+      pointer: pointer,
+      maxDistance: finger.maxRange,
+    );
     final controlTarget =
         skeleton.findBone('control_aim_eye') ??
         skeleton.findBone('control_eye') ??
@@ -2043,6 +2071,11 @@ class _ChatScreenState extends State<ChatScreen> {
           _currentIdleAnimation == _appearance.idleAnimations.firstOrNull,
       busy: _motionBusy,
       tapReaction: _tapReactionActive,
+      delay: finger.delay,
+      headScale: finger.headScale,
+      bodyScale: finger.bodyScale,
+      headThreshold: finger.headThreshold,
+      bodyThreshold: finger.bodyThreshold,
     );
     for (final entry in offsets.entries) {
       final bone = skeleton.findBone(entry.key);
@@ -2109,9 +2142,13 @@ class _ChatScreenState extends State<ChatScreen> {
     final envelope = _activeSpeechEnvelope;
     final entry = _lipSyncEntry;
     if (!_isCharacterSpeaking || envelope == null) return;
-    final energy = envelope.valueAt(position);
+    final energy =
+        _lipSyncDynamics?.sample(envelope, position) ??
+        envelope.valueAt(position);
     _currentSpeechEnergy = energy;
-    final mouthOpen = energy < 0.08
+    final mouthOpen = _resourceBehavior.lipSyncClosure.enabled
+        ? energy * 0.48
+        : energy < 0.08
         ? 0.0
         : (pow((energy - 0.08) / 0.92, 0.78) * 0.48).clamp(0.0, 0.48);
     entry?.setTrackTime(entry.getAnimation().getDuration() * mouthOpen);
@@ -2647,6 +2684,29 @@ class _ChatScreenState extends State<ChatScreen> {
       // An authored empty/disabled binding means no gesture for this attitude.
       return;
     }
+    if (attitude != null) {
+      final candidate = chooseResourceWeighted(
+        _performanceDirector.profile
+            .oneShotAttitudes(attitude)
+            .where(
+              (driver) =>
+                  _resolveResourceClip(driver['oneShotAnimation'] as String) !=
+                  null,
+            ),
+        (driver) => (driver['weight'] as num?)?.toDouble() ?? 0,
+        _random,
+      );
+      if (candidate != null) {
+        final animation = _resolveResourceClip(
+          candidate['oneShotAnimation'] as String,
+        );
+        if (animation != null && _playOneShotAnimation(animation)) {
+          _performanceDirector.cueAttitude(candidate);
+          _lastSemanticActionAt = now;
+          return;
+        }
+      }
+    }
     final plan = characterActionPlan(
       _appearance.baseAppearanceId ?? _appearance.id,
       action,
@@ -3049,11 +3109,19 @@ class _ChatScreenState extends State<ChatScreen> {
       }
       _showLatestAssistantFromStartIfOverflow();
       RuntimeLog.instance.info('AI', '流式回复完成，字符数=${reply.length}');
+      final pendingMemoryTurns = _unconsolidatedDialogue(
+        widget.controller.messages,
+      ).where((message) => message.isUser).length;
+      final pendingLongTermBatch =
+          widget.controller.recentMemories.length -
+              widget.controller.longTermMemoryConsolidatedCount >=
+          8;
       if (widget.controller.longTermMemoryEnabled &&
-          (_memoryRefreshGate.refreshAfterLoad || !isAutomatic) &&
-          (_memoryRefreshGate.refreshAfterLoad ||
-              widget.controller.userMessageCount % 4 == 0 ||
-              AppController.shouldRefreshMemoryImmediately(text))) {
+          !isAutomatic &&
+          (pendingMemoryTurns >= 4 ||
+              (pendingMemoryTurns > 0 &&
+                  AppController.shouldRefreshMemoryImmediately(text)) ||
+              pendingLongTermBatch)) {
         unawaited(
           _refreshLongTermMemory(
             apiKey,
@@ -3065,7 +3133,7 @@ class _ChatScreenState extends State<ChatScreen> {
       } else {
         RuntimeLog.instance.info(
           'Memory',
-          '未触发整理：enabled=${widget.controller.longTermMemoryEnabled}, automatic=$isAutomatic, userMessages=${widget.controller.userMessageCount}（普通对话每4条触发）',
+          '未触发整理：enabled=${widget.controller.longTermMemoryEnabled}, automatic=$isAutomatic, pendingTurns=$pendingMemoryTurns, pendingRecent=${widget.controller.recentMemories.length - widget.controller.longTermMemoryConsolidatedCount}',
         );
       }
       final capabilities = _buildPerformancePromptContext();
@@ -3921,8 +3989,8 @@ class _ChatScreenState extends State<ChatScreen> {
     String apiKey,
     int generation,
   ) async {
-    // Android MediaPlayer support for WAV varies by vendor. MP3 is used there
-    // for reliable playback; desktop keeps WAV for deterministic lip sync.
+    // Request the provider-compatible format, then locally decode and balance
+    // it into standard PCM16 WAV before playback and lip-sync analysis.
     final playbackFormat = widget.controller.ttsProvider == TtsProvider.mimo
         ? 'wav'
         : Platform.isAndroid
@@ -3943,7 +4011,7 @@ class _ChatScreenState extends State<ChatScreen> {
       if (widget.controller.asmrModeEnabled)
         'Speak softly in a close, quiet voice.',
     ].join(' ');
-    final path = await switch (widget.controller.ttsProvider) {
+    var path = await switch (widget.controller.ttsProvider) {
       TtsProvider.fishAudio => _fishAudioClient.synthesize(
         apiKey: apiKey,
         referenceId: widget.controller.activeFishAudioReferenceId,
@@ -4009,11 +4077,24 @@ class _ChatScreenState extends State<ChatScreen> {
       await _deleteTemporarySpeech(path);
       throw const AiServiceException('语音播放已取消');
     }
+    final balanced = await balanceSpeechLoudness(
+      path,
+      asmr: widget.controller.asmrModeEnabled,
+    );
+    if (balanced != path) {
+      _temporarySpeechPaths.add(balanced);
+      await _deleteTemporarySpeech(path);
+      path = balanced;
+    }
+    if (generation != _speechPlaybackGeneration) {
+      await _deleteTemporarySpeech(path);
+      throw const AiServiceException('语音播放已取消');
+    }
     final bytes = await File(path).readAsBytes();
     RuntimeLog.instance.info(
       'TTS',
       '音频文件已准备 provider=${widget.controller.ttsProvider.label}, '
-          'format=$playbackFormat, bytes=${bytes.length}, file=${path.split(Platform.pathSeparator).last}',
+          'format=${detectAudioContainerExtension(bytes)}, bytes=${bytes.length}, file=${path.split(Platform.pathSeparator).last}',
     );
     return _PreparedSpeech(
       path: path,
@@ -4395,6 +4476,20 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
+  List<ChatMessage> _unconsolidatedDialogue(List<ChatMessage> snapshot) {
+    final checkpointId = widget.controller.lastRecentMemoryMessageId;
+    final checkpoint = checkpointId == null || checkpointId.isEmpty
+        ? -1
+        : snapshot.indexWhere(
+            (message) => message.isUser && message.id == checkpointId,
+          );
+    var start = checkpoint + 1;
+    while (start < snapshot.length && !snapshot[start].isUser) {
+      start++;
+    }
+    return snapshot.skip(start).where((message) => !message.isFailure).toList();
+  }
+
   Future<void> _refreshLongTermMemory(
     String apiKey, {
     required LlmProvider provider,
@@ -4425,73 +4520,137 @@ class _ChatScreenState extends State<ChatScreen> {
       return;
     }
     final generation = _memoryRefreshGate.begin()!;
-    final previousMemory = widget.controller.memorySummary;
-    final checkpoint = _lastConsolidatedUser == null
-        ? -1
-        : snapshot.indexOf(_lastConsolidatedUser!);
-    var start = checkpoint < 0 ? max(0, snapshot.length - 12) : checkpoint + 1;
-    if (checkpoint >= 0) {
-      while (start < snapshot.length && !snapshot[start].isUser) {
-        start++;
-      }
-    }
-    final pendingMessages = snapshot.skip(start).toList();
-    if (pendingMessages.isEmpty) {
-      _memoryRefreshGate.finish(generation);
-      RuntimeLog.instance.info('Memory', '没有新的完整对话，跳过整理');
-      return;
-    }
-    final lastUser = snapshot.where((message) => message.isUser).lastOrNull;
-    final anchor = snapshot.lastOrNull;
-    final dialogue = pendingMessages
-        .map(
-          (message) => message.isUser
-              ? '用户：${message.text}'
-              : displayTextForAssistantResponse(message.text),
-        )
-        .join('\n');
+    final pendingMessages = _unconsolidatedDialogue(snapshot);
+    final pendingTurns = pendingMessages
+        .where((message) => message.isUser)
+        .length;
+    final lastUserInput = pendingMessages
+        .where((message) => message.isUser)
+        .lastOrNull
+        ?.text;
+    final shouldRecordRecent =
+        pendingTurns >= 4 ||
+        (pendingTurns > 0 &&
+            AppController.shouldRefreshMemoryImmediately(lastUserInput ?? ''));
+    var recordedRecent = false;
     try {
-      RuntimeLog.instance.info(
-        'Memory',
-        '开始独立整理：model=$model，messages=${pendingMessages.length}，characters=${dialogue.length}',
-      );
-      final now = DateTime.now();
-      final memory = await MemoryConsolidator()
-          .consolidate(
-            previousMemory: previousMemory,
-            dialogue: dialogue,
-            now: now,
-            complete: (messages) => _aiClient.complete(
-              lightweight: true,
-              provider: provider,
-              baseUrl: baseUrl,
-              apiKey: apiKey,
-              model: model,
-              messages: messages,
-            ),
-          )
-          .timeout(const Duration(seconds: 30));
-      if (!mounted ||
-          !_memoryRefreshGate.owns(generation) ||
-          revision != widget.controller.dataRevision ||
-          !widget.controller.longTermMemoryEnabled ||
-          previousMemory != widget.controller.memorySummary ||
-          anchor == null ||
-          !widget.controller.messages.any(
-            (message) =>
-                identical(message, anchor) ||
-                (anchor.id.isNotEmpty && message.id == anchor.id),
-          )) {
-        RuntimeLog.instance.info('Memory', '丢弃整理结果：记忆、存档、开关或对应对话已改变');
-        return;
+      if (shouldRecordRecent) {
+        var turnCount = 0;
+        var batchEnd = pendingMessages.length;
+        for (var index = 0; index < pendingMessages.length; index++) {
+          if (pendingMessages[index].isUser && ++turnCount > 4) {
+            batchEnd = index;
+            break;
+          }
+        }
+        final batch = pendingMessages.take(batchEnd).toList();
+        final lastUser = batch.where((message) => message.isUser).last;
+        final dialogue = batch
+            .map(
+              (message) => message.isUser
+                  ? '用户：${message.text}'
+                  : displayTextForAssistantResponse(message.text),
+            )
+            .join('\n');
+        final editRevision = widget.controller.memoryEditRevision;
+        RuntimeLog.instance.info(
+          'Memory',
+          '整理最近记忆：model=$model，turns=${batch.where((message) => message.isUser).length}，characters=${dialogue.length}',
+        );
+        final recent = await RecentMemoryConsolidator()
+            .consolidate(
+              dialogue: dialogue,
+              now: DateTime.now(),
+              complete: (messages) => _aiClient.complete(
+                lightweight: true,
+                provider: provider,
+                baseUrl: baseUrl,
+                apiKey: apiKey,
+                model: model,
+                messages: messages,
+              ),
+            )
+            .timeout(const Duration(seconds: 30));
+        if (!mounted ||
+            !_memoryRefreshGate.owns(generation) ||
+            revision != widget.controller.dataRevision ||
+            !widget.controller.longTermMemoryEnabled) {
+          return;
+        }
+        if (recent != null) {
+          recordedRecent = widget.controller.appendRecentMemory(
+            recent,
+            lastMessageId: lastUser.id,
+            expectedEditRevision: editRevision,
+          );
+          if (recordedRecent) {
+            RuntimeLog.instance.info('Memory', '最近记忆已保存');
+          } else {
+            RuntimeLog.instance.info('Memory', '丢弃最近记忆：对话或手动编辑已改变');
+          }
+        } else {
+          RuntimeLog.instance.warning('Memory', '最近记忆返回无效 JSON，等待下次重试');
+        }
       }
-      if (memory != null) {
-        widget.controller.updateMemorySummary(memory);
-        _lastConsolidatedUser = lastUser;
-        _memoryRefreshGate.refreshAfterLoad = false;
-        RuntimeLog.instance.info('Memory', '长期记忆整理成功，已保存');
-      } else {
-        RuntimeLog.instance.warning('Memory', '长期记忆整理返回了无效 JSON，已保留旧记忆');
+
+      final controller = widget.controller;
+      final start = controller.longTermMemoryConsolidatedCount;
+      final end = start + 8;
+      if (controller.recentMemories.length >= end) {
+        final previousMemory = controller.memorySummary;
+        final editRevision = controller.memoryEditRevision;
+        final recentBatch = controller.recentMemories
+            .skip(start)
+            .take(8)
+            .toList();
+        RuntimeLog.instance.info('Memory', '整理长期记忆：model=$model，recent=8');
+        final memory = await MemoryConsolidator()
+            .consolidate(
+              previousMemory: previousMemory,
+              recentMemories: recentBatch,
+              promptOverride: controller.memoryConsolidationPrompt,
+              now: DateTime.now(),
+              complete: (messages) => _aiClient.complete(
+                lightweight: true,
+                provider: provider,
+                baseUrl: baseUrl,
+                apiKey: apiKey,
+                model: model,
+                messages: messages,
+              ),
+            )
+            .timeout(const Duration(seconds: 30));
+        if (!mounted ||
+            !_memoryRefreshGate.owns(generation) ||
+            revision != controller.dataRevision ||
+            !controller.longTermMemoryEnabled ||
+            previousMemory != controller.memorySummary) {
+          RuntimeLog.instance.info('Memory', '丢弃长期记忆：记忆、存档或开关已改变');
+          return;
+        }
+        if (memory != null &&
+            controller.applyConsolidatedLongTermMemory(
+              memory,
+              expectedEditRevision: editRevision,
+              throughRecentMemoryCount: end,
+            )) {
+          RuntimeLog.instance.info('Memory', '长期记忆整理成功，已保存');
+        } else {
+          RuntimeLog.instance.warning('Memory', '长期记忆整理无效或已过期，保留旧记忆');
+        }
+      }
+      if (recordedRecent &&
+          _unconsolidatedDialogue(widget.controller.messages)
+                  .where((message) => message.isUser)
+                  .length >=
+              4 &&
+          _pendingMemoryRefresh == null) {
+        _pendingMemoryRefresh = () => _refreshLongTermMemory(
+          apiKey,
+          provider: provider,
+          baseUrl: baseUrl,
+          model: model,
+        );
       }
     } on Object catch (error, stackTrace) {
       RuntimeLog.instance.error('Memory', error, stackTrace);
@@ -6511,7 +6670,34 @@ class _ProtectedAppearancePreview extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (!appearance.hasPreview) return const SizedBox.expand();
+    final fallback = _ProtectedAppearanceImage(
+      appearance: appearance,
+      fit: fit,
+      alignment: alignment,
+    );
+    if (LocalSkinStore.instance.usesTexture(appearance.assetName)) {
+      return _TextureAppearancePreview(
+        appearance: appearance,
+        fallback: fallback,
+      );
+    }
+    return fallback;
+  }
+}
+
+class _ProtectedAppearanceImage extends StatelessWidget {
+  const _ProtectedAppearanceImage({
+    required this.appearance,
+    required this.fit,
+    required this.alignment,
+  });
+
+  final CharacterAppearance appearance;
+  final BoxFit fit;
+  final Alignment alignment;
+
+  @override
+  Widget build(BuildContext context) {
     return FutureBuilder<Uint8List>(
       future: ProtectedCharacterAssets.previewFor(appearance.assetName),
       builder: (context, snapshot) {
@@ -6526,13 +6712,111 @@ class _ProtectedAppearancePreview extends StatelessWidget {
           );
         }
         if (snapshot.hasError) {
-          return const Icon(Icons.broken_image_outlined, color: Colors.black54);
+          return const Center(
+            child: Icon(
+              Icons.checkroom_outlined,
+              size: 72,
+              color: Colors.white54,
+            ),
+          );
         }
         return const Center(
           child: SizedBox.square(
             dimension: 18,
             child: CircularProgressIndicator.adaptive(strokeWidth: 2),
           ),
+        );
+      },
+    );
+  }
+}
+
+class _TextureAppearancePreview extends StatefulWidget {
+  const _TextureAppearancePreview({
+    required this.appearance,
+    required this.fallback,
+  });
+
+  final CharacterAppearance appearance;
+  final Widget fallback;
+
+  @override
+  State<_TextureAppearancePreview> createState() =>
+      _TextureAppearancePreviewState();
+}
+
+class _TextureAppearancePreviewState extends State<_TextureAppearancePreview> {
+  late Future<ProtectedCharacterAssetBundle> _bundleFuture;
+  late SpineWidgetController _controller;
+  bool _ready = false;
+  bool _failed = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  @override
+  void didUpdateWidget(covariant _TextureAppearancePreview oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.appearance.assetName != widget.appearance.assetName) {
+      _load();
+    }
+  }
+
+  void _load() {
+    _ready = false;
+    _failed = false;
+    _bundleFuture = ProtectedCharacterAssets.bundleFor(
+      widget.appearance.assetName,
+    );
+    _controller = SpineWidgetController(
+      targetFramesPerSecond: 30,
+      onInitialized: (controller) {
+        final idle = widget.appearance.idleAnimations.firstOrNull;
+        if (idle != null &&
+            controller.skeletonData.findAnimation(idle) != null) {
+          controller.animationState.setAnimationByName(0, idle, true);
+        }
+      },
+      onAfterUpdateWorldTransforms: (controller) {
+        controller.pause();
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted && identical(controller, _controller)) {
+            setState(() => _ready = true);
+          }
+        });
+      },
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_failed) return widget.fallback;
+    return FutureBuilder<ProtectedCharacterAssetBundle>(
+      future: _bundleFuture,
+      builder: (context, snapshot) {
+        final bundle = snapshot.connectionState == ConnectionState.done
+            ? snapshot.data
+            : null;
+        if (snapshot.hasError) return widget.fallback;
+        if (bundle == null) return widget.fallback;
+        return Stack(
+          fit: StackFit.expand,
+          children: [
+            if (!_ready) widget.fallback,
+            CharacterSpineView(
+              key: ObjectKey(_controller),
+              atlas: widget.appearance.atlasAsset,
+              skeleton: widget.appearance.skeletonAsset,
+              bundle: bundle,
+              controller: _controller,
+              onLoadFailed: () {
+                if (mounted) setState(() => _failed = true);
+              },
+            ),
+          ],
         );
       },
     );

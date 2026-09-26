@@ -42,6 +42,13 @@ class CharacterPerformanceProfile {
   final Map<String, dynamic> ambientGaze;
   final Map<String, List<Map<String, dynamic>>> attitudeDrivers;
 
+  Iterable<Map<String, dynamic>> oneShotAttitudes(String attitude) =>
+      (attitudeDrivers[attitude] ?? const []).where(
+        (driver) =>
+            driver['oneShotAnimation'] is String &&
+            (driver['oneShotAnimation'] as String).isNotEmpty,
+      );
+
   RigMotion constrainAmbient(RigMotion motion) {
     double limit(String key, double fallback) {
       final value = ambientGaze[key];
@@ -203,6 +210,15 @@ Map<String, dynamic> _schemaFourDriver(
     'holdMax': dwell * 1.2,
     'route': pattern['route'],
     'points': pattern['points'],
+    'schemaFour': true,
+    'directions': directions,
+    'tilts': pattern['tilts'],
+    'eyeMovement': pattern['eyeMovement'],
+    'faceMovement': pattern['faceMovement'],
+    'bodyTilt': pattern['bodyTilt'],
+    'oneShotAnimation': attitude['oneShotAnimation'],
+    'repeatMin': attitude['repeatMin'],
+    'repeatMax': attitude['repeatMax'],
     'followers': [
       if (headFollow != 0)
         {
@@ -239,7 +255,19 @@ class CharacterPerformanceDirector {
   String? _driverAttitude;
   int _repeatsLeft = 0;
   int _routeStepsLeft = 0;
+  int _routeStep = 0;
+  int _schemaRepeatsLeft = 0;
   bool _routeReverse = false;
+  RigMotion _routeAnchor = const RigMotion();
+  Map<String, dynamic>? _cuedDriver;
+  bool _activeAttitudeCue = false;
+  bool get hasActiveAttitudeCue => _cuedDriver != null || _activeAttitudeCue;
+
+  void cueAttitude(Map<String, dynamic> driver) {
+    _cuedDriver = driver;
+    _driver = null;
+  }
+
   bool _usingBindings = false;
   String get tensionBand => _band;
   Map<String, RigMotion> _from = {};
@@ -285,6 +313,70 @@ class CharacterPerformanceDirector {
     return min(a, b) + _random.nextDouble() * (a - b).abs();
   }
 
+  RigMotion _schemaAnchor(Map<String, dynamic> driver) {
+    final directions = (driver['directions'] as List? ?? const [])
+        .whereType<String>()
+        .toList();
+    final direction = directions.isEmpty
+        ? '正面'
+        : directions[_random.nextInt(directions.length)];
+    final yawWidth = _number(
+      profile.ambientGaze,
+      'widthRatioYaw',
+      0.55,
+    ).clamp(0.0, 1.0);
+    final pitchWidth = _number(
+      profile.ambientGaze,
+      'widthRatioPitch',
+      0.85,
+    ).clamp(0.0, 1.0);
+    final yaw = direction.contains('横') || direction.contains('斜め')
+        ? _number(driver, 'yawMax', 0) *
+              (1 - yawWidth + _random.nextDouble() * yawWidth) *
+              (_random.nextBool() ? 1 : -1)
+        : 0.0;
+    final pitch = direction.contains('上')
+        ? _number(driver, 'pitchMax', 0) *
+              (1 - pitchWidth + _random.nextDouble() * pitchWidth)
+        : direction.contains('下')
+        ? _number(driver, 'pitchMin', 0) *
+              (1 - pitchWidth + _random.nextDouble() * pitchWidth)
+        : 0.0;
+    final tilts = (driver['tilts'] as List? ?? const [])
+        .whereType<String>()
+        .toList();
+    final tilt = tilts.isEmpty ? 'なし' : tilts[_random.nextInt(tilts.length)];
+    final roll = tilt == '右'
+        ? _number(driver, 'rollMax', 0)
+        : tilt == '左'
+        ? _number(driver, 'rollMin', 0)
+        : 0.0;
+    return profile.constrainAmbient(RigMotion(yaw, pitch, roll));
+  }
+
+  RigMotion _schemaRouteTarget(Map<String, dynamic> driver) {
+    final route = driver['route'];
+    if (route == '外して戻る' && _routeStep > 0) return const RigMotion();
+    if (route == '往復' && _routeStep.isOdd) {
+      return RigMotion(
+        -_routeAnchor.yaw,
+        _routeAnchor.pitch,
+        -_routeAnchor.roll,
+      );
+    }
+    if (route == '見回す') {
+      final count = _number(driver, 'points', 1).round().clamp(2, 9);
+      final sweep = -1 + 2 * _routeStep / (count - 1);
+      return RigMotion(
+        _number(driver, 'yawMax', 0) * sweep,
+        _routeAnchor.pitch,
+        _routeAnchor.roll * sweep,
+      );
+    }
+    if (route == '散らす') return _schemaAnchor(driver);
+    return _routeAnchor;
+  }
+
   Map<String, RigMotion> sample({
     required double delta,
     required String emotion,
@@ -319,10 +411,30 @@ class CharacterPerformanceDirector {
       final authored = profile.attitudeDrivers[attitude] ?? const [];
       final continueRoute = samePattern && _routeStepsLeft > 0;
       _usingBindings = bindings is List || authored.isNotEmpty;
-      if (continueRoute) {
+      if (_cuedDriver case final cue?) {
+        _driver = cue;
+        _cuedDriver = null;
+        _activeAttitudeCue = true;
+        _schemaRepeatsLeft = 0;
+        _routeStep = 0;
+        _routeStepsLeft = (_number(cue, 'points', 1).round() - 1).clamp(0, 8);
+        _routeAnchor = _schemaAnchor(cue);
+      } else if (continueRoute) {
         _routeStepsLeft--;
+        _routeStep++;
         _routeReverse = !_routeReverse;
+      } else if (samePattern &&
+          _driver?['schemaFour'] == true &&
+          _schemaRepeatsLeft > 0) {
+        _schemaRepeatsLeft--;
+        _routeStep = 0;
+        _routeStepsLeft = (_number(_driver!, 'points', 1).round() - 1).clamp(
+          0,
+          8,
+        );
+        _routeAnchor = _schemaAnchor(_driver!);
       } else if (authored.isNotEmpty) {
+        _activeAttitudeCue = false;
         var ticket =
             _random.nextDouble() *
             authored.fold<double>(
@@ -341,8 +453,23 @@ class CharacterPerformanceDirector {
           0,
           8,
         );
+        _routeStep = 0;
+        _routeAnchor = _schemaAnchor(_driver!);
+        final repeatMin = _number(
+          _driver!,
+          'repeatMin',
+          1,
+        ).round().clamp(1, 12);
+        final repeatMax = _number(
+          _driver!,
+          'repeatMax',
+          repeatMin.toDouble(),
+        ).round().clamp(repeatMin, 12);
+        _schemaRepeatsLeft =
+            repeatMin + _random.nextInt(repeatMax - repeatMin + 1) - 1;
         _routeReverse = false;
       } else if (bindings is List) {
+        _activeAttitudeCue = false;
         _routeStepsLeft = 0;
         if (samePattern && _repeatsLeft > 0) {
           _repeatsLeft--;
@@ -378,6 +505,7 @@ class CharacterPerformanceDirector {
           _repeatsLeft = lo + _random.nextInt(hi - lo + 1) - 1;
         }
       } else {
+        _activeAttitudeCue = false;
         _routeStepsLeft = 0;
         var candidates = profile.drivers
             .where((d) => (d['id'] as String).startsWith('${emotion}_n_'))
@@ -396,27 +524,56 @@ class CharacterPerformanceDirector {
       // A new lead part starts at its own current pose. Reusing one shared
       // head target here used to transfer it abruptly to the body or eyes.
       _from = Map.of(_parts);
-      final motion = profile.constrainAmbient(
-        RigMotion(
-          _range(_driver!, 'yaw', 0, -1, 1) * (_routeReverse ? -1 : 1),
-          _range(_driver!, 'pitch', 0, -1, 1),
-          _range(_driver!, 'roll', 0, -1, 1),
-        ),
-      );
-      _target = {(_driver!['driver'] as String? ?? 'head'): motion};
+      final schemaFour = _driver!['schemaFour'] == true;
+      final motion = schemaFour
+          ? _schemaRouteTarget(_driver!)
+          : profile.constrainAmbient(
+              RigMotion(
+                _range(_driver!, 'yaw', 0, -1, 1) * (_routeReverse ? -1 : 1),
+                _range(_driver!, 'pitch', 0, -1, 1),
+                _range(_driver!, 'roll', 0, -1, 1),
+              ),
+            );
+      _target = schemaFour
+          ? {
+              'eye': _driver!['eyeMovement'] == 'ユーザー注視'
+                  ? const RigMotion()
+                  : motion,
+            }
+          : {(_driver!['driver'] as String? ?? 'head'): motion};
       _followerDelays.clear();
       for (final follower in _driver!['followers'] as List? ?? const []) {
         if (follower is! Map || follower['part'] is! String) continue;
         final part = follower['part'] as String;
         if (_target.containsKey(part)) continue;
-        _target[part] = motion.scaled(
-          _number(follower, 'scale', 0).clamp(-1.0, 1.0),
-        );
+        final scale = _number(follower, 'scale', 0).clamp(-1.0, 1.0);
+        _target[part] =
+            schemaFour && part == 'head' && _driver!['faceMovement'] == '指定方向'
+            ? motion
+            : motion.scaled(scale);
         _followerDelays[part] = _number(
           follower,
           'delay',
           0.3,
         ).clamp(0.06, 1.0);
+      }
+      if (schemaFour && _driver!['faceMovement'] == '指定方向') {
+        _target['head'] = motion;
+        _followerDelays['head'] = _number(
+          profile.ambientGaze,
+          'headFollowDelay',
+          0.1,
+        );
+      }
+      if (schemaFour && _driver!['bodyTilt'] != '傾けない') {
+        final body = _target['body'] ?? const RigMotion();
+        final sign = _driver!['bodyTilt'] == '逆方向' ? -1.0 : 1.0;
+        _target['body'] = RigMotion(body.yaw, body.pitch, motion.roll * sign);
+        _followerDelays['body'] ??= _number(
+          profile.ambientGaze,
+          'bodyFollowDelay',
+          0.6,
+        );
       }
       final gaze = bandProfile['gaze'] as Map? ?? {};
       final modifiers = gaze['motionModifiers'] as Map? ?? {};

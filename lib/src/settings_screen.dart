@@ -9,6 +9,7 @@ import 'ai_services.dart';
 import 'app_controller.dart';
 import 'app_localization.dart';
 import 'app_theme.dart';
+import 'auxiliary_llm_tasks.dart';
 import 'character_prompt_editor.dart';
 import 'chat_segments.dart';
 import 'frame_rate_controller.dart';
@@ -975,17 +976,11 @@ class SettingsScreenState extends State<SettingsScreen> {
                     language.text('长期记忆', 'Long-term memory', '長期記憶'),
                   ),
                   subtitle: Text(
-                    controller.memorySummary.isEmpty
-                        ? language.text(
-                            '暂无记忆 · 每 4 轮对话自动整理',
-                            'No memory yet · summarized every 4 turns',
-                            '記憶なし · 4ターンごとに要約',
-                          )
-                        : language.text(
-                            '查看和编辑已记录的记忆',
-                            'View and edit saved memories',
-                            '保存した記憶を確認・編集',
-                          ),
+                    language.text(
+                      '每 4 轮生成最近记忆，累计 8 条整理长期记忆',
+                      'Recent memory every 4 turns; long-term memory after 8 entries',
+                      '4ターンごとに最近の記憶を生成し、8件で長期記憶に整理',
+                    ),
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
                   ),
@@ -1224,8 +1219,10 @@ class SettingsScreenState extends State<SettingsScreen> {
     final result = await _openDetailPage<_LongTermMemoryDraft>(
       context: context,
       builder: (context) => _LongTermMemoryDialog(
+        controller: controller,
         enabled: controller.longTermMemoryEnabled,
         summary: controller.memorySummary,
+        recentMemories: controller.recentMemories,
         language: controller.interfaceLanguage,
       ),
     );
@@ -3182,22 +3179,29 @@ class _LongTermMemoryDraft {
 
 class _LongTermMemoryDialog extends StatefulWidget {
   const _LongTermMemoryDialog({
+    required this.controller,
     required this.enabled,
     required this.summary,
+    required this.recentMemories,
     required this.language,
   });
 
+  final AppController controller;
   final bool enabled;
   final String summary;
+  final List<String> recentMemories;
   final AppLanguage language;
 
   @override
   State<_LongTermMemoryDialog> createState() => _LongTermMemoryDialogState();
 }
 
+enum _MemoryView { longTerm, recent }
+
 class _LongTermMemoryDialogState extends State<_LongTermMemoryDialog> {
   late final TextEditingController _summary;
   late bool _enabled;
+  _MemoryView _view = _MemoryView.longTerm;
   Map<String, dynamic>? _document;
   List<dynamic>? _entries;
   bool _editRaw = false;
@@ -3235,11 +3239,37 @@ class _LongTermMemoryDialogState extends State<_LongTermMemoryDialog> {
     super.dispose();
   }
 
+  Future<void> _editPrompt() async {
+    final prompt = await pushSettingsPage<String>(
+      context: context,
+      controller: widget.controller,
+      builder: (_) => _MemoryPromptEditor(
+        initialPrompt: widget.controller.memoryConsolidationPrompt,
+        language: widget.language,
+      ),
+    );
+    if (prompt != null) widget.controller.setMemoryConsolidationPrompt(prompt);
+  }
+
   @override
   Widget build(BuildContext context) {
     final language = widget.language;
     return SettingsDetailPage(
-      title: Text(language.text('长期记忆', 'Long-term memory', '長期記憶')),
+      title: Row(
+        children: [
+          Expanded(child: Text(language.text('记忆', 'Memory', '記憶'))),
+          IconButton(
+            key: const ValueKey('memory-prompt-editor-open'),
+            tooltip: language.text(
+              '修改长期记忆整理提示词',
+              'Edit long-term memory prompt',
+              '長期記憶の整理プロンプトを編集',
+            ),
+            icon: const Icon(Icons.edit_note_rounded),
+            onPressed: _editPrompt,
+          ),
+        ],
+      ),
       content: SizedBox(
         width: 440,
         child: Column(
@@ -3255,145 +3285,208 @@ class _LongTermMemoryDialogState extends State<_LongTermMemoryDialog> {
               ),
             ),
             const SizedBox(height: 8),
-            if (_entries != null && !_editRaw) ...[
-              if (_entries!.isEmpty)
-                Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: Text(
-                    language.text(
+            SegmentedButton<_MemoryView>(
+              segments: [
+                ButtonSegment(
+                  value: _MemoryView.longTerm,
+                  label: Text(language.text('长期记忆', 'Long-term', '長期記憶')),
+                ),
+                ButtonSegment(
+                  value: _MemoryView.recent,
+                  label: Text(language.text('最近记忆', 'Recent', '最近の記憶')),
+                ),
+              ],
+              selected: {_view},
+              onSelectionChanged: (selection) =>
+                  setState(() => _view = selection.first),
+            ),
+            const SizedBox(height: 12),
+            if (_view == _MemoryView.longTerm) ...[
+              if (_entries != null && !_editRaw) ...[
+                if (_entries!.isEmpty)
+                  Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Text(
+                      language.text(
+                        '尚未生成长期记忆',
+                        'No long-term memory yet',
+                        '長期記憶はまだありません',
+                      ),
+                    ),
+                  ),
+                for (var index = 0; index < _entries!.length; index++)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 12),
+                    child: Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.all(14),
+                      decoration: BoxDecoration(
+                        color: Theme.of(context).colorScheme.surface
+                            .withValues(alpha: .35),
+                        borderRadius: BorderRadius.circular(16),
+                        border: Border.all(
+                          color: Theme.of(context).colorScheme.outline
+                              .withValues(alpha: .2),
+                        ),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              Expanded(
+                                child: Text(
+                                  '${_entries![index]['id'] ?? 'AM${(index + 1).toString().padLeft(4, '0')}'}  ·  ${_entries![index]['date'] ?? language.text('时间未记录', 'Date not recorded', '日時未記録')}',
+                                  style: Theme.of(context).textTheme.labelMedium
+                                      ?.copyWith(
+                                        color: Theme.of(context)
+                                            .colorScheme
+                                            .onSurfaceVariant,
+                                      ),
+                                ),
+                              ),
+                              IconButton(
+                                tooltip: language.text(
+                                  '删除这条记忆',
+                                  'Delete memory',
+                                  'この記憶を削除',
+                                ),
+                                icon: const Icon(Icons.delete_outline),
+                                onPressed: () => setState(() {
+                                  _entries!.removeAt(index);
+                                  _summary.text =
+                                      MemoryTimeline.normalizeExisting(
+                                        jsonEncode(_document),
+                                      );
+                                  _parseMemory();
+                                }),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 8),
+                          TextFormField(
+                            key: ObjectKey(_entries![index]),
+                            initialValue: _entries![index]['summary'] as String,
+                            minLines: 1,
+                            maxLines: null,
+                            decoration: InputDecoration(
+                              isDense: true,
+                              border: InputBorder.none,
+                              hintText: language.text(
+                                '记忆总结',
+                                'Memory summary',
+                                '記憶の要約',
+                              ),
+                            ),
+                            onChanged: (value) {
+                              _entries![index]['summary'] = value;
+                              _summary.text = jsonEncode(_document);
+                            },
+                          ),
+                          if (_entries![index]['state_change'] is Map) ...[
+                            const SizedBox(height: 6),
+                            Text(
+                              '${(_entries![index]['state_change'] as Map)['from'] ?? ''} → '
+                              '${(_entries![index]['state_change'] as Map)['to'] ?? ''}'
+                              '${_entries![index]['status'] == 'superseded' ? ' · ${language.text('历史状态', 'Historical state', '過去の状態')}' : ''}',
+                              style: Theme.of(context).textTheme.bodySmall,
+                            ),
+                          ],
+                          if (_entries![index]['key_quotes'] is List)
+                            for (final quote
+                                in _entries![index]['key_quotes'] as List)
+                              Padding(
+                                padding: const EdgeInsets.only(top: 4),
+                                child: Text(
+                                  '“$quote”',
+                                  style: Theme.of(context).textTheme.bodySmall,
+                                ),
+                              ),
+                        ],
+                      ),
+                    ),
+                  ),
+              ] else
+                TextField(
+                  controller: _summary,
+                  minLines: 7,
+                  maxLines: 12,
+                  decoration: InputDecoration(
+                    labelText: language.text(
+                      '当前长期记忆',
+                      'Current memory',
+                      '現在の長期記憶',
+                    ),
+                    hintText: language.text(
                       '尚未生成长期记忆',
                       'No long-term memory yet',
                       '長期記憶はまだありません',
                     ),
+                    alignLabelWithHint: true,
+                    border: const OutlineInputBorder(),
                   ),
                 ),
-              for (var index = 0; index < _entries!.length; index++)
+              Align(
+                alignment: Alignment.centerRight,
+                child: TextButton.icon(
+                  icon: Icon(
+                    _editRaw ? Icons.view_agenda_outlined : Icons.code,
+                  ),
+                  label: Text(
+                    _editRaw
+                        ? language.text('记忆卡片', 'Memory cards', '記憶カード')
+                        : language.text(
+                            '编辑原始内容',
+                            'Edit raw content',
+                            '元の内容を編集',
+                          ),
+                  ),
+                  onPressed: () => setState(() {
+                    _parseMemory();
+                    _editRaw = !_editRaw;
+                  }),
+                ),
+              ),
+            ] else ...[
+              Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  language.text(
+                    '最近记忆 ${widget.recentMemories.length} 条 · 待整理 ${widget.controller.pendingRecentMemoryCount} / 8',
+                    '${widget.recentMemories.length} recent · ${widget.controller.pendingRecentMemoryCount} / 8 pending',
+                    '最近の記憶 ${widget.recentMemories.length} 件 · 未整理 ${widget.controller.pendingRecentMemoryCount} / 8',
+                  ),
+                  style: Theme.of(context).textTheme.titleSmall,
+                ),
+              ),
+              const SizedBox(height: 8),
+              if (widget.recentMemories.isEmpty)
                 Padding(
-                  padding: const EdgeInsets.only(bottom: 12),
-                  child: Container(
-                    width: double.infinity,
-                    padding: const EdgeInsets.all(14),
-                    decoration: BoxDecoration(
-                      color: Theme.of(context).colorScheme.surface
-                          .withValues(alpha: .35),
-                      borderRadius: BorderRadius.circular(16),
-                      border: Border.all(
-                        color: Theme.of(context).colorScheme.outline
-                            .withValues(alpha: .2),
+                  padding: const EdgeInsets.all(16),
+                  child: Text(
+                    language.text(
+                      '尚未生成最近记忆',
+                      'No recent memories yet',
+                      '最近の記憶はまだありません',
+                    ),
+                  ),
+                )
+              else
+                for (
+                  var index = 0;
+                  index < widget.recentMemories.length;
+                  index++
+                )
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: SettingsOptionCard(
+                      child: ListTile(
+                        leading: Text('${index + 1}'),
+                        title: Text(widget.recentMemories[index]),
                       ),
                     ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(
-                          children: [
-                            Expanded(
-                              child: Text(
-                                '${_entries![index]['id'] ?? 'AM${(index + 1).toString().padLeft(4, '0')}'}  ·  ${_entries![index]['date'] ?? language.text('时间未记录', 'Date not recorded', '日時未記録')}',
-                                style: Theme.of(context).textTheme.labelMedium
-                                    ?.copyWith(
-                                      color: Theme.of(context)
-                                          .colorScheme
-                                          .onSurfaceVariant,
-                                    ),
-                              ),
-                            ),
-                            IconButton(
-                              tooltip: language.text(
-                                '删除这条记忆',
-                                'Delete memory',
-                                'この記憶を削除',
-                              ),
-                              icon: const Icon(Icons.delete_outline),
-                              onPressed: () => setState(() {
-                                _entries!.removeAt(index);
-                                _summary.text =
-                                    MemoryTimeline.normalizeExisting(
-                                      jsonEncode(_document),
-                                    );
-                                _parseMemory();
-                              }),
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 8),
-                        TextFormField(
-                          key: ObjectKey(_entries![index]),
-                          initialValue: _entries![index]['summary'] as String,
-                          minLines: 1,
-                          maxLines: null,
-                          decoration: InputDecoration(
-                            isDense: true,
-                            border: InputBorder.none,
-                            hintText: language.text(
-                              '记忆总结',
-                              'Memory summary',
-                              '記憶の要約',
-                            ),
-                          ),
-                          onChanged: (value) {
-                            _entries![index]['summary'] = value;
-                            _summary.text = jsonEncode(_document);
-                          },
-                        ),
-                        if (_entries![index]['state_change'] is Map) ...[
-                          const SizedBox(height: 6),
-                          Text(
-                            '${(_entries![index]['state_change'] as Map)['from'] ?? ''} → '
-                            '${(_entries![index]['state_change'] as Map)['to'] ?? ''}'
-                            '${_entries![index]['status'] == 'superseded' ? ' · ${language.text('历史状态', 'Historical state', '過去の状態')}' : ''}',
-                            style: Theme.of(context).textTheme.bodySmall,
-                          ),
-                        ],
-                        if (_entries![index]['key_quotes'] is List)
-                          for (final quote
-                              in _entries![index]['key_quotes'] as List)
-                            Padding(
-                              padding: const EdgeInsets.only(top: 4),
-                              child: Text(
-                                '“$quote”',
-                                style: Theme.of(context).textTheme.bodySmall,
-                              ),
-                            ),
-                      ],
-                    ),
                   ),
-                ),
-            ] else
-              TextField(
-                controller: _summary,
-                minLines: 7,
-                maxLines: 12,
-                decoration: InputDecoration(
-                  labelText: language.text(
-                    '当前长期记忆',
-                    'Current memory',
-                    '現在の長期記憶',
-                  ),
-                  hintText: language.text(
-                    '尚未生成长期记忆',
-                    'No long-term memory yet',
-                    '長期記憶はまだありません',
-                  ),
-                  alignLabelWithHint: true,
-                  border: const OutlineInputBorder(),
-                ),
-              ),
-            Align(
-              alignment: Alignment.centerRight,
-              child: TextButton.icon(
-                icon: Icon(_editRaw ? Icons.view_agenda_outlined : Icons.code),
-                label: Text(
-                  _editRaw
-                      ? language.text('记忆卡片', 'Memory cards', '記憶カード')
-                      : language.text('编辑原始内容', 'Edit raw content', '元の内容を編集'),
-                ),
-                onPressed: () => setState(() {
-                  _parseMemory();
-                  _editRaw = !_editRaw;
-                }),
-              ),
-            ),
+            ],
           ],
         ),
       ),
@@ -3407,6 +3500,92 @@ class _LongTermMemoryDialogState extends State<_LongTermMemoryDialog> {
             context,
             _LongTermMemoryDraft(enabled: _enabled, summary: _summary.text),
           ),
+          child: Text(language.text('保存', 'Save', '保存')),
+        ),
+      ],
+    );
+  }
+}
+
+class _MemoryPromptEditor extends StatefulWidget {
+  const _MemoryPromptEditor({
+    required this.initialPrompt,
+    required this.language,
+  });
+
+  final String initialPrompt;
+  final AppLanguage language;
+
+  @override
+  State<_MemoryPromptEditor> createState() => _MemoryPromptEditorState();
+}
+
+class _MemoryPromptEditorState extends State<_MemoryPromptEditor> {
+  late final TextEditingController _prompt;
+  late bool _usingDefault;
+
+  @override
+  void initState() {
+    super.initState();
+    _usingDefault = widget.initialPrompt.trim().isEmpty;
+    _prompt = TextEditingController(
+      text: _usingDefault
+          ? MemoryConsolidator.defaultPrompt
+          : widget.initialPrompt,
+    );
+  }
+
+  @override
+  void dispose() {
+    _prompt.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final language = widget.language;
+    return SettingsDetailPage(
+      title: Text(
+        language.text('长期记忆整理提示词', 'Long-term memory prompt', '長期記憶の整理プロンプト'),
+      ),
+      content: SizedBox(
+        width: 440,
+        child: TextField(
+          key: const ValueKey('memory-prompt-field'),
+          controller: _prompt,
+          minLines: 12,
+          maxLines: null,
+          autocorrect: false,
+          onChanged: (_) => _usingDefault = false,
+          decoration: InputDecoration(
+            border: const OutlineInputBorder(),
+            labelText: language.text(
+              '整理提示词',
+              'Consolidation prompt',
+              '整理プロンプト',
+            ),
+            alignLabelWithHint: true,
+          ),
+        ),
+      ),
+      actions: [
+        TextButton.icon(
+          key: const ValueKey('memory-prompt-reset'),
+          onPressed: () => setState(() {
+            _usingDefault = true;
+            _prompt.text = MemoryConsolidator.defaultPrompt;
+          }),
+          icon: const Icon(Icons.restart_alt_rounded),
+          label: Text(language.text('恢复默认', 'Restore default', '初期設定に戻す')),
+        ),
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: Text(language.text('取消', 'Cancel', 'キャンセル')),
+        ),
+        FilledButton(
+          key: const ValueKey('memory-prompt-save'),
+          onPressed: () =>
+              Navigator.pop(context, _usingDefault ? '' : _prompt.text.trim()),
           child: Text(language.text('保存', 'Save', '保存')),
         ),
       ],

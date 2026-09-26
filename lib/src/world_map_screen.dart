@@ -339,13 +339,90 @@ class WorldMapScreen extends StatefulWidget {
   final VoidCallback onMenuPressed;
   final VoidCallback onClose;
 
+  static Future<WorldMapData>? _sharedDataFuture;
+  static final Map<String, Future<WorldMapData>> _readyFutures = {};
+  static final Map<String, WorldMapData> _readyData = {};
+
+  static Future<void> preload(
+    BuildContext context,
+    AppController controller,
+  ) async {
+    await _retryArea(context, controller.selectedAreaId);
+  }
+
+  static Future<WorldMapData> _dataFuture() {
+    final cached = _sharedDataFuture;
+    if (cached != null) return cached;
+    final future = _loadData();
+    _sharedDataFuture = future;
+    future.then(
+      (_) {},
+      onError: (Object _, StackTrace _) {
+        if (identical(_sharedDataFuture, future)) _sharedDataFuture = null;
+      },
+    );
+    return future;
+  }
+
+  static Future<WorldMapData> _readyForArea(
+    BuildContext context,
+    String areaId,
+  ) => _readyFutures.putIfAbsent(areaId, () async {
+    final data = await _dataFuture();
+    if (!context.mounted) throw StateError('World map preload context disposed');
+    if (data.areas.isEmpty) throw const FormatException('Empty world map');
+    final area = data.areas.firstWhere(
+      (candidate) => candidate.id == areaId,
+      orElse: () => data.areas.first,
+    );
+    Object? imageError;
+    StackTrace? imageStack;
+    await precacheImage(
+      AssetImage('assets/world_map/areas/${area.id}.jpg'),
+      context,
+      onError: (error, stack) {
+        imageError = error;
+        imageStack = stack;
+      },
+    );
+    if (imageError != null) {
+      Error.throwWithStackTrace(imageError!, imageStack ?? StackTrace.current);
+    }
+    _readyData[areaId] = data;
+    return data;
+  });
+
+  static Future<WorldMapData> _retryArea(BuildContext context, String areaId) {
+    _readyFutures.remove(areaId);
+    _readyData.remove(areaId);
+    return _readyForArea(context, areaId);
+  }
+
+  static Future<WorldMapData> _loadData() async {
+    final files = await Future.wait([
+      rootBundle.loadString('assets/world_map/world_hierarchy.json'),
+      rootBundle.loadString('assets/world_map/npc_placement.json'),
+    ]);
+    final worldJson = jsonDecode(files[0]) as Map<String, dynamic>;
+    final npcJson = jsonDecode(files[1]) as Map<String, dynamic>;
+    final data = WorldMapData(
+      areas: (worldJson['areas'] as List<dynamic>)
+          .map((value) => WorldArea.fromJson(value as Map<String, dynamic>))
+          .toList(),
+      npcs: (npcJson['npcs'] as List<dynamic>)
+          .map((value) => MapNpc.fromJson(value as Map<String, dynamic>))
+          .toList(),
+    );
+    return data;
+  }
+
   @override
   State<WorldMapScreen> createState() => WorldMapScreenState();
 }
 
 class WorldMapScreenState extends State<WorldMapScreen>
     with SingleTickerProviderStateMixin {
-  late final Future<WorldMapData> _data = _loadData();
+  Future<WorldMapData>? _data;
   late final TransformationController _mapTransform;
   late final AnimationController _cameraController;
   Animation<Matrix4>? _cameraAnimation;
@@ -394,29 +471,30 @@ class WorldMapScreenState extends State<WorldMapScreen>
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _data ??= WorldMapScreen._readyForArea(
+      context,
+      widget.controller.selectedAreaId,
+    );
+    _loadedData ??= WorldMapScreen._readyData[widget.controller.selectedAreaId];
+  }
+
+  @override
   void dispose() {
     _cameraController.dispose();
     _mapTransform.dispose();
     super.dispose();
   }
 
-  Future<WorldMapData> _loadData() async {
-    final files = await Future.wait([
-      rootBundle.loadString('assets/world_map/world_hierarchy.json'),
-      rootBundle.loadString('assets/world_map/npc_placement.json'),
-    ]);
-    final worldJson = jsonDecode(files[0]) as Map<String, dynamic>;
-    final npcJson = jsonDecode(files[1]) as Map<String, dynamic>;
-    final data = WorldMapData(
-      areas: (worldJson['areas'] as List<dynamic>)
-          .map((value) => WorldArea.fromJson(value as Map<String, dynamic>))
-          .toList(),
-      npcs: (npcJson['npcs'] as List<dynamic>)
-          .map((value) => MapNpc.fromJson(value as Map<String, dynamic>))
-          .toList(),
-    );
-    _loadedData = data;
-    return data;
+  void _retryLoad() {
+    setState(() {
+      _loadedData = null;
+      _data = WorldMapScreen._retryArea(
+        context,
+        widget.controller.selectedAreaId,
+      );
+    });
   }
 
   double _coverScale(Size viewport) => max(
@@ -686,11 +764,20 @@ class WorldMapScreenState extends State<WorldMapScreen>
       backgroundColor: const Color(0xFF171514),
       body: FutureBuilder<WorldMapData>(
         future: _data,
+        initialData:
+            WorldMapScreen._readyData[widget.controller.selectedAreaId],
         builder: (context, snapshot) {
+          if (snapshot.connectionState == ConnectionState.waiting &&
+              !snapshot.hasData) {
+            return const Center(
+              child: RyzaLoadingIndicator(semanticsLabel: '正在加载世界地图'),
+            );
+          }
           if (snapshot.hasError) {
             return _MapLoadError(
               language: widget.controller.interfaceLanguage,
               onClose: widget.onClose,
+              onRetry: _retryLoad,
             );
           }
           if (!snapshot.hasData) {
@@ -698,6 +785,7 @@ class WorldMapScreenState extends State<WorldMapScreen>
               child: RyzaLoadingIndicator(semanticsLabel: '正在加载世界地图'),
             );
           }
+          _loadedData = snapshot.data;
           return _buildMap(snapshot.data!);
         },
       ),
@@ -1595,10 +1683,15 @@ class _MapEdgeShade extends StatelessWidget {
 }
 
 class _MapLoadError extends StatelessWidget {
-  const _MapLoadError({required this.language, required this.onClose});
+  const _MapLoadError({
+    required this.language,
+    required this.onClose,
+    required this.onRetry,
+  });
 
   final AppLanguage language;
   final VoidCallback onClose;
+  final VoidCallback onRetry;
 
   @override
   Widget build(BuildContext context) {
@@ -1617,7 +1710,20 @@ class _MapLoadError extends StatelessWidget {
             style: const TextStyle(color: Colors.white),
           ),
           const SizedBox(height: 16),
-          FilledButton(onPressed: onClose, child: const Text('返回')),
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextButton(
+                onPressed: onClose,
+                child: Text(language.text('返回', 'Back', '戻る')),
+              ),
+              const SizedBox(width: 12),
+              FilledButton(
+                onPressed: onRetry,
+                child: Text(language.text('重试', 'Retry', '再試行')),
+              ),
+            ],
+          ),
         ],
       ),
     );

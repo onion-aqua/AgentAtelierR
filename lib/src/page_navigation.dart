@@ -7,6 +7,7 @@ class PageNavigation<T> {
   final List<T> _pages;
   T get current => _pages.last;
   bool get canGoBack => _pages.length > 1;
+  T? get previous => canGoBack ? _pages[_pages.length - 2] : null;
 
   void select(T page) {
     if (page == home) {

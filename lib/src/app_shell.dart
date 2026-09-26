@@ -14,8 +14,11 @@ import 'folding_button_group.dart';
 import 'glass_ui.dart';
 import 'mission_screen.dart';
 import 'page_navigation.dart';
+import 'page_transition_surface.dart';
+import 'runtime_log.dart';
 import 'ryza_loading_indicator.dart';
 import 'settings_screen.dart';
+import 'shop_catalog.dart';
 import 'shop_screen.dart';
 import 'soundscape_controller.dart';
 import 'world_map_screen.dart';
@@ -72,20 +75,28 @@ class AppShell extends StatefulWidget {
 }
 
 class _AppShellState extends State<AppShell>
-    with WidgetsBindingObserver, SingleTickerProviderStateMixin {
+    with WidgetsBindingObserver, TickerProviderStateMixin {
   final _scaffoldKey = GlobalKey<ScaffoldState>();
   final _soundscape = SoundscapeController();
   final _navigation = PageNavigation(AppDestination.chat);
   AppDestination get _destination => _navigation.current;
   final _settingsKey = GlobalKey<SettingsScreenState>();
   final _worldMapKey = GlobalKey<WorldMapScreenState>();
+  final _alchemyKey = GlobalKey();
+  final _missionsKey = GlobalKey();
+  final _alarmsKey = GlobalKey();
+  final _runtimeLogsKey = GlobalKey();
+  final _shopKey = GlobalKey();
   bool _menuOpen = false;
   bool _chatUiHidden = false;
   bool _chatFullscreen = false;
   bool _alwaysOnTop = false;
   bool _borderless = false;
   late final AnimationController _pageTransition;
+  late final AnimationController _pageReveal;
   bool _pageTransitionActive = false;
+  bool _revealingPage = false;
+  AppDestination? _outgoingDestination;
   final Set<int> _activePointers = <int>{};
 
   @override
@@ -93,8 +104,11 @@ class _AppShellState extends State<AppShell>
     super.initState();
     _pageTransition = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 260),
-      reverseDuration: const Duration(milliseconds: 260),
+      duration: const Duration(milliseconds: 220),
+    );
+    _pageReveal = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 280),
     );
     WidgetsBinding.instance.addObserver(this);
   }
@@ -124,6 +138,7 @@ class _AppShellState extends State<AppShell>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _pageTransition.dispose();
+    _pageReveal.dispose();
     widget.controller.frameRate.setActivity(FrameRateActivity.touch, false);
     unawaited(_soundscape.dispose());
     super.dispose();
@@ -149,7 +164,7 @@ class _AppShellState extends State<AppShell>
       return;
     }
     unawaited(
-      _transitionTo(() {
+      _transitionTo(value, () {
         if (value == AppDestination.worldMap) {
           widget.controller.recordMapVisit();
         }
@@ -158,19 +173,78 @@ class _AppShellState extends State<AppShell>
     );
   }
 
-  Future<void> _transitionTo(VoidCallback changePage) async {
+  Future<void> _prepareDestination(AppDestination destination) async {
+    if (destination == AppDestination.worldMap) {
+      await WorldMapScreen.preload(context, widget.controller);
+    } else if (destination == AppDestination.settings) {
+      await Future.wait([
+        for (final character in ['ryza', 'sophie'])
+          precacheImage(
+            AssetImage('assets/images/character_switch/$character.png'),
+            context,
+          ),
+      ]);
+    } else if (destination == AppDestination.shop ||
+        destination == AppDestination.alchemy) {
+      final items = destination == AppDestination.shop
+          ? ShopCatalog.items
+          : ShopCatalog.items
+                .where(
+                  (item) => (widget.controller.preciousItems[item.id] ?? 0) > 0,
+                )
+                .toList();
+      await Future.wait([
+        for (final item in items)
+          precacheImage(
+            ResizeImage(
+              AssetImage(item.imageAsset),
+              width: destination == AppDestination.shop ? 512 : 192,
+            ),
+            context,
+          ),
+      ]);
+    }
+  }
+
+  Future<void> _transitionTo(
+    AppDestination destination,
+    VoidCallback changePage,
+  ) async {
+    final reduceMotion = MediaQuery.disableAnimationsOf(context);
     setState(() {
       _pageTransitionActive = true;
       _menuOpen = false;
     });
     widget.controller.frameRate.boost(FrameRateActivity.interfaceAnimation);
-    await _pageTransition.forward();
-    if (!mounted) return;
-    setState(changePage);
-    await WidgetsBinding.instance.endOfFrame;
-    if (!mounted) return;
-    await _pageTransition.reverse();
-    if (mounted) setState(() => _pageTransitionActive = false);
+    try {
+      if (!reduceMotion) await _pageTransition.forward();
+      if (!mounted) return;
+      try {
+        await _prepareDestination(destination);
+      } on Object catch (error, stackTrace) {
+        RuntimeLog.instance.error('Navigation', error, stackTrace);
+      }
+      if (!mounted) return;
+      final previous = _destination;
+      setState(() {
+        _outgoingDestination = previous;
+        changePage();
+      });
+      await WidgetsBinding.instance.endOfFrame;
+      if (!mounted) return;
+      setState(() => _revealingPage = true);
+      if (!reduceMotion) await _pageReveal.forward();
+    } finally {
+      if (mounted) {
+        _pageTransition.reset();
+        _pageReveal.reset();
+        setState(() {
+          _outgoingDestination = null;
+          _revealingPage = false;
+          _pageTransitionActive = false;
+        });
+      }
+    }
   }
 
   void _handleBack() {
@@ -194,7 +268,7 @@ class _AppShellState extends State<AppShell>
       return;
     }
     if (_navigation.canGoBack) {
-      unawaited(_transitionTo(_navigation.goBack));
+      unawaited(_transitionTo(_navigation.previous!, _navigation.goBack));
     }
   }
 
@@ -211,6 +285,46 @@ class _AppShellState extends State<AppShell>
     widget.controller.frameRate.boost(FrameRateActivity.interfaceAnimation);
   }
 
+  Widget _buildDestinationPage(AppDestination destination) =>
+      switch (destination) {
+        AppDestination.chat => const SizedBox.shrink(),
+        AppDestination.worldMap => WorldMapScreen(
+          key: _worldMapKey,
+          controller: widget.controller,
+          onMenuPressed: _openMenu,
+          onClose: () => _selectDestination(AppDestination.chat),
+        ),
+        AppDestination.alarms => AlarmScreen(
+          key: _alarmsKey,
+          controller: widget.controller,
+          onMenuPressed: _openMenu,
+        ),
+        AppDestination.runtimeLogs => RuntimeLogScreen(
+          key: _runtimeLogsKey,
+          language: widget.controller.interfaceLanguage,
+          liquidGlass: widget.controller.liquidGlassChatUi,
+          onMenuPressed: _openMenu,
+        ),
+        AppDestination.settings => SettingsScreen(
+          key: _settingsKey,
+          backHandledByShell: true,
+          controller: widget.controller,
+          onMenuPressed: _openMenu,
+        ),
+        AppDestination.alchemy => AlchemyScreen(
+          key: _alchemyKey,
+          controller: widget.controller,
+        ),
+        AppDestination.missions => MissionScreen(
+          key: _missionsKey,
+          controller: widget.controller,
+        ),
+        AppDestination.shop => ShopScreen(
+          key: _shopKey,
+          controller: widget.controller,
+        ),
+      };
+
   @override
   Widget build(BuildContext context) {
     return AnimatedBuilder(
@@ -222,9 +336,11 @@ class _AppShellState extends State<AppShell>
             worldMapVisible: _destination == AppDestination.worldMap,
           );
         });
-        // Keep the chat element at the same tree location: replacing its
-        // parent on settings navigation disposes playback, replay files and drafts.
-        final overlayDestination = switch (_destination) {
+        final displayedDestination = _outgoingDestination ?? _destination;
+        final chatDestination = _revealingPage
+            ? _destination
+            : displayedDestination;
+        final overlayDestination = switch (chatDestination) {
           AppDestination.settings ||
           AppDestination.alchemy ||
           AppDestination.missions => true,
@@ -233,13 +349,13 @@ class _AppShellState extends State<AppShell>
         };
         final pauseCharacterAnimation =
             widget.controller.pauseCharacterAnimationOnFullscreenPages &&
-            (_destination != AppDestination.chat ||
+            (chatDestination != AppDestination.chat ||
                 _chatFullscreen ||
                 ModalRoute.isCurrentOf(context) == false);
         // Keep chat at a stable tree location so switching pages never
         // disposes its draft, replayable audio, or active performance state.
         final chat = ChatScreen(
-          pageActive: _destination == AppDestination.chat,
+          pageActive: chatDestination == AppDestination.chat,
           pauseCharacterAnimation: pauseCharacterAnimation,
           controller: widget.controller,
           onMenuPressed: _openMenu,
@@ -252,41 +368,27 @@ class _AppShellState extends State<AppShell>
             if (value) _menuOpen = false;
           }),
         );
-        final page = switch (_destination) {
-          AppDestination.chat => const SizedBox.shrink(),
-          AppDestination.worldMap => WorldMapScreen(
-            key: _worldMapKey,
-            controller: widget.controller,
-            onMenuPressed: _openMenu,
-            onClose: () => _selectDestination(AppDestination.chat),
-          ),
-          AppDestination.alarms => AlarmScreen(
-            controller: widget.controller,
-            onMenuPressed: _openMenu,
-          ),
-          AppDestination.runtimeLogs => RuntimeLogScreen(
-            language: widget.controller.interfaceLanguage,
-            liquidGlass: widget.controller.liquidGlassChatUi,
-            onMenuPressed: _openMenu,
-          ),
-          AppDestination.settings => SettingsScreen(
-            key: _settingsKey,
-            backHandledByShell: true,
-            controller: widget.controller,
-            onMenuPressed: _openMenu,
-          ),
-          AppDestination.alchemy => AlchemyScreen(
-            controller: widget.controller,
-          ),
-          AppDestination.missions => MissionScreen(
-            controller: widget.controller,
-          ),
-          AppDestination.shop => ShopScreen(controller: widget.controller),
-        };
+        final page = _buildDestinationPage(displayedDestination);
+        final incomingPage =
+            _outgoingDestination != null && _destination != AppDestination.chat
+            ? _buildDestinationPage(_destination)
+            : null;
         final content = Stack(
           children: [
             chat,
-            Positioned.fill(child: page),
+            if (displayedDestination != AppDestination.chat)
+              Positioned.fill(
+                child: _outgoingDestination != null
+                    ? AnimatedBuilder(
+                        animation: _pageReveal,
+                        child: page,
+                        builder: (context, child) => Opacity(
+                          opacity: 1 - _pageReveal.value,
+                          child: child,
+                        ),
+                      )
+                    : page,
+              ),
           ],
         );
         final safeTop = MediaQuery.paddingOf(context).top;
@@ -304,93 +406,102 @@ class _AppShellState extends State<AppShell>
             child: Scaffold(
               resizeToAvoidBottomInset: false,
               key: _scaffoldKey,
-              body: Stack(
-                fit: StackFit.expand,
-                children: [
-                  Column(
-                    children: [
-                      if (Platform.isWindows && _borderless)
-                        _buildWindowControls(),
-                      Expanded(
-                        child: Listener(
-                          behavior: HitTestBehavior.translucent,
-                          onPointerDown: _handlePointerDown,
-                          onPointerUp: _handlePointerEnd,
-                          onPointerCancel: _handlePointerEnd,
-                          child: Stack(
-                            children: [
-                              content,
-                              if (!_chatUiHidden &&
-                                  !(_chatFullscreen &&
-                                      _destination == AppDestination.chat))
-                                Positioned(
-                                  left: 16,
-                                  top: safeTop + 8,
-                                  child: GlassIconButton(
-                                    liquidGlass:
-                                        widget.controller.liquidGlassChatUi,
-                                    size: 48,
-                                    icon: _menuOpen
-                                        ? Icons.close_rounded
-                                        : Icons.menu_rounded,
-                                    tooltip: widget.controller.interfaceLanguage
-                                        .text(
-                                          _menuOpen ? '关闭菜单' : '打开菜单',
-                                          _menuOpen
-                                              ? 'Close menu'
-                                              : 'Open menu',
-                                          _menuOpen ? 'メニューを閉じる' : 'メニューを開く',
-                                        ),
-                                    onPressed: _openMenu,
-                                  ),
+              body: AnimatedBuilder(
+                animation: Listenable.merge([_pageTransition, _pageReveal]),
+                child: Column(
+                  children: [
+                    if (Platform.isWindows && _borderless)
+                      _buildWindowControls(),
+                    Expanded(
+                      child: Listener(
+                        behavior: HitTestBehavior.translucent,
+                        onPointerDown: _handlePointerDown,
+                        onPointerUp: _handlePointerEnd,
+                        onPointerCancel: _handlePointerEnd,
+                        child: Stack(
+                          children: [
+                            content,
+                            if (!_chatUiHidden &&
+                                !(_chatFullscreen &&
+                                    displayedDestination ==
+                                        AppDestination.chat))
+                              Positioned(
+                                left: 16,
+                                top: safeTop + 8,
+                                child: GlassIconButton(
+                                  liquidGlass:
+                                      widget.controller.liquidGlassChatUi,
+                                  size: 48,
+                                  icon: _menuOpen
+                                      ? Icons.close_rounded
+                                      : Icons.menu_rounded,
+                                  tooltip: widget.controller.interfaceLanguage
+                                      .text(
+                                        _menuOpen ? '关闭菜单' : '打开菜单',
+                                        _menuOpen ? 'Close menu' : 'Open menu',
+                                        _menuOpen ? 'メニューを閉じる' : 'メニューを開く',
+                                      ),
+                                  onPressed: _openMenu,
                                 ),
-                              if (_destination == AppDestination.chat &&
-                                  !_chatFullscreen)
-                                Positioned(
-                                  left: 72,
-                                  top: safeTop + 8,
-                                  child: GlassIconButton(
-                                    liquidGlass:
-                                        widget.controller.liquidGlassChatUi,
-                                    size: 48,
-                                    icon: _chatUiHidden
-                                        ? Icons.visibility_rounded
-                                        : Icons.visibility_off_rounded,
-                                    tooltip: widget.controller.interfaceLanguage
-                                        .text(
-                                          _chatUiHidden ? '恢复界面' : '隐藏界面',
-                                          _chatUiHidden
-                                              ? 'Restore interface'
-                                              : 'Hide interface',
-                                          _chatUiHidden ? 'UIを表示' : 'UIを隠す',
-                                        ),
-                                    onPressed: _toggleChatUiVisibility,
-                                  ),
-                                ),
-                              _buildFoldMenu(),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                  if (_pageTransitionActive)
-                    Positioned.fill(
-                      child: FadeTransition(
-                        opacity: _pageTransition,
-                        child: AbsorbPointer(
-                          child: ColoredBox(
-                            color: Colors.black,
-                            child: Center(
-                              child: RyzaLoadingPanel(
-                                language: widget.controller.interfaceLanguage,
                               ),
-                            ),
-                          ),
+                            if (displayedDestination == AppDestination.chat &&
+                                !_chatFullscreen)
+                              Positioned(
+                                left: 72,
+                                top: safeTop + 8,
+                                child: GlassIconButton(
+                                  liquidGlass:
+                                      widget.controller.liquidGlassChatUi,
+                                  size: 48,
+                                  icon: _chatUiHidden
+                                      ? Icons.visibility_rounded
+                                      : Icons.visibility_off_rounded,
+                                  tooltip: widget.controller.interfaceLanguage
+                                      .text(
+                                        _chatUiHidden ? '恢复界面' : '隐藏界面',
+                                        _chatUiHidden
+                                            ? 'Restore interface'
+                                            : 'Hide interface',
+                                        _chatUiHidden ? 'UIを表示' : 'UIを隠す',
+                                      ),
+                                  onPressed: _toggleChatUiVisibility,
+                                ),
+                              ),
+                            _buildFoldMenu(),
+                          ],
                         ),
                       ),
                     ),
-                ],
+                  ],
+                ),
+                builder: (context, outgoing) => AbsorbPointer(
+                  absorbing: _pageTransitionActive,
+                  child: PageTransitionSurface(
+                    outgoing: outgoing!,
+                    incoming: incomingPage == null
+                        ? null
+                        : Padding(
+                            padding: EdgeInsets.only(
+                              top: Platform.isWindows && _borderless ? 32 : 0,
+                            ),
+                            child: incomingPage,
+                          ),
+                    collapseProgress: _pageTransition.value,
+                    revealProgress: _pageReveal.value,
+                    active: _pageTransitionActive,
+                    loadingIndicator: TickerMode(
+                      enabled: true,
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(10),
+                        child: RyzaLoadingIndicator(
+                          size: 76,
+                          semanticsLabel: widget.controller.interfaceLanguage
+                              .text('正在加载', 'Loading', '読み込み中'),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
               ),
             ),
           ),

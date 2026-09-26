@@ -1793,7 +1793,7 @@ void main() {
     },
   );
 
-  test('structured memory keeps dated critical events and trims trivia', () {
+  test('structured memory keeps dated events and does not lose new facts', () {
     final previous = jsonEncode({
       'entries': [
         {
@@ -1828,7 +1828,7 @@ void main() {
     final decoded = jsonDecode(normalized!) as Map<String, dynamic>;
     final entries = decoded['entries'] as List<dynamic>;
 
-    expect(entries.length, 40);
+    expect(entries.length, 46);
     expect(normalized, contains('2026-09-06'));
     expect(normalized, contains('用户答应第二天一起检查炼金釜。'));
   });

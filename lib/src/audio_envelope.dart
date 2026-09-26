@@ -5,10 +5,12 @@ class AudioAmplitudeEnvelope {
   const AudioAmplitudeEnvelope({
     required this.frameDuration,
     required this.values,
+    this.rawRms = const [],
   });
 
   final Duration frameDuration;
   final List<double> values;
+  final List<double> rawRms;
 
   double valueAt(Duration position) {
     if (values.isEmpty || position.isNegative) return 0;
@@ -142,6 +144,7 @@ class AudioAmplitudeEnvelope {
       frameDuration: frameDuration,
       // Follow real amplitude troughs; do not invent periodic silent frames.
       values: List<double>.unmodifiable(values),
+      rawRms: List<double>.unmodifiable(raw),
     );
   }
 

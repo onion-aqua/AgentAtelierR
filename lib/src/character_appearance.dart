@@ -159,7 +159,7 @@ void registerLocalSkinAppearances() {
         promptDescription: '当前使用用户导入的皮肤，未提供具体外观描述，不要猜测服装细节。',
         assetName: record['id']!,
         animated: true,
-        hasPreview: false,
+        hasPreview: record['preview'] != null,
         baseAppearanceId: base?.id,
         idleAnimations: base?.idleAnimations ?? const ['motion_A_001_idle'],
       ),

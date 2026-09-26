@@ -29,13 +29,14 @@ class MainActivity : FlutterActivity() {
         super.configureFlutterEngine(flutterEngine)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "agent_atelier_r/speech_envelope")
             .setMethodCallHandler { call, result ->
-                if (call.method != "analyze") { result.notImplemented(); return@setMethodCallHandler }
+                if (call.method != "analyze" && call.method != "decodeWav") { result.notImplemented(); return@setMethodCallHandler }
                 val path = call.argument<String>("path")
                 if (path == null) { result.error("path", "Missing audio path", null); return@setMethodCallHandler }
                 Thread {
                     try {
-                        val values = SpeechEnvelope.decode(path)
-                        mainHandler.post { result.success(values) }
+                        val output = if (call.method == "decodeWav") "$path.decoded.wav" else null
+                        val values = SpeechEnvelope.decode(path, output)
+                        mainHandler.post { result.success(output ?: values) }
                     } catch (error: Exception) {
                         mainHandler.post { result.error("decode", error.message, null) }
                     }

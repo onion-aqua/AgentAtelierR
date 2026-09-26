@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
 import 'audio_envelope.dart';
@@ -9,7 +10,7 @@ Future<AudioAmplitudeEnvelope?> loadSpeechEnvelope(
   String path,
   Uint8List bytes,
 ) async {
-  final wav = AudioAmplitudeEnvelope.tryParseWav(bytes);
+  final wav = await compute(_parseWavEnvelope, bytes);
   if (wav != null) return wav;
   if (!Platform.isAndroid) return null;
   try {
@@ -24,3 +25,6 @@ Future<AudioAmplitudeEnvelope?> loadSpeechEnvelope(
     return null;
   }
 }
+
+AudioAmplitudeEnvelope? _parseWavEnvelope(Uint8List bytes) =>
+    AudioAmplitudeEnvelope.tryParseWav(bytes);

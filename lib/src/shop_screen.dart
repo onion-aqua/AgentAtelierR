@@ -15,40 +15,55 @@ class ShopScreen extends StatelessWidget {
       context: context,
       builder: (context) => Dialog(
         backgroundColor: Colors.transparent,
-        child: GlassContentCard(
-          liquidGlass: controller.liquidGlassChatUi,
-          child: Padding(
-            padding: const EdgeInsets.all(20),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Image.asset(
-                  item.imageAsset,
-                  height: 112,
-                  cacheWidth: 512,
-                  fit: BoxFit.contain,
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  item.name(language),
-                  style: Theme.of(context).textTheme.titleLarge,
-                ),
-                const SizedBox(height: 12),
-                Flexible(
-                  child: SingleChildScrollView(
-                    child: Text(item.description(language)),
+        insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
+        child: ConstrainedBox(
+          constraints: BoxConstraints(
+            maxWidth: 420,
+            maxHeight: MediaQuery.sizeOf(context).height - 48,
+          ),
+          child: GlassContentCard(
+            liquidGlass: controller.liquidGlassChatUi,
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.all(20),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    item.name(language),
+                    style: Theme.of(context).textTheme.titleLarge,
                   ),
-                ),
-                const SizedBox(height: 12),
-                Text(item.effect(language)),
-                Align(
-                  alignment: Alignment.centerRight,
-                  child: TextButton(
-                    onPressed: () => Navigator.pop(context),
-                    child: Text(language.text('关闭', 'Close', '閉じる')),
+                  const SizedBox(height: 16),
+                  Image.asset(
+                    item.imageAsset,
+                    key: ValueKey('shop-item-preview-${item.id}'),
+                    height: 156,
+                    cacheWidth: 512,
+                    fit: BoxFit.contain,
                   ),
-                ),
-              ],
+                  const SizedBox(height: 16),
+                  Text(item.description(language)),
+                  if (item.effect(language).trim().isNotEmpty) ...[
+                    const SizedBox(height: 16),
+                    const Divider(height: 1),
+                    const SizedBox(height: 12),
+                    Text(
+                      language.text('效果', 'Effect', '効果'),
+                      style: Theme.of(context).textTheme.titleSmall,
+                    ),
+                    const SizedBox(height: 4),
+                    Text(item.effect(language)),
+                  ],
+                  const SizedBox(height: 12),
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: TextButton(
+                      onPressed: () => Navigator.pop(context),
+                      child: Text(language.text('关闭', 'Close', '閉じる')),
+                    ),
+                  ),
+                ],
+              ),
             ),
           ),
         ),
@@ -141,7 +156,7 @@ class ShopScreen extends StatelessWidget {
                       crossAxisCount: 2,
                       crossAxisSpacing: spacing,
                       mainAxisSpacing: spacing,
-                      mainAxisExtent: 288,
+                      mainAxisExtent: 244,
                     ),
                     itemBuilder: (context, index) {
                       final item = ShopCatalog.items[index];
@@ -154,41 +169,61 @@ class ShopScreen extends StatelessWidget {
                             crossAxisAlignment: CrossAxisAlignment.stretch,
                             children: [
                               Expanded(
-                                child: InkWell(
-                                  onTap: () =>
-                                      _showDetails(context, item, language),
-                                  child: Image.asset(
-                                    item.imageAsset,
-                                    cacheWidth: 512,
-                                    fit: BoxFit.contain,
+                                child: Tooltip(
+                                  message: language.text(
+                                    '查看${item.name(language)}详情',
+                                    'View details for ${item.name(language)}',
+                                    '${item.name(language)}の詳細を見る',
+                                  ),
+                                  child: InkWell(
+                                    key: ValueKey('shop-item-image-${item.id}'),
+                                    onTap: () =>
+                                        _showDetails(context, item, language),
+                                    borderRadius: BorderRadius.circular(6),
+                                    child: Image.asset(
+                                      item.imageAsset,
+                                      semanticLabel: item.name(language),
+                                      cacheWidth: 512,
+                                      fit: BoxFit.contain,
+                                    ),
                                   ),
                                 ),
                               ),
                               const SizedBox(height: 6),
-                              Text(
-                                item.name(language),
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: Theme.of(context).textTheme.titleSmall,
-                              ),
-                              const SizedBox(height: 4),
                               SizedBox(
-                                height: 48,
+                                height: 42,
                                 child: Text(
-                                  item.effect(language),
+                                  item.name(language),
                                   maxLines: 2,
                                   overflow: TextOverflow.ellipsis,
-                                  style: Theme.of(context).textTheme.bodySmall,
+                                  style: Theme.of(context).textTheme.titleSmall,
                                 ),
                               ),
+                              const SizedBox(height: 8),
                               Row(
                                 children: [
                                   Expanded(
-                                    child: TextButton(
-                                      onPressed: () =>
-                                          _showDetails(context, item, language),
-                                      child: Text(
-                                        language.text('详情', 'Details', '詳細'),
+                                    child: Semantics(
+                                      label: language.text(
+                                        '${item.price} 关系点数',
+                                        '${item.price} relationship points',
+                                        '${item.price} 関係ポイント',
+                                      ),
+                                      excludeSemantics: true,
+                                      child: Row(
+                                        children: [
+                                          const Icon(
+                                            Icons.favorite_outline,
+                                            size: 16,
+                                          ),
+                                          const SizedBox(width: 4),
+                                          Flexible(
+                                            child: FittedBox(
+                                              fit: BoxFit.scaleDown,
+                                              child: Text('${item.price}'),
+                                            ),
+                                          ),
+                                        ],
                                       ),
                                     ),
                                   ),
@@ -201,7 +236,10 @@ class ShopScreen extends StatelessWidget {
                                           horizontal: 4,
                                         ),
                                       ),
-                                      child: Text('${item.price}', maxLines: 1),
+                                      child: Text(
+                                        language.text('购买', 'Buy', '購入'),
+                                        maxLines: 1,
+                                      ),
                                     ),
                                   ),
                                 ],

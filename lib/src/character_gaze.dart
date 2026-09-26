@@ -40,6 +40,11 @@ class CharacterBodyGaze {
     required bool allowShoulders,
     required bool busy,
     required bool tapReaction,
+    double delay = 0.1,
+    double headScale = 1,
+    double bodyScale = 1,
+    double headThreshold = 0,
+    double bodyThreshold = 0,
   }) {
     if (influence <= 0) {
       reset();
@@ -56,8 +61,15 @@ class CharacterBodyGaze {
         : busy
         ? 0.45
         : 1.0;
-    _head = follow(_head, target * (tapReaction ? 0 : 1), 0.10);
-    _body = follow(_body, target * weight, 0.20);
+    final headTarget = target.distance < headThreshold
+        ? Offset.zero
+        : target * headScale;
+    final bodyTarget = target.distance < bodyThreshold
+        ? Offset.zero
+        : target * bodyScale;
+    final followDelay = delay.clamp(0.02, 1.0);
+    _head = follow(_head, headTarget * (tapReaction ? 0 : 1), followDelay);
+    _body = follow(_body, bodyTarget * weight, followDelay * 2);
     _arms = follow(
       _arms,
       allowShoulders && !busy && !tapReaction ? target : Offset.zero,

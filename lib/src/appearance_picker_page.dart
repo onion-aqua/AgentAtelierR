@@ -6,6 +6,8 @@ import 'package:flutter/services.dart';
 import 'app_localization.dart';
 import 'character_appearance.dart';
 import 'glass_ui.dart';
+import 'local_skin_store.dart';
+import 'protected_character_assets.dart';
 import 'skin_import_controls.dart';
 
 class AppearancePickerPage extends StatefulWidget {
@@ -33,6 +35,8 @@ class AppearancePickerPage extends StatefulWidget {
 }
 
 class _AppearancePickerPageState extends State<AppearancePickerPage> {
+  late final List<CharacterAppearance> _appearances;
+  final Map<String, int> _previewRevisions = {};
   late int _focusedIndex;
   late int _lastFocusedIndex;
   double _dragDistance = 0;
@@ -40,17 +44,16 @@ class _AppearancePickerPageState extends State<AppearancePickerPage> {
   @override
   void initState() {
     super.initState();
+    _appearances = [...widget.appearances];
     _focusedIndex = max(
       0,
-      widget.appearances.indexWhere((item) => item.id == widget.selectedId),
+      _appearances.indexWhere((item) => item.id == widget.selectedId),
     );
     _lastFocusedIndex = _focusedIndex;
   }
 
   void _focus(int index) {
-    if (index < 0 ||
-        index >= widget.appearances.length ||
-        index == _focusedIndex) {
+    if (index < 0 || index > _appearances.length || index == _focusedIndex) {
       return;
     }
     setState(() {
@@ -77,17 +80,104 @@ class _AppearancePickerPageState extends State<AppearancePickerPage> {
       ? Curves.easeInOutSine
       : Curves.easeOutCubic;
 
-  void _handleTextureChanged() {
-    setState(() {});
-    if (widget.appearances[_focusedIndex].id == widget.selectedId) {
-      widget.onTextureChanged();
+  void _handleImported(CharacterAppearance appearance) {
+    setState(() {
+      if (!_appearances.any((item) => item.id == appearance.id)) {
+        _appearances.add(appearance);
+      }
+      _lastFocusedIndex = _focusedIndex;
+      _focusedIndex = _appearances.indexWhere(
+        (item) => item.id == appearance.id,
+      );
+    });
+  }
+
+  void _handleImportedTexture(CharacterAppearance appearance) {
+    setState(() {
+      _previewRevisions[appearance.id] =
+          (_previewRevisions[appearance.id] ?? 0) + 1;
+      _lastFocusedIndex = _focusedIndex;
+      _focusedIndex = _appearances.indexWhere(
+        (item) => item.id == appearance.id,
+      );
+    });
+    if (appearance.id == widget.selectedId) widget.onTextureChanged();
+  }
+
+  Future<void> _setTextureEnabled(
+    CharacterAppearance appearance,
+    bool enabled,
+  ) async {
+    await LocalSkinStore.instance.setTextureEnabled(
+      appearance.assetName,
+      enabled,
+    );
+    ProtectedCharacterAssets.clearCache();
+    if (mounted) _handleImportedTexture(appearance);
+  }
+
+  Future<void> _deleteImportedTexture(CharacterAppearance appearance) async {
+    final language = widget.language;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text(
+          language.text(
+            '删除导入贴图？',
+            'Delete imported texture?',
+            '追加テクスチャを削除しますか？',
+          ),
+        ),
+        content: Text(
+          language.text(
+            '这套服装将恢复原始贴图。',
+            'This outfit will return to its original texture.',
+            'この衣装は元のテクスチャに戻ります。',
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: Text(language.text('取消', 'Cancel', 'キャンセル')),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: Text(language.text('删除', 'Delete', '削除')),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    try {
+      final deleted = await LocalSkinStore.instance.deleteTexture(
+        appearance.assetName,
+      );
+      if (!deleted) return;
+      ProtectedCharacterAssets.clearCache();
+      if (mounted) _handleImportedTexture(appearance);
+    } on Object {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              language.text(
+                '删除贴图失败',
+                'Could not delete texture',
+                'テクスチャを削除できませんでした',
+              ),
+            ),
+          ),
+        );
+      }
     }
   }
 
   @override
   Widget build(BuildContext context) {
     final language = widget.language;
-    final focused = widget.appearances[_focusedIndex];
+    final focused = _focusedIndex < _appearances.length
+        ? _appearances[_focusedIndex]
+        : null;
     final palette = Theme.of(context).colorScheme;
     final foreground = palette.onSurface;
     return Scaffold(
@@ -119,7 +209,7 @@ class _AppearancePickerPageState extends State<AppearancePickerPage> {
                         ),
                       ),
                       Text(
-                        '${_focusedIndex + 1} / ${widget.appearances.length}',
+                        '${_focusedIndex + 1} / ${_appearances.length + 1}',
                         style: TextStyle(
                           color: foreground.withValues(alpha: .7),
                         ),
@@ -138,9 +228,7 @@ class _AppearancePickerPageState extends State<AppearancePickerPage> {
                   child: Focus(
                     autofocus: true,
                     onKeyEvent: (_, event) {
-                      if (event is! KeyDownEvent) {
-                        return KeyEventResult.ignored;
-                      }
+                      if (event is! KeyDownEvent) return KeyEventResult.ignored;
                       if (event.logicalKey == LogicalKeyboardKey.arrowLeft) {
                         _focus(_focusedIndex - 1);
                         return KeyEventResult.handled;
@@ -159,52 +247,21 @@ class _AppearancePickerPageState extends State<AppearancePickerPage> {
                 ),
                 Padding(
                   padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
-                  child: Row(
-                    crossAxisAlignment: CrossAxisAlignment.end,
-                    children: [
-                      Expanded(
-                        child: Align(
-                          alignment: Alignment.bottomLeft,
-                          child: Theme(
-                            data: Theme.of(context).copyWith(
-                              colorScheme: palette.copyWith(
-                                surface: const Color(0xFF344148),
-                                onSurface: foreground,
-                              ),
-                            ),
-                            child: SkinImportControls(
-                              key: ValueKey(focused.id),
-                              appearance: focused,
-                              language: language,
-                              compact: true,
-                              onImported: widget.onSelected,
-                              onTextureChanged: _handleTextureChanged,
-                            ),
-                          ),
-                        ),
+                  child: SizedBox(
+                    width: 164,
+                    height: 44,
+                    child: FilledButton(
+                      key: const ValueKey('outfit-equip-button'),
+                      onPressed:
+                          focused == null || focused.id == widget.selectedId
+                          ? null
+                          : () => widget.onSelected(focused),
+                      child: Text(
+                        focused?.id == widget.selectedId
+                            ? language.text('已装备', 'Equipped', '着用中')
+                            : language.text('切换', 'Equip', '着替える'),
                       ),
-                      const SizedBox(width: 4),
-                      IconButton(
-                        onPressed: _focusedIndex > 0
-                            ? () => _focus(_focusedIndex - 1)
-                            : null,
-                        tooltip: language.text(
-                          '上一套',
-                          'Previous outfit',
-                          '前の衣装',
-                        ),
-                        icon: const Icon(Icons.chevron_left_rounded),
-                        color: foreground,
-                      ),
-                      IconButton(
-                        onPressed: _focusedIndex < widget.appearances.length - 1
-                            ? () => _focus(_focusedIndex + 1)
-                            : null,
-                        tooltip: language.text('下一套', 'Next outfit', '次の衣装'),
-                        icon: const Icon(Icons.chevron_right_rounded),
-                        color: foreground,
-                      ),
-                    ],
+                    ),
                   ),
                 ),
               ],
@@ -231,7 +288,7 @@ class _AppearancePickerPageState extends State<AppearancePickerPage> {
       _ => -1,
     };
     final visible = <int>[
-      for (var i = 0; i < widget.appearances.length; i++)
+      for (var i = 0; i <= _appearances.length; i++)
         if ((i - _focusedIndex).abs() <= 3) i,
     ]..sort((a, b) => paintOrder(a).compareTo(paintOrder(b)));
     return GestureDetector(
@@ -253,7 +310,11 @@ class _AppearancePickerPageState extends State<AppearancePickerPage> {
           children: [
             for (final index in visible)
               Positioned(
-                key: ValueKey(widget.appearances[index].id),
+                key: ValueKey(
+                  index == _appearances.length
+                      ? 'outfit-import-card'
+                      : _appearances[index].id,
+                ),
                 left: (width - cardWidth) / 2,
                 top: (height - cardHeight) / 2,
                 width: cardWidth,
@@ -273,19 +334,44 @@ class _AppearancePickerPageState extends State<AppearancePickerPage> {
                     scale: index == _focusedIndex ? 1 : 0.97,
                     duration: _cardTransitionDuration(index),
                     curve: Curves.easeOutCubic,
-                    child: _OutfitCard(
-                      appearance: widget.appearances[index],
-                      language: widget.language,
-                      liquidGlass: widget.liquidGlass,
-                      preview: widget.previewBuilder(widget.appearances[index]),
-                      focused: index == _focusedIndex,
-                      equipped:
-                          widget.appearances[index].id == widget.selectedId,
-                      compact: cardHeight < 300,
-                      onTap: () => _focus(index),
-                      onEquip: () =>
-                          widget.onSelected(widget.appearances[index]),
-                    ),
+                    child: index == _appearances.length
+                        ? _ImportOutfitCard(
+                            liquidGlass: widget.liquidGlass,
+                            focused: index == _focusedIndex,
+                            onTap: () => _focus(index),
+                            child: SkinImportControls(
+                              appearances: _appearances,
+                              language: widget.language,
+                              onImported: _handleImported,
+                              onTextureChanged: _handleImportedTexture,
+                            ),
+                          )
+                        : _OutfitCard(
+                            appearance: _appearances[index],
+                            language: widget.language,
+                            liquidGlass: widget.liquidGlass,
+                            preview: KeyedSubtree(
+                              key: ValueKey(
+                                'outfit-preview-${_appearances[index].id}-${_previewRevisions[_appearances[index].id] ?? 0}',
+                              ),
+                              child: widget.previewBuilder(_appearances[index]),
+                            ),
+                            focused: index == _focusedIndex,
+                            equipped:
+                                _appearances[index].id == widget.selectedId,
+                            compact: cardHeight < 300,
+                            onTap: () => _focus(index),
+                            hasImportedTexture: LocalSkinStore.instance
+                                .hasTexture(_appearances[index].assetName),
+                            usesImportedTexture: LocalSkinStore.instance
+                                .usesTexture(_appearances[index].assetName),
+                            onTextureSelected: (enabled) => _setTextureEnabled(
+                              _appearances[index],
+                              enabled,
+                            ),
+                            onTextureDelete: () =>
+                                _deleteImportedTexture(_appearances[index]),
+                          ),
                   ),
                 ),
               ),
@@ -294,6 +380,39 @@ class _AppearancePickerPageState extends State<AppearancePickerPage> {
       ),
     );
   }
+}
+
+class _ImportOutfitCard extends StatelessWidget {
+  const _ImportOutfitCard({
+    required this.liquidGlass,
+    required this.focused,
+    required this.onTap,
+    required this.child,
+  });
+
+  final bool liquidGlass;
+  final bool focused;
+  final VoidCallback onTap;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) => GestureDetector(
+    onTap: focused ? null : onTap,
+    child: GlassSurface(
+      key: const ValueKey('outfit-import-surface'),
+      liquidGlass: liquidGlass,
+      backdropBlur: false,
+      fillOpacity: .65,
+      fallbackColor: Theme.of(context).brightness == Brightness.dark
+          ? const Color(0xB820292D)
+          : const Color(0xD9EFF3F1),
+      tone: Theme.of(context).brightness == Brightness.dark
+          ? GlassTone.dark
+          : GlassTone.light,
+      borderRadius: BorderRadius.circular(18),
+      child: focused ? child : IgnorePointer(child: child),
+    ),
+  );
 }
 
 class _OutfitCard extends StatelessWidget {
@@ -306,7 +425,10 @@ class _OutfitCard extends StatelessWidget {
     required this.equipped,
     required this.compact,
     required this.onTap,
-    required this.onEquip,
+    required this.hasImportedTexture,
+    required this.usesImportedTexture,
+    required this.onTextureSelected,
+    required this.onTextureDelete,
   });
 
   final CharacterAppearance appearance;
@@ -317,7 +439,10 @@ class _OutfitCard extends StatelessWidget {
   final bool equipped;
   final bool compact;
   final VoidCallback onTap;
-  final VoidCallback onEquip;
+  final bool hasImportedTexture;
+  final bool usesImportedTexture;
+  final ValueChanged<bool> onTextureSelected;
+  final VoidCallback onTextureDelete;
 
   @override
   Widget build(BuildContext context) {
@@ -330,7 +455,10 @@ class _OutfitCard extends StatelessWidget {
           key: ValueKey('outfit-surface-${appearance.id}'),
           liquidGlass: liquidGlass,
           backdropBlur: false,
-          transparentFill: true,
+          fillOpacity: .65,
+          fallbackColor: Theme.of(context).brightness == Brightness.dark
+              ? const Color(0xB820292D)
+              : const Color(0xD9EFF3F1),
           tone: Theme.of(context).brightness == Brightness.dark
               ? GlassTone.dark
               : GlassTone.light,
@@ -352,15 +480,7 @@ class _OutfitCard extends StatelessWidget {
                   12,
                   compact ? 48 : 76,
                 ),
-                child: appearance.hasPreview
-                    ? preview
-                    : const Center(
-                        child: Icon(
-                          Icons.checkroom_outlined,
-                          size: 72,
-                          color: Colors.white54,
-                        ),
-                      ),
+                child: preview,
               ),
               const DecoratedBox(
                 decoration: BoxDecoration(
@@ -377,6 +497,70 @@ class _OutfitCard extends StatelessWidget {
                   top: 12,
                   right: 12,
                   child: const Icon(Icons.check_circle, color: Colors.white),
+                ),
+              if (focused && hasImportedTexture)
+                Positioned(
+                  top: 4,
+                  left: 4,
+                  child: PopupMenuButton<bool>(
+                    key: ValueKey('outfit-texture-menu-${appearance.id}'),
+                    tooltip: language.text(
+                      '选择贴图',
+                      'Choose texture',
+                      'テクスチャを選択',
+                    ),
+                    icon: const Icon(
+                      Icons.layers_outlined,
+                      color: Colors.white,
+                    ),
+                    onSelected: onTextureSelected,
+                    itemBuilder: (menuContext) => [
+                      CheckedPopupMenuItem<bool>(
+                        value: false,
+                        checked: !usesImportedTexture,
+                        child: Text(
+                          language.text('原始贴图', 'Original texture', '元のテクスチャ'),
+                        ),
+                      ),
+                      PopupMenuItem<bool>(
+                        value: true,
+                        child: Row(
+                          children: [
+                            SizedBox(
+                              width: 24,
+                              child: usesImportedTexture
+                                  ? const Icon(Icons.check, size: 20)
+                                  : null,
+                            ),
+                            Expanded(
+                              child: Text(
+                                language.text(
+                                  '导入贴图',
+                                  'Imported texture',
+                                  '追加テクスチャ',
+                                ),
+                              ),
+                            ),
+                            IconButton(
+                              key: ValueKey(
+                                'outfit-delete-texture-${appearance.id}',
+                              ),
+                              tooltip: language.text(
+                                '删除导入贴图',
+                                'Delete imported texture',
+                                '追加テクスチャを削除',
+                              ),
+                              icon: const Icon(Icons.delete_outline),
+                              onPressed: () {
+                                Navigator.of(menuContext).pop();
+                                onTextureDelete();
+                              },
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               Positioned(
                 left: 16,
@@ -405,22 +589,6 @@ class _OutfitCard extends StatelessWidget {
                         style: const TextStyle(
                           color: Colors.white70,
                           fontSize: 12,
-                        ),
-                      ),
-                    ],
-                    if (focused) ...[
-                      const SizedBox(height: 8),
-                      FilledButton(
-                        key: ValueKey('outfit-equip-${appearance.id}'),
-                        onPressed: equipped ? null : onEquip,
-                        style: FilledButton.styleFrom(
-                          padding: const EdgeInsets.symmetric(horizontal: 12),
-                          minimumSize: const Size(64, 36),
-                        ),
-                        child: Text(
-                          equipped
-                              ? language.text('已装备', 'Equipped', '着用中')
-                              : language.text('切换', 'Equip', '着替える'),
                         ),
                       ),
                     ],

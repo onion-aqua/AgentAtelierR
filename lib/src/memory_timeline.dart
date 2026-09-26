@@ -1,8 +1,7 @@
 import 'dart:convert';
 
 class MemoryTimeline {
-  static const entryLimit = 40;
-  static const characterLimit = 6000;
+  static final _summarySeparators = RegExp(r'[\s\p{P}\p{S}]', unicode: true);
   static const protectedCategories = <String>{
     'promise',
     'confession',
@@ -23,8 +22,9 @@ class MemoryTimeline {
   }
 
   static String normalizeExisting(String value) {
+    if (value.trim().isEmpty) return '';
     final document = decode(value);
-    if (document == null) return value.trim();
+    if (document == null) return value;
     final entries = _existingEntries(document);
     return jsonEncode(
       _document(
@@ -47,8 +47,20 @@ class MemoryTimeline {
     final document = decode(cleaned);
     if (document == null) return null;
     final previous = decode(previousMemory);
+    final today = _dateOnly(now ?? DateTime.now());
     final oldEntries = previous == null
-        ? <Map<String, dynamic>>[]
+        ? previousMemory.trim().isEmpty
+              ? <Map<String, dynamic>>[]
+              : _existingEntries({
+                  'entries': [
+                    {
+                      'sequence': 1,
+                      'category': 'legacy',
+                      'importance': 5,
+                      'summary': previousMemory,
+                    },
+                  ],
+                })
         : _existingEntries(previous);
     final bySequence = {
       for (final entry in oldEntries) entry['sequence'] as int: entry,
@@ -62,9 +74,11 @@ class MemoryTimeline {
     if (previousLast is int && previousLast > nextSequence) {
       nextSequence = previousLast;
     }
-    final result = <int, Map<String, dynamic>>{};
-    final today = _dateOnly(now ?? DateTime.now());
-
+    final previousLastSequence = nextSequence;
+    final result = <int, Map<String, dynamic>>{
+      for (final entry in oldEntries)
+        entry['sequence'] as int: Map<String, dynamic>.from(entry),
+    };
     for (final raw in document['entries'] as List) {
       if (raw is! Map) continue;
       final summary = '${raw['summary'] ?? ''}'.trim();
@@ -73,59 +87,31 @@ class MemoryTimeline {
       final sequence = raw['sequence'];
       if (sequence is int) previousEntry = bySequence[sequence];
       previousEntry ??= byId['${raw['id']}'];
-      if (previousEntry == null) {
-        for (final entry in oldEntries) {
-          if (entry['summary'] == summary && entry['date'] == raw['date']) {
-            previousEntry = entry;
-            break;
-          }
-        }
+      // The saved entry wins over a model rewrite, including after a manual edit.
+      if (previousEntry != null) continue;
+      // A missing historical sequence marks an entry removed by the user.
+      if (sequence is int && sequence > 0 && sequence <= previousLastSequence) {
+        continue;
       }
-      final resolvedSequence =
-          previousEntry?['sequence'] as int? ?? ++nextSequence;
       final normalized = _normalizeEntry(
         raw,
-        sequence: resolvedSequence,
-        fallbackDate: previousEntry?['date'] as String? ?? today,
-        capSummary:
-            previousEntry == null || previousEntry['summary'] != summary,
+        sequence: nextSequence + 1,
+        fallbackDate: today,
+        capSummary: true,
       );
       if (normalized == null) continue;
-      // Existing transitions are historical facts; a later turn must add a new event.
-      if (previousEntry?['state_change'] != null) {
-        normalized['state_change'] = previousEntry!['state_change'];
-      }
-      result[resolvedSequence] = normalized;
-    }
-    for (final old in oldEntries) {
-      final sequence = old['sequence'] as int;
-      if (!result.containsKey(sequence) && _isProtected(old)) {
-        result[sequence] = Map<String, dynamic>.from(old);
-      }
+      if (_isDuplicateEvent(result.values, normalized)) continue;
+      result[++nextSequence] = normalized;
     }
     final entries = result.values.toList()
       ..sort((a, b) => (a['sequence'] as int).compareTo(b['sequence'] as int));
-    _limit(entries);
-    var output = jsonEncode(
+    return jsonEncode(
       _document(
         entries,
         updatedAt: (now ?? DateTime.now()).toIso8601String(),
         lastSequence: nextSequence,
       ),
     );
-    while (output.length > characterLimit) {
-      final removable = _leastValuableIndex(entries);
-      if (removable < 0) break;
-      entries.removeAt(removable);
-      output = jsonEncode(
-        _document(
-          entries,
-          updatedAt: (now ?? DateTime.now()).toIso8601String(),
-          lastSequence: nextSequence,
-        ),
-      );
-    }
-    return output;
   }
 
   static Map<String, dynamic> promptDocument(
@@ -202,9 +188,10 @@ class MemoryTimeline {
     required String fallbackDate,
     required bool capSummary,
   }) {
-    final summary = '${raw['summary'] ?? ''}'.trim();
-    if (summary.isEmpty) return null;
     final category = '${raw['category'] ?? 'other'}'.trim();
+    final rawSummary = '${raw['summary'] ?? ''}';
+    if (rawSummary.trim().isEmpty) return null;
+    final summary = category == 'legacy' ? rawSummary : rawSummary.trim();
     final baseImportance = ((raw['importance'] as num?)?.toInt() ?? 1).clamp(
       1,
       5,
@@ -234,7 +221,9 @@ class MemoryTimeline {
             .toList();
     final entry = <String, dynamic>{
       'sequence': sequence,
-      'date': date == null ? fallbackDate : _dateOnly(date),
+      'date': category == 'legacy'
+          ? (date == null ? null : _dateOnly(date))
+          : (date == null ? fallbackDate : _dateOnly(date)),
       'category': category.isEmpty ? 'other' : category,
       'importance': importance,
       'summary': capSummary ? _take(summary, 50) : summary,
@@ -297,40 +286,69 @@ class MemoryTimeline {
     };
   }
 
-  static void _limit(List<Map<String, dynamic>> entries) {
-    while (entries.where((entry) => !_isProtected(entry)).length >
-        (entryLimit - entries.where(_isProtected).length).clamp(
-          0,
-          entryLimit,
-        )) {
-      final index = _leastValuableIndex(entries);
-      if (index < 0) break;
-      entries.removeAt(index);
+  static bool _isDuplicateEvent(
+    Iterable<Map<String, dynamic>> entries,
+    Map<String, dynamic> candidate,
+  ) {
+    final change = candidate['state_change'];
+    if (change is! Map) {
+      return entries.any((entry) => _sameEvent(entry, candidate));
     }
-  }
-
-  static int _leastValuableIndex(List<Map<String, dynamic>> entries) {
-    var result = -1;
-    for (var i = 0; i < entries.length; i++) {
-      final entry = entries[i];
-      if (_isProtected(entry)) continue;
-      if (result < 0 ||
-          (entry['importance'] as int) <
-              (entries[result]['importance'] as int) ||
-          ((entry['importance'] as int) ==
-                  (entries[result]['importance'] as int) &&
-              (entry['sequence'] as int) <
-                  (entries[result]['sequence'] as int))) {
-        result = i;
+    Map<String, dynamic>? latest;
+    for (final entry in entries) {
+      final previousChange = entry['state_change'];
+      if (previousChange is! Map ||
+          previousChange['domain'] != change['domain']) {
+        continue;
+      }
+      if (latest == null ||
+          (entry['sequence'] as int) > (latest['sequence'] as int)) {
+        latest = entry;
       }
     }
-    return result;
+    return latest != null && _sameEvent(latest, candidate);
   }
 
-  static bool _isProtected(Map<String, dynamic> entry) =>
-      protectedCategories.contains(entry['category']) ||
-      (entry['importance'] as int) >= 5 ||
-      entry['state_change'] is Map;
+  static bool _sameEvent(
+    Map<String, dynamic> existing,
+    Map<String, dynamic> candidate,
+  ) {
+    if (existing['category'] == 'legacy') return false;
+    if (existing['date'] != candidate['date']) return false;
+    final oldChange = existing['state_change'];
+    final newChange = candidate['state_change'];
+    if (oldChange is Map || newChange is Map) {
+      if (oldChange is! Map || newChange is! Map) return false;
+      if (oldChange['domain'] != newChange['domain'] ||
+          oldChange['from'] != newChange['from'] ||
+          oldChange['to'] != newChange['to']) {
+        return false;
+      }
+    }
+    final oldText = _comparableSummary('${existing['summary']}');
+    final newText = _comparableSummary('${candidate['summary']}');
+    if (oldText == newText) return true;
+    final shorter = oldText.length <= newText.length ? oldText : newText;
+    final longer = oldText.length > newText.length ? oldText : newText;
+    if (shorter.runes.length >= 8 && longer.contains(shorter)) return true;
+    if (shorter.runes.length < 8) return false;
+    final oldPairs = _characterPairs(oldText);
+    final newPairs = _characterPairs(newText);
+    final shared = oldPairs.intersection(newPairs).length;
+    final similarity = 2 * shared / (oldPairs.length + newPairs.length);
+    return similarity >= 0.72;
+  }
+
+  static String _comparableSummary(String summary) =>
+      summary.toLowerCase().replaceAll(_summarySeparators, '');
+
+  static Set<String> _characterPairs(String text) {
+    final runes = text.runes.toList();
+    return {
+      for (var i = 1; i < runes.length; i++)
+        String.fromCharCodes([runes[i - 1], runes[i]]),
+    };
+  }
 
   static String _take(String value, int limit) =>
       String.fromCharCodes(value.runes.take(limit));

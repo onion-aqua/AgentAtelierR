@@ -92,4 +92,28 @@ void main() {
     }
     expect(standing.keys, isNot(contains('root')));
   });
+
+  test('resource finger thresholds keep small drags out of the torso', () {
+    final gaze = CharacterBodyGaze();
+    Map<String, GazeBoneOffset> result = {};
+    for (var i = 0; i < 60; i++) {
+      result = gaze.sample(
+        direction: const Offset(0.2, 0),
+        delta: 1 / 60,
+        influence: 1,
+        standing: true,
+        crossLegged: false,
+        allowShoulders: false,
+        busy: false,
+        tapReaction: false,
+        delay: 0.1,
+        headScale: 0.7,
+        bodyScale: 0.55,
+        headThreshold: 0.11,
+        bodyThreshold: 0.3,
+      );
+    }
+    expect(result['control_aim_head']!.translation.dx, greaterThan(0));
+    expect(result['control_aim_body']!.translation, Offset.zero);
+  });
 }

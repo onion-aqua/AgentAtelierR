@@ -102,4 +102,94 @@ void main() {
       expect(result, contains('约定明天见面'));
     },
   );
+
+  test(
+    'recent memory records one bounded summary from a dialogue batch',
+    () async {
+      final result = await RecentMemoryConsolidator().consolidate(
+        dialogue: '用户：我们明天去森林。\n莱莎：好。',
+        now: DateTime(2026, 9, 26),
+        complete: (messages) async {
+          expect(messages.last['content'], contains('new_dialogue'));
+          expect(messages.first['content'], contains('最近四轮对话'));
+          return '{"summary":"约定明天去森林。"}';
+        },
+      );
+      expect(result, '约定明天去森林。');
+      expect(
+        await RecentMemoryConsolidator().consolidate(
+          dialogue: '你好',
+          now: DateTime(2026, 9, 26),
+          complete: (_) async => '{"summary":""}',
+        ),
+        isNull,
+      );
+    },
+  );
+
+  test('long-term memory uses recent batch and editable prompt', () async {
+    final result = await MemoryConsolidator().consolidate(
+      previousMemory: '{"entries":[]}',
+      recentMemories: const ['约定明天去森林。', '找到了素材。'],
+      promptOverride: '请整理 {current_time}，偏移 {utc_offset_minutes}。',
+      now: DateTime(2026, 9, 26),
+      complete: (messages) async {
+        expect(messages.first['content'], contains('2026-09-26'));
+        expect(messages.first['content'], isNot(contains('{current_time}')));
+        final data = jsonDecode(messages.last['content']!) as Map;
+        expect(data['new_recent_memories'], hasLength(2));
+        expect(data, isNot(contains('new_dialogue')));
+        return '{"entries":[{"summary":"约定明天去森林","date":"2026-09-26"}]}';
+      },
+    );
+    expect(result, contains('约定明天去森林'));
+  });
+
+  test(
+    'long-term model sees bounded reference while saved history stays whole',
+    () async {
+      final previous = jsonEncode({
+        'entries': [
+          for (var sequence = 1; sequence <= 50; sequence++)
+            {
+              'sequence': sequence,
+              'date': '2026-09-25',
+              'summary': '已记录事件 $sequence',
+              'importance': sequence.isEven ? 2 : 4,
+            },
+        ],
+      });
+      final result = await MemoryConsolidator().consolidate(
+        previousMemory: previous,
+        recentMemories: const ['没有新的重要事件。'],
+        now: DateTime(2026, 9, 26),
+        complete: (messages) async {
+          final data = jsonDecode(messages.last['content']!) as Map;
+          final reference =
+              jsonDecode(data['previous_memory'] as String) as Map;
+          expect(reference['entries'], hasLength(lessThanOrEqualTo(32)));
+          expect(reference['omitted_entry_count'], greaterThan(0));
+          return '{"entries":[]}';
+        },
+      );
+      final saved = jsonDecode(result!) as Map;
+      expect(saved['entries'], hasLength(50));
+    },
+  );
+
+  test('legacy plain-text memory is retained during consolidation', () async {
+    const legacy = '用户手写的重要旧记忆。';
+    final result = await MemoryConsolidator().consolidate(
+      previousMemory: legacy,
+      recentMemories: const ['与莱莎约定明天见面。'],
+      now: DateTime(2026, 9, 26),
+      complete: (messages) async {
+        final data = jsonDecode(messages.last['content']!) as Map;
+        expect(data['previous_memory'], legacy);
+        return '{"entries":[{"date":"2026-09-26","summary":"与莱莎约定明天见面。"}]}';
+      },
+    );
+    expect(result, contains(legacy));
+    expect(result, contains('与莱莎约定明天见面'));
+  });
 }

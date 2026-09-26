@@ -6,6 +6,7 @@ import 'package:archive/archive.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:spine_flutter/spine_flutter.dart';
+import 'package:ryza_chat_mvp/src/character_appearance.dart';
 import 'package:ryza_chat_mvp/src/local_skin_store.dart';
 import 'package:ryza_chat_mvp/src/protected_character_assets.dart';
 import 'package:ryza_chat_mvp/src/protected_asset_format.dart';
@@ -24,6 +25,8 @@ Uint8List package({
   String prefix = 'nested/',
   bool missing = false,
   String? extra,
+  String? previewName,
+  Uint8List? previewBytes,
 }) {
   final archive = Archive();
   void add(String name, List<int> bytes) =>
@@ -38,6 +41,7 @@ Uint8List package({
     );
   }
   if (extra != null) add(extra, [1]);
+  if (previewName != null) add(previewName, previewBytes ?? png(4, 5));
   return Uint8List.fromList(ZipEncoder().encode(archive));
 }
 
@@ -70,6 +74,42 @@ void main() {
     expect(
       decodeSkinZip(package()).keys,
       containsAll(['skin.atlas', 'skin.png', 'skin.skel', 'skin_gesture.json']),
+    );
+  });
+  test(
+    'keeps a separate preview without adding it to the Spine bundle',
+    () async {
+      SharedPreferences.setMockInitialValues({});
+      final directory = await Directory.systemTemp.createTemp(
+        'aar_skin_preview_',
+      );
+      addTearDown(() => directory.delete(recursive: true));
+      final store = LocalSkinStore.forTesting();
+      await store.initialize(storageDirectory: directory);
+      final preview = png(4, 5);
+      final record = await store.importPackage(
+        package(previewName: 'skin_preview.png', previewBytes: preview),
+      );
+      final id = record['id']!;
+      expect(record['preview'], 'skin_preview.png');
+      expect(await store.previewFor(id), preview);
+      expect((await store.filesFor(id))!.length, 4);
+      final reloaded = LocalSkinStore.forTesting();
+      await reloaded.initialize(storageDirectory: directory);
+      expect(reloaded.skins.single['preview'], 'skin_preview.png');
+      expect(await reloaded.previewFor(id), preview);
+    },
+  );
+  test('recognizes a generic preview and rejects a malformed one', () {
+    expect(
+      decodeSkinZip(package(previewName: 'preview.png'))['preview.png'],
+      png(4, 5),
+    );
+    expect(
+      () => decodeSkinZip(
+        package(previewName: 'cover.png', previewBytes: Uint8List(33)),
+      ),
+      throwsFormatException,
     );
   });
   test('reject incomplete ZIPs and traversal without extraction', () {
@@ -118,6 +158,53 @@ void main() {
         (await reloaded.filesFor(id))!['assets/character/ryza/$id/skin.png'],
         original,
       );
+    },
+  );
+  test(
+    'replacing and deleting a texture cleans files and restores the original',
+    () async {
+      SharedPreferences.setMockInitialValues({});
+      final directory = await Directory.systemTemp.createTemp(
+        'aar_skin_delete_',
+      );
+      addTearDown(() => directory.delete(recursive: true));
+      final store = LocalSkinStore.forTesting();
+      await store.initialize(storageDirectory: directory);
+      final id = (await store.importPackage(package()))['id']!;
+      final original = (await store.filesFor(
+        id,
+      ))!['assets/character/ryza/$id/skin.png']!;
+      final first = png(2, 3)..[32] = 1;
+      final second = png(2, 3)..[32] = 2;
+      final textureDirectory = Directory('${directory.path}/imported_skins');
+      Future<List<File>> textureFiles() async =>
+          (await textureDirectory.list().toList())
+              .whereType<File>()
+              .where((file) => file.path.endsWith('.png'))
+              .toList();
+
+      await store.importTexture(id, first, original);
+      final oldFile = (await textureFiles()).single;
+      await store.importTexture(id, second, original);
+      expect(await store.textureFor(id), second);
+      expect(await oldFile.exists(), isFalse);
+      expect(await textureFiles(), hasLength(1));
+
+      expect(await store.deleteTexture(id), isTrue);
+      expect(await store.deleteTexture(id), isFalse);
+      expect(store.hasTexture(id), isFalse);
+      expect(store.usesTexture(id), isFalse);
+      expect(await store.textureFor(id), isNull);
+      expect(await textureFiles(), isEmpty);
+      expect(
+        (await store.filesFor(id))!['assets/character/ryza/$id/skin.png'],
+        original,
+      );
+
+      final reloaded = LocalSkinStore.forTesting();
+      await reloaded.initialize(storageDirectory: directory);
+      expect(reloaded.hasTexture(id), isFalse);
+      expect(await reloaded.textureFor(id), isNull);
     },
   );
   final sample = File(
@@ -169,4 +256,18 @@ void main() {
     expect(files.length, 4);
     expect(pngSize(files['crf_skn_002_0002_01.png']!), (4096, 2736));
   }, skip: !sample.existsSync());
+  test('registered local skin uses its ZIP preview', () async {
+    SharedPreferences.setMockInitialValues({});
+    final directory = await Directory.systemTemp.createTemp('aar_skin_card_');
+    addTearDown(() => directory.delete(recursive: true));
+    final store = LocalSkinStore.instance;
+    await store.initialize(storageDirectory: directory);
+    final preview = png(4, 5);
+    final record = await store.importPackage(
+      package(previewName: 'skin_preview.png', previewBytes: preview),
+    );
+    registerLocalSkinAppearances();
+    expect(characterAppearanceById(record['id']!).hasPreview, isTrue);
+    expect(await ProtectedCharacterAssets.previewFor(record['id']!), preview);
+  });
 }

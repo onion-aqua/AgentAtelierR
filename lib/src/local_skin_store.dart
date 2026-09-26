@@ -81,9 +81,18 @@ Map<String, Uint8List> decodeSkinZip(Uint8List bytes) {
           (int.parse(declaredSize[1]!), int.parse(declaredSize[2]!))) {
     throw const FormatException('PNG dimensions do not match the atlas');
   }
+  final preview = [
+    '${base}_preview.png',
+    '$base-preview.png',
+    'preview.png',
+    'cover.png',
+    'thumbnail.png',
+  ].where((name) => name != '$base.png' && files.containsKey(name)).firstOrNull;
+  if (preview != null) pngSize(files[preview]!);
   return {
     for (final suffix in ['.atlas', '.png', '.skel', '_gesture.json'])
       '$base$suffix': files['$base$suffix']!,
+    ?preview: files[preview]!,
   };
 }
 
@@ -131,6 +140,13 @@ class LocalSkinStore {
             _safe(record['base']!) &&
             await File('${_root!.path}/${record['id']}/${record['base']}.skel')
                 .exists()) {
+          final preview = record['preview'];
+          if (preview != null &&
+              (!_validPreviewName(preview, record['base']!) ||
+                  !await File('${_root!.path}/${record['id']}/$preview')
+                      .exists())) {
+            record.remove('preview');
+          }
           skins.add(record);
         }
       } on Object {
@@ -153,6 +169,16 @@ class LocalSkinStore {
 
   static bool _safe(String name) => RegExp(r'^[a-zA-Z0-9_-]+$').hasMatch(name);
 
+  static bool _validPreviewName(String name, String base) =>
+      name != '$base.png' &&
+      [
+        '${base}_preview.png',
+        '$base-preview.png',
+        'preview.png',
+        'cover.png',
+        'thumbnail.png',
+      ].contains(name);
+
   Future<Map<String, String>> importPackage(Uint8List bytes) async {
     await initialize();
     final files = await compute(decodeSkinZip, bytes);
@@ -161,6 +187,9 @@ class LocalSkinStore {
         .split('.')
         .first;
     if (!_safe(base)) throw const FormatException('Invalid skin name');
+    final preview = files.keys
+        .where((name) => _validPreviewName(name, base))
+        .firstOrNull;
     final id = 'local_${DateTime.now().microsecondsSinceEpoch}';
     final folder = await Directory('${_root!.path}/$id').create();
     for (final entry in files.entries) {
@@ -171,6 +200,7 @@ class LocalSkinStore {
       'id': id,
       'base': base,
       'label': '$base · ${skins.length + 1}',
+      'preview': ?preview,
     };
     final next = [...skins, record];
     if (!await _prefs!.setStringList(
@@ -198,8 +228,38 @@ class LocalSkinStore {
     return files;
   }
 
+  Future<Uint8List?> previewFor(String id) async {
+    await initialize();
+    final records = skins.where((record) => record['id'] == id);
+    if (records.isEmpty) return null;
+    final preview = records.first['preview'];
+    if (preview == null ||
+        !_validPreviewName(preview, records.first['base']!)) {
+      return null;
+    }
+    final file = File('${_root!.path}/$id/$preview');
+    return await file.exists() ? file.readAsBytes() : null;
+  }
+
   bool hasTexture(String id) => _textures.containsKey(id);
   bool usesTexture(String id) => _textures[id]?['enabled'] == true;
+
+  Future<void> _deleteUnreferencedTexture(
+    String? fileName,
+    Map<String, Map<String, dynamic>> records,
+  ) async {
+    if (fileName == null ||
+        !fileName.startsWith('texture_') ||
+        !_safe(fileName) ||
+        records.values.any((record) => record['file'] == fileName)) {
+      return;
+    }
+    try {
+      await File('${_root!.path}/$fileName.png').delete();
+    } on FileSystemException {
+      // A leftover local file is harmless once no saved texture refers to it.
+    }
+  }
 
   Future<void> importTexture(
     String id,
@@ -214,16 +274,42 @@ class LocalSkinStore {
         'PNG dimensions must match the original texture',
       );
     }
-    final file = 'texture_${DateTime.now().microsecondsSinceEpoch}';
-    await File('${_root!.path}/$file.png').writeAsBytes(bytes, flush: true);
+    final previousFile = _textures[id]?['file'] as String?;
+    final timestamp = DateTime.now().microsecondsSinceEpoch;
+    var file = 'texture_$timestamp';
+    var suffix = 1;
+    while (await File('${_root!.path}/$file.png').exists()) {
+      file = 'texture_${timestamp}_${suffix++}';
+    }
+    final textureFile = File('${_root!.path}/$file.png');
+    await textureFile.writeAsBytes(bytes, flush: true);
     final next = {
       ..._textures,
       id: {'file': file, 'enabled': true},
     };
+    try {
+      if (!await _prefs!.setString('localSkinTextures', jsonEncode(next))) {
+        throw const FileSystemException('Could not save texture settings');
+      }
+    } on Object {
+      await _deleteUnreferencedTexture(file, _textures);
+      rethrow;
+    }
+    _textures[id] = next[id]!;
+    await _deleteUnreferencedTexture(previousFile, next);
+  }
+
+  Future<bool> deleteTexture(String id) async {
+    await initialize();
+    final record = _textures[id];
+    if (record == null) return false;
+    final next = {..._textures}..remove(id);
     if (!await _prefs!.setString('localSkinTextures', jsonEncode(next))) {
       throw const FileSystemException('Could not save texture settings');
     }
-    _textures[id] = next[id]!;
+    _textures.remove(id);
+    await _deleteUnreferencedTexture(record['file'] as String?, next);
+    return true;
   }
 
   Future<void> setTextureEnabled(String id, bool enabled) async {

@@ -73,6 +73,7 @@ class GlassSurface extends StatelessWidget {
     this.blurSigma = 16,
     this.backdropBlur = true,
     this.transparentFill = false,
+    this.fillOpacity = 1,
   });
 
   final bool liquidGlass;
@@ -84,6 +85,7 @@ class GlassSurface extends StatelessWidget {
   final double blurSigma;
   final bool backdropBlur;
   final bool transparentFill;
+  final double fillOpacity;
 
   @override
   Widget build(BuildContext context) {
@@ -99,35 +101,43 @@ class GlassSurface extends StatelessWidget {
         color: transparentFill
             ? Colors.transparent
             : liquidGlass
-            ? surfaceTint.withValues(alpha: darkMode ? .42 : .34)
-            : fallbackColor,
+            ? surfaceTint.withValues(
+                alpha: (darkMode ? .42 : .34) * fillOpacity,
+              )
+            : fallbackColor.withValues(alpha: fallbackColor.a * fillOpacity),
         gradient: liquidGlass && !transparentFill
             ? LinearGradient(
                 begin: Alignment.topLeft,
                 end: Alignment.bottomRight,
-                colors: tone == GlassTone.dark
-                    ? [
-                        Colors.white.withValues(alpha: 0.24),
-                        Color.lerp(
-                          const Color(0xFF303536),
-                          accent,
-                          0.10,
-                        )!.withValues(alpha: 0.46),
-                        const Color(0xFF171B1C).withValues(alpha: 0.54),
-                      ]
-                    : [
-                        Colors.white.withValues(alpha: 0.82),
-                        Color.lerp(
-                          const Color(0xFFF1F3F2),
-                          accent,
-                          0.06,
-                        )!.withValues(alpha: 0.72),
-                        Color.lerp(
-                          const Color(0xFFE3E8E6),
-                          accent,
-                          0.08,
-                        )!.withValues(alpha: 0.66),
-                      ],
+                colors:
+                    (tone == GlassTone.dark
+                            ? [
+                                Colors.white.withValues(alpha: 0.24),
+                                Color.lerp(
+                                  const Color(0xFF303536),
+                                  accent,
+                                  0.10,
+                                )!.withValues(alpha: 0.46),
+                                const Color(0xFF171B1C).withValues(alpha: 0.54),
+                              ]
+                            : [
+                                Colors.white.withValues(alpha: 0.82),
+                                Color.lerp(
+                                  const Color(0xFFF1F3F2),
+                                  accent,
+                                  0.06,
+                                )!.withValues(alpha: 0.72),
+                                Color.lerp(
+                                  const Color(0xFFE3E8E6),
+                                  accent,
+                                  0.08,
+                                )!.withValues(alpha: 0.66),
+                              ])
+                        .map(
+                          (color) =>
+                              color.withValues(alpha: color.a * fillOpacity),
+                        )
+                        .toList(),
               )
             : null,
         borderRadius: borderRadius,

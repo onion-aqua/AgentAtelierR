@@ -834,6 +834,20 @@ class AppController extends ChangeNotifier {
   String ttsPreviewText = '你好！今天也一起去寻找有趣的炼金素材吧！';
   bool longTermMemoryEnabled = true;
   String memorySummary = '';
+  List<String> recentMemories = <String>[];
+  List<Map<String, Object>> _recentMemoryCheckpoints = <Map<String, Object>>[];
+  String? lastRecentMemoryMessageId;
+  int longTermMemoryConsolidatedCount = 0;
+  int memoryEditRevision = 0;
+  String memoryConsolidationPrompt = '';
+
+  String get recentMemorySummary => [
+    for (var index = 0; index < recentMemories.length; index++)
+      '${index + 1}. ${recentMemories[index]}',
+  ].join('\n\n');
+
+  int get pendingRecentMemoryCount =>
+      recentMemories.length - longTermMemoryConsolidatedCount;
   List<DateTime> suggestionUseTimes = <DateTime>[];
   String userAddress = '伙伴';
   String userPortrait = '';
@@ -1087,6 +1101,28 @@ class AppController extends ChangeNotifier {
     memorySummary = MemoryTimeline.normalizeExisting(
       _preferences.getString('memory_summary') ?? '',
     );
+    recentMemories = _parseRecentMemories(
+      _preferences.getStringList('recent_memories_v1'),
+    );
+    _recentMemoryCheckpoints = _decodeRecentMemoryCheckpoints(
+      _preferences.getString('recent_memory_checkpoints_v1'),
+    );
+    lastRecentMemoryMessageId = _preferences.getString(
+      'last_recent_memory_message_id_v1',
+    );
+    longTermMemoryConsolidatedCount =
+        (_preferences.getInt('long_term_memory_consolidated_count_v1') ?? 0)
+            .clamp(0, recentMemories.length);
+    memoryEditRevision = max(
+      0,
+      _preferences.getInt('memory_edit_revision_v1') ?? 0,
+    );
+    memoryConsolidationPrompt =
+        _preferences.getString('memory_consolidation_prompt_v1') ?? '';
+    if (!_preferences.containsKey('recent_memories_v1') &&
+        memorySummary.isNotEmpty) {
+      lastRecentMemoryMessageId = _latestUserMessageId(messages);
+    }
     splitNarrationComposer =
         _preferences.getBool('split_narration_composer') ?? false;
     try {
@@ -1263,13 +1299,14 @@ class AppController extends ChangeNotifier {
     String text, {
     List<ChatAttachment> attachments = const [],
   }) {
+    final prefix = 'user_${DateTime.now().microsecondsSinceEpoch}';
+    var id = prefix;
+    var suffix = 1;
+    while (messages.any((message) => message.id == id)) {
+      id = '${prefix}_${suffix++}';
+    }
     messages.add(
-      ChatMessage(
-        id: 'user_${DateTime.now().microsecondsSinceEpoch}',
-        text: text,
-        isUser: true,
-        attachments: attachments,
-      ),
+      ChatMessage(id: id, text: text, isUser: true, attachments: attachments),
     );
     userMessageCount += 1;
     relationshipPoints += 1;
@@ -1303,6 +1340,18 @@ class AppController extends ChangeNotifier {
     final withdrawn = messages[lastUserIndex];
     messages.removeRange(lastUserIndex, messages.length);
     if (messages.isEmpty) messages.add(_initialMessage);
+    if (withdrawn.id == lastRecentMemoryMessageId) {
+      final checkpoint = _recentMemoryCheckpoints.isEmpty
+          ? null
+          : _recentMemoryCheckpoints.removeLast();
+      if (checkpoint?['added'] == true &&
+          recentMemories.length > longTermMemoryConsolidatedCount) {
+        recentMemories = recentMemories.sublist(0, recentMemories.length - 1);
+      }
+      lastRecentMemoryMessageId = _recentMemoryCheckpoints.isEmpty
+          ? null
+          : _recentMemoryCheckpoints.last['id'] as String;
+    }
     userMessageCount = max(0, userMessageCount - 1);
     relationshipPoints = max(0, relationshipPoints - 1);
     final previousUserIndex = messages.lastIndexWhere(
@@ -2051,8 +2100,161 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
   }
 
   void updateMemorySummary(String value) {
-    memorySummary = MemoryTimeline.normalizeExisting(value);
+    final normalized = MemoryTimeline.normalizeExisting(value);
+    if (memorySummary == normalized) return;
+    memorySummary = normalized;
+    memoryEditRevision += 1;
+    longTermMemoryConsolidatedCount = recentMemories.length;
     _changed();
+  }
+
+  static List<String> _parseRecentMemories(Object? raw) {
+    if (raw == null) return <String>[];
+    if (raw is! List) throw const FormatException('最近记忆格式无效');
+    return raw
+        .whereType<String>()
+        .map((value) {
+          final text = value.trim();
+          return text.length <= 1200 ? text : text.substring(0, 1200);
+        })
+        .where((value) => value.isNotEmpty)
+        .toList();
+  }
+
+  static List<Map<String, Object>> _parseRecentMemoryCheckpoints(Object? raw) {
+    if (raw == null) return <Map<String, Object>>[];
+    if (raw is! List) throw const FormatException('最近记忆进度格式无效');
+    return raw
+        .whereType<Map>()
+        .map((record) {
+          final id = record['id'];
+          if (id is! String || id.isEmpty) return null;
+          return <String, Object>{'id': id, 'added': record['added'] == true};
+        })
+        .whereType<Map<String, Object>>()
+        .toList();
+  }
+
+  static List<Map<String, Object>> _decodeRecentMemoryCheckpoints(
+    String? encoded,
+  ) {
+    if (encoded == null || encoded.isEmpty) return <Map<String, Object>>[];
+    try {
+      return _parseRecentMemoryCheckpoints(jsonDecode(encoded));
+    } on Object {
+      return <Map<String, Object>>[];
+    }
+  }
+
+  static String? _latestUserMessageId(List<ChatMessage> history) {
+    for (final message in history.reversed) {
+      if (message.isUser && message.id.isNotEmpty) return message.id;
+    }
+    return null;
+  }
+
+  void setMemoryConsolidationPrompt(String value) {
+    final normalized = value.trim();
+    if (memoryConsolidationPrompt == normalized) return;
+    memoryConsolidationPrompt = normalized;
+    memoryEditRevision += 1;
+    _changed();
+  }
+
+  bool appendRecentMemory(
+    String text, {
+    required String lastMessageId,
+    int? expectedEditRevision,
+  }) {
+    final normalized = text.trim();
+    if (normalized.isEmpty ||
+        lastMessageId.isEmpty ||
+        lastMessageId == lastRecentMemoryMessageId ||
+        (expectedEditRevision != null &&
+            expectedEditRevision != memoryEditRevision)) {
+      return false;
+    }
+    final messageIndex = messages.indexWhere(
+      (message) => message.isUser && message.id == lastMessageId,
+    );
+    if (messageIndex < 0) return false;
+    final previousIndex = messages.indexWhere(
+      (message) => message.isUser && message.id == lastRecentMemoryMessageId,
+    );
+    if (previousIndex >= messageIndex) return false;
+    lastRecentMemoryMessageId = lastMessageId;
+    final summary = normalized.length <= 1200
+        ? normalized
+        : normalized.substring(0, 1200);
+    final key = summary.replaceAll(RegExp(r'\s+'), ' ').toLowerCase();
+    final alreadyRecorded = recentMemories.reversed
+        .take(16)
+        .any(
+          (existing) =>
+              existing.replaceAll(RegExp(r'\s+'), ' ').toLowerCase() == key,
+        );
+    if (!alreadyRecorded) {
+      recentMemories = [...recentMemories, summary];
+    }
+    _recentMemoryCheckpoints = [
+      ..._recentMemoryCheckpoints,
+      {'id': lastMessageId, 'added': !alreadyRecorded},
+    ];
+    if (_recentMemoryCheckpoints.length > 80) {
+      _recentMemoryCheckpoints = _recentMemoryCheckpoints.sublist(
+        _recentMemoryCheckpoints.length - 80,
+      );
+    }
+    _changed();
+    return true;
+  }
+
+  bool applyConsolidatedLongTermMemory(
+    String value, {
+    required int expectedEditRevision,
+    required int throughRecentMemoryCount,
+  }) {
+    if (expectedEditRevision != memoryEditRevision ||
+        throughRecentMemoryCount <= longTermMemoryConsolidatedCount ||
+        throughRecentMemoryCount > recentMemories.length ||
+        MemoryTimeline.decode(value) == null) {
+      return false;
+    }
+    final hasLegacyMemory =
+        memorySummary.trim().isNotEmpty &&
+        MemoryTimeline.decode(memorySummary) == null;
+    final normalized = hasLegacyMemory
+        ? MemoryTimeline.normalizeCandidate(
+            value,
+            previousMemory: memorySummary,
+          )
+        : MemoryTimeline.normalizeExisting(value);
+    if (normalized == null) return false;
+    final previousEntries =
+        MemoryTimeline.decode(memorySummary)?['entries'] as List? ?? const [];
+    final nextEntries =
+        MemoryTimeline.decode(normalized)?['entries'] as List? ?? const [];
+    if ((hasLegacyMemory &&
+            !nextEntries.any(
+              (entry) =>
+                  entry is Map &&
+                  entry['category'] == 'legacy' &&
+                  entry['summary'] == memorySummary,
+            )) ||
+        (previousEntries.isNotEmpty && nextEntries.isEmpty) ||
+        (previousEntries.length >= 4 &&
+            nextEntries.length * 2 < previousEntries.length)) {
+      return false;
+    }
+    memorySummary = normalized;
+    longTermMemoryConsolidatedCount = throughRecentMemoryCount;
+    if (recentMemories.length > 64 && longTermMemoryConsolidatedCount > 32) {
+      final removed = longTermMemoryConsolidatedCount - 32;
+      recentMemories = recentMemories.sublist(removed);
+      longTermMemoryConsolidatedCount -= removed;
+    }
+    _changed();
+    return true;
   }
 
   int suggestionUsesRemaining({DateTime? now}) {
@@ -2103,16 +2305,29 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
     String currentInput = '',
   }) {
     if (!longTermMemoryEnabled) return '长期记忆功能已关闭。不要引用或推断未提供的过往信息。';
+    final recent = recentMemories
+        .skip(longTermMemoryConsolidatedCount)
+        .toList()
+        .reversed
+        .take(8)
+        .toList()
+        .reversed
+        .map(
+          (summary) =>
+              summary.length <= 240 ? summary : summary.substring(0, 240),
+        )
+        .toList();
+    final recentText = recent.isEmpty ? '' : '\n最近记忆：${recent.join('；')}';
     final raw = memorySummary.trim();
-    if (raw.isEmpty) return '暂无长期记忆。';
+    if (raw.isEmpty) return '暂无长期记忆。$recentText';
     final document = _decodeMemoryDocument(
       MemoryTimeline.normalizeExisting(raw),
     );
-    if (document == null) return '旧版未结构化记忆：$raw';
+    if (document == null) return '旧版未结构化记忆：$raw$recentText';
     final entries = (document['entries'] as List<dynamic>? ?? const [])
         .whereType<Map<String, dynamic>>()
         .toList();
-    if (entries.isEmpty) return '暂无长期记忆。';
+    if (entries.isEmpty && recent.isEmpty) return '暂无长期记忆。';
     final latestMessageText = messages
         .lastWhere(
           (message) => message.isUser && message.text.trim().isNotEmpty,
@@ -2148,7 +2363,10 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
       }
       if (selected.length >= 12) break;
     }
-    return jsonEncode(MemoryTimeline.promptDocument(raw, selected));
+    return jsonEncode({
+      ...MemoryTimeline.promptDocument(raw, selected),
+      if (recent.isNotEmpty) 'recent_memories': recent,
+    });
   }
 
   static String? normalizeLongTermMemoryCandidate(
@@ -2511,7 +2729,9 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
   }
 
   void setLongTermMemoryEnabled(bool value) {
+    if (longTermMemoryEnabled == value) return;
     longTermMemoryEnabled = value;
+    memoryEditRevision += 1;
     _changed();
   }
 
@@ -2519,8 +2739,14 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
     required bool enabled,
     required String summary,
   }) {
+    final normalized = MemoryTimeline.normalizeExisting(summary);
+    if (longTermMemoryEnabled == enabled && memorySummary == normalized) return;
+    if (memorySummary != normalized) {
+      longTermMemoryConsolidatedCount = recentMemories.length;
+    }
+    memoryEditRevision += 1;
     longTermMemoryEnabled = enabled;
-    memorySummary = MemoryTimeline.normalizeExisting(summary);
+    memorySummary = normalized;
     _changed();
   }
 
@@ -2538,6 +2764,11 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
         )
         .toList(),
     'memorySummary': memorySummary,
+    'recentMemories': recentMemories,
+    'recentMemoryCheckpoints': _recentMemoryCheckpoints,
+    'lastRecentMemoryMessageId': lastRecentMemoryMessageId,
+    'longTermMemoryConsolidatedCount': longTermMemoryConsolidatedCount,
+    'memoryEditRevision': memoryEditRevision,
     'characterState': characterState.toJson(),
     'settingsSlots': _settingsSlotsJson,
     'userProfile': {
@@ -2648,6 +2879,7 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
       'ttsCueDensity': ttsCueDensity.name,
       'ttsPreviewText': ttsPreviewText,
       'longTermMemoryEnabled': longTermMemoryEnabled,
+      'memoryConsolidationPrompt': memoryConsolidationPrompt,
     },
   };
 
@@ -2667,6 +2899,11 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
     'version': 1,
     'messages': messages.map((message) => message.toJson()).toList(),
     'memorySummary': memorySummary,
+    'recentMemories': recentMemories,
+    'recentMemoryCheckpoints': _recentMemoryCheckpoints,
+    'lastRecentMemoryMessageId': lastRecentMemoryMessageId,
+    'longTermMemoryConsolidatedCount': longTermMemoryConsolidatedCount,
+    'memoryEditRevision': memoryEditRevision,
     'characterState': characterState.toJson(),
     'characterMood': characterMood.name,
     'relationshipPoints': relationshipPoints,
@@ -2790,6 +3027,11 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
     snapshot
       ..['messages'] = <Map<String, dynamic>>[_initialMessage.toJson()]
       ..['memorySummary'] = ''
+      ..['recentMemories'] = <String>[]
+      ..['recentMemoryCheckpoints'] = <Map<String, Object>>[]
+      ..['lastRecentMemoryMessageId'] = null
+      ..['longTermMemoryConsolidatedCount'] = 0
+      ..['memoryEditRevision'] = 0
       ..['characterState'] = CharacterState.newSave().toJson()
       ..['characterMood'] = CharacterMood.neutral.name
       ..['relationshipPoints'] = 0
@@ -3065,6 +3307,7 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
     memorySummary = MemoryTimeline.normalizeExisting(
       data['memorySummary'] as String? ?? memorySummary,
     );
+    _applyMemoryData(data);
     if (data.containsKey('characterState')) {
       characterState = CharacterState.fromJson(data['characterState']);
     }
@@ -3156,6 +3399,7 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
     memorySummary = MemoryTimeline.normalizeExisting(
       data['memorySummary'] as String? ?? '',
     );
+    _applyMemoryData(data);
     characterState = CharacterState.fromJson(data['characterState']);
     final userProfile = data['userProfile'] as Map<String, dynamic>? ?? {};
     userAddress = userProfile['address'] as String? ?? '伙伴';
@@ -3386,6 +3630,27 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
     ttsPreviewText = preferences['ttsPreviewText'] as String? ?? ttsPreviewText;
     longTermMemoryEnabled =
         preferences['longTermMemoryEnabled'] as bool? ?? true;
+    memoryConsolidationPrompt =
+        preferences['memoryConsolidationPrompt'] as String? ?? '';
+  }
+
+  void _applyMemoryData(Map<String, dynamic> data) {
+    recentMemories = _parseRecentMemories(data['recentMemories']);
+    _recentMemoryCheckpoints = _parseRecentMemoryCheckpoints(
+      data['recentMemoryCheckpoints'],
+    );
+    final anchor = data['lastRecentMemoryMessageId'];
+    lastRecentMemoryMessageId = anchor is String && anchor.isNotEmpty
+        ? anchor
+        : data.containsKey('recentMemories') || memorySummary.isEmpty
+        ? null
+        : _latestUserMessageId(messages);
+    longTermMemoryConsolidatedCount =
+        (data['longTermMemoryConsolidatedCount'] as int? ?? 0).clamp(
+          0,
+          recentMemories.length,
+        );
+    memoryEditRevision = max(0, data['memoryEditRevision'] as int? ?? 0);
   }
 
   Future<void> _hydrateMessageAttachments() async {
@@ -4174,7 +4439,14 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
 
   void clearChatHistory({bool clearLongTermMemory = false}) {
     messages = [_initialMessage];
-    if (clearLongTermMemory) memorySummary = '';
+    recentMemories = <String>[];
+    _recentMemoryCheckpoints = <Map<String, Object>>[];
+    lastRecentMemoryMessageId = null;
+    longTermMemoryConsolidatedCount = 0;
+    if (clearLongTermMemory) {
+      memorySummary = '';
+      memoryEditRevision += 1;
+    }
     // Invalidate pending replies, speech and memory consolidation from the
     // deleted conversation using the same reset path as loading a save.
     _dataRevision += 1;
@@ -4407,6 +4679,24 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
       _preferences.setString('tts_preview_text', ttsPreviewText),
       _preferences.setBool('long_term_memory_enabled', longTermMemoryEnabled),
       _preferences.setString('memory_summary', memorySummary),
+      _preferences.setStringList('recent_memories_v1', recentMemories),
+      _preferences.setString(
+        'recent_memory_checkpoints_v1',
+        jsonEncode(_recentMemoryCheckpoints),
+      ),
+      _preferences.setString(
+        'last_recent_memory_message_id_v1',
+        lastRecentMemoryMessageId ?? '',
+      ),
+      _preferences.setInt(
+        'long_term_memory_consolidated_count_v1',
+        longTermMemoryConsolidatedCount,
+      ),
+      _preferences.setInt('memory_edit_revision_v1', memoryEditRevision),
+      _preferences.setString(
+        'memory_consolidation_prompt_v1',
+        memoryConsolidationPrompt,
+      ),
       _preferences.setBool('split_narration_composer', splitNarrationComposer),
       _preferences.setString(
         'character_state_v1',

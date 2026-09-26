@@ -198,6 +198,43 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
+  testWidgets('memory prompt can be customized and restored', (tester) async {
+    final controller = await setup(tester);
+    controller.recentMemories = ['与莱莎约定次日一起采集素材。'];
+    await tapVisible(
+      tester,
+      find.byKey(const ValueKey('settings-category-data')),
+    );
+    await tapVisible(tester, find.text('长期记忆'));
+
+    await tester.tap(find.byKey(const ValueKey('memory-prompt-editor-open')));
+    await tester.pumpAndSettle();
+    final field = find.byKey(const ValueKey('memory-prompt-field'));
+    expect(
+      tester.widget<TextField>(field).controller!.text,
+      contains('从最近记忆中提炼'),
+    );
+    await tester.enterText(field, '只记录有后续影响的事实。');
+    await tester.tap(find.byKey(const ValueKey('memory-prompt-save')));
+    await tester.pumpAndSettle();
+    expect(controller.memoryConsolidationPrompt, '只记录有后续影响的事实。');
+
+    await tester.tap(find.byKey(const ValueKey('memory-prompt-editor-open')));
+    await tester.pumpAndSettle();
+    expect(tester.widget<TextField>(field).controller!.text, '只记录有后续影响的事实。');
+    await tester.tap(find.byKey(const ValueKey('memory-prompt-reset')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('memory-prompt-save')));
+    await tester.pumpAndSettle();
+    expect(controller.memoryConsolidationPrompt, isEmpty);
+
+    await tester.tap(find.text('最近记忆'));
+    await tester.pumpAndSettle();
+    expect(find.text('与莱莎约定次日一起采集素材。'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
   testWidgets(
     'appearance settings can pause character animation on full pages',
     (tester) async {

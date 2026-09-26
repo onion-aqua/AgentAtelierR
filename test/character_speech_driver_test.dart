@@ -415,6 +415,100 @@ void main() {
     expect(frame['eye']!.pitch, lessThan(0));
   });
 
+  test(
+    'schema 4 returns from a glance and keeps user-facing eyes centered',
+    () {
+      final profile = CharacterPerformanceProfile.parse(
+        jsonEncode({
+          'projectConfig': {
+            'ambientGaze': {
+              'yawLimit': 0.8,
+              'sizeMedium': 0.85,
+              'dwellShort': 0.6,
+              'moveBaseSeconds': 0.15,
+            },
+          },
+          'emotionalGesture': {
+            'GesturePatternDefs': [
+              {
+                'patternId': 'C1',
+                'eyeMovement': '指定方向',
+                'faceMovement': '追従（弱）',
+                'directions': ['横'],
+                'route': '外して戻る',
+                'points': 2,
+              },
+              {
+                'patternId': 'B3',
+                'eyeMovement': 'ユーザー注視',
+                'faceMovement': '指定方向',
+                'directions': ['横'],
+                'route': '1点',
+                'points': 1,
+              },
+            ],
+            'AttitudePatterns': [
+              {
+                'attitude': 'idle_low',
+                'patternId': 'C1',
+                'size': '中',
+                'dwell': '短',
+                'moveSpeed': '普通',
+                'repeatMin': 1,
+                'repeatMax': 1,
+                'weight': 1,
+              },
+              {
+                'attitude': 'agree',
+                'patternId': 'B3',
+                'size': '中',
+                'dwell': '短',
+                'moveSpeed': '普通',
+                'oneShotAnimation': 'motion_oneshot_D_001_active',
+                'weight': 1,
+              },
+            ],
+          },
+        }),
+      );
+      expect(profile.oneShotAttitudes('agree'), hasLength(1));
+      final director = CharacterPerformanceDirector(profile, random: Random(4));
+      Map<String, RigMotion> frame = {};
+      for (var i = 0; i < 35; i++) {
+        frame = director.sample(
+          delta: 1 / 60,
+          emotion: 'neutral',
+          speaking: false,
+          energy: 0,
+        );
+      }
+      final glance = frame['eye']!.yaw.abs();
+      expect(glance, greaterThan(0.08));
+      for (var i = 0; i < 75; i++) {
+        frame = director.sample(
+          delta: 1 / 60,
+          emotion: 'neutral',
+          speaking: false,
+          energy: 0,
+        );
+      }
+      expect(frame['eye']!.yaw.abs(), lessThan(glance * 0.4));
+
+      director.cueAttitude(profile.oneShotAttitudes('agree').single);
+      for (var i = 0; i < 35; i++) {
+        frame = director.sample(
+          delta: 1 / 60,
+          emotion: 'neutral',
+          speaking: false,
+          energy: 0,
+        );
+      }
+      expect(director.hasActiveAttitudeCue, isTrue);
+      expect(frame['eye']!.yaw.abs(), lessThan(0.02));
+      expect(frame['head']!.yaw.abs(), greaterThan(0.08));
+    },
+  );
+
   test('playback interpolation is bounded and audio end closes the mouth', () {
     expect(
       interpolatedSpeechPosition(

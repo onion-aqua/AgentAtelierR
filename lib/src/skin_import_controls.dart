@@ -15,17 +15,16 @@ import 'runtime_log.dart';
 class SkinImportControls extends StatefulWidget {
   const SkinImportControls({
     super.key,
-    required this.appearance,
+    required this.appearances,
     required this.language,
     required this.onImported,
     required this.onTextureChanged,
-    this.compact = false,
   });
-  final CharacterAppearance appearance;
+
+  final List<CharacterAppearance> appearances;
   final AppLanguage language;
   final ValueChanged<CharacterAppearance> onImported;
-  final VoidCallback onTextureChanged;
-  final bool compact;
+  final ValueChanged<CharacterAppearance> onTextureChanged;
 
   @override
   State<SkinImportControls> createState() => _SkinImportControlsState();
@@ -34,6 +33,7 @@ class SkinImportControls extends StatefulWidget {
 class _SkinImportControlsState extends State<SkinImportControls> {
   bool _busy = false;
   String? _error;
+
   String t(String zh, String en, String ja) => widget.language.text(zh, en, ja);
 
   Future<Uint8List?> _pick(String extension) async {
@@ -105,11 +105,48 @@ class _SkinImportControlsState extends State<SkinImportControls> {
     if (mounted) widget.onImported(characterAppearanceById(record['id']!));
   }
 
+  Future<CharacterAppearance?> _chooseTextureTarget() async {
+    return showDialog<CharacterAppearance>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text(t('选择贴图对应的服装', 'Choose outfit for texture', 'テクスチャの衣装を選択')),
+        contentPadding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
+        content: SizedBox(
+          width: 360,
+          height: (MediaQuery.sizeOf(dialogContext).height * .5).clamp(
+            160.0,
+            400.0,
+          ),
+          child: ListView.builder(
+            itemCount: widget.appearances.length,
+            itemBuilder: (context, index) {
+              final appearance = widget.appearances[index];
+              return ListTile(
+                key: ValueKey('texture-target-${appearance.id}'),
+                leading: const Icon(Icons.checkroom_outlined),
+                title: Text(appearance.label, maxLines: 2),
+                onTap: () => Navigator.of(dialogContext).pop(appearance),
+              );
+            },
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: Text(t('取消', 'Cancel', 'キャンセル')),
+          ),
+        ],
+      ),
+    );
+  }
+
   Future<void> _importTexture() async {
     final bytes = await _pick('png');
-    if (bytes == null) return;
+    if (bytes == null || !mounted) return;
+    final appearance = await _chooseTextureTarget();
+    if (appearance == null || !mounted) return;
     final files = await ProtectedCharacterAssets.originalFilesFor(
-      widget.appearance.assetName,
+      appearance.assetName,
     );
     final pngs = files.entries
         .where((entry) => entry.key.endsWith('.png'))
@@ -130,111 +167,85 @@ class _SkinImportControlsState extends State<SkinImportControls> {
       codec.dispose();
     }
     await LocalSkinStore.instance.importTexture(
-      widget.appearance.assetName,
+      appearance.assetName,
       bytes,
       pngs.single.value,
     );
     ProtectedCharacterAssets.clearCache();
-    if (mounted) widget.onTextureChanged();
+    if (mounted) widget.onTextureChanged(appearance);
   }
 
-  @override
-  Widget build(BuildContext context) {
-    final store = LocalSkinStore.instance;
-    final id = widget.appearance.assetName;
-    final importButtons = Wrap(
-      spacing: 8,
-      runSpacing: 4,
-      children: [
-        FilledButton.tonalIcon(
-          onPressed: _busy ? null : () => _run(_importZip),
-          icon: const Icon(Icons.folder_zip_outlined),
-          label: Text(t('导入皮肤 ZIP', 'Import skin ZIP', 'スキン ZIP を追加')),
-        ),
-        Tooltip(
-          message: t(
-            'PNG 尺寸及部件位置须与当前服装原图一致，文件上限 64 MB',
-            'PNG dimensions and parts must match this outfit. Maximum 64 MB.',
-            'PNG のサイズとパーツ配置を合わせてください。上限 64 MB。',
-          ),
-          child: FilledButton.tonalIcon(
-            onPressed: _busy ? null : () => _run(_importTexture),
-            icon: const Icon(Icons.texture),
-            label: Text(t('导入贴图', 'Import texture', 'テクスチャを追加')),
-          ),
-        ),
-      ],
-    );
-    final textureChoices = store.hasTexture(id)
-        ? Wrap(
-            spacing: 8,
+  Widget _action({
+    required Key key,
+    required String label,
+    required VoidCallback onTap,
+  }) {
+    final color = Theme.of(context).colorScheme.onSurface;
+    return Semantics(
+      button: true,
+      label: label,
+      child: InkWell(
+        key: key,
+        onTap: _busy ? null : onTap,
+        child: Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
             children: [
-              for (final enabled in [false, true])
-                ChoiceChip(
-                  label: Text(
-                    enabled
-                        ? t('导入贴图', 'Imported texture', '追加テクスチャ')
-                        : t('原始贴图', 'Original texture', '元のテクスチャ'),
-                  ),
-                  selected: store.usesTexture(id) == enabled,
-                  onSelected: _busy
-                      ? null
-                      : (_) => _run(() async {
-                          await store.setTextureEnabled(id, enabled);
-                          ProtectedCharacterAssets.clearCache();
-                          if (mounted) widget.onTextureChanged();
-                        }),
+              Icon(Icons.add_rounded, size: 64, color: color),
+              const SizedBox(height: 4),
+              Text(
+                label,
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  color: color,
+                  fontSize: 16,
+                  fontWeight: FontWeight.w600,
                 ),
+              ),
             ],
-          )
-        : null;
-    if (widget.compact) {
-      return Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          importButtons,
-          ?textureChoices,
-          if (_busy) const LinearProgressIndicator(),
-          if (_error != null)
-            Text(_error!, style: const TextStyle(color: Colors.orangeAccent)),
-        ],
-      );
-    }
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 16, 12, 4),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          const Divider(color: Colors.white24),
-          Text(
-            t('本地皮肤与贴图', 'Local skins and textures', 'ローカルスキンとテクスチャ'),
-            style: const TextStyle(
-              color: Colors.white,
-              fontWeight: FontWeight.bold,
-            ),
           ),
-          const SizedBox(height: 8),
-          importButtons,
-          const SizedBox(height: 8),
-          Text(
-            t(
-              'PNG 必须与当前皮肤原图尺寸、部件位置一致。仅替换图集，不改变骨骼；无预览图的皮肤留空。文件上限 64 MB。',
-              'PNG dimensions and part layout must match this skin. Skeletons stay unchanged; missing previews stay blank. Maximum 64 MB.',
-              'PNG のサイズとパーツ配置は元画像と一致させてください。骨格は変更しません。プレビューがない場合は空欄です。上限 64 MB。',
-            ),
-            style: const TextStyle(color: Colors.white70, fontSize: 12),
-          ),
-          ?textureChoices,
-          if (_busy)
-            const Padding(
-              padding: EdgeInsets.all(8),
-              child: LinearProgressIndicator(),
-            ),
-          if (_error != null)
-            Text(_error!, style: const TextStyle(color: Colors.orangeAccent)),
-        ],
+        ),
       ),
     );
   }
+
+  @override
+  Widget build(BuildContext context) => Stack(
+    fit: StackFit.expand,
+    children: [
+      Column(
+        children: [
+          Expanded(
+            child: _action(
+              key: const ValueKey('import-outfit-zip'),
+              label: t('导入 ZIP', 'Import ZIP', 'ZIP を読み込む'),
+              onTap: () => _run(_importZip),
+            ),
+          ),
+          const Divider(height: 1),
+          Expanded(
+            child: _action(
+              key: const ValueKey('import-outfit-texture'),
+              label: t('导入贴图', 'Import texture', 'テクスチャを読み込む'),
+              onTap: () => _run(_importTexture),
+            ),
+          ),
+        ],
+      ),
+      if (_busy) const Center(child: CircularProgressIndicator()),
+      if (_error != null)
+        Positioned(
+          left: 12,
+          right: 12,
+          bottom: 6,
+          child: Text(
+            _error!,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            textAlign: TextAlign.center,
+            style: const TextStyle(color: Colors.orangeAccent, fontSize: 12),
+          ),
+        ),
+    ],
+  );
 }

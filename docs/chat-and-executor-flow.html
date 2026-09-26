@@ -1,0 +1,256 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>主界面对话与执行器流程</title>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: light-dark(#f7f8fa, #15171a);
+      --fg: light-dark(#1d2329, #edf0f2);
+      --muted: light-dark(#5d6872, #aab4bd);
+      --line: light-dark(#d9dee3, #3a424a);
+      --surface: light-dark(#ffffff, #20252a);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 28px;
+      background: var(--bg);
+      color: var(--fg);
+      font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+      line-height: 1.55;
+    }
+    main { max-width: 1500px; margin: 0 auto; }
+    h1 { margin: 0 0 8px; font-size: 26px; font-weight: 600; }
+    h2 { margin: 30px 0 10px; font-size: 20px; font-weight: 600; }
+    p { margin: 6px 0 14px; color: var(--muted); }
+    .diagram {
+      overflow-x: auto;
+      padding: 18px 4px 24px;
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+    }
+    .mermaid { min-width: 1100px; }
+    table { width: 100%; border-collapse: collapse; background: var(--surface); }
+    th, td { padding: 10px 12px; border: 1px solid var(--line); text-align: left; vertical-align: top; }
+    th { font-weight: 600; }
+    code { font-family: Consolas, monospace; font-size: 0.92em; }
+    .note {
+      padding: 12px 14px;
+      border-left: 3px solid #c47b22;
+      background: var(--surface);
+      color: var(--fg);
+    }
+    @media (max-width: 700px) {
+      body { padding: 16px; }
+      h1 { font-size: 22px; }
+      .mermaid { min-width: 900px; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>主界面对话与执行器流程</h1>
+    <p>基于当前 <code>ryza_chat_mvp</code> 源码整理。图中区分了 Agent 工具执行、辅助规划、角色表演执行和外部服务调用。</p>
+
+    <section class="diagram" aria-label="对话与执行器流程图">
+      <div class="mermaid">
+flowchart TB
+  subgraph UI["主界面对话流程：ChatScreen"]
+    U["用户输入<br/>普通发言 / 旁白 / 附件 / 自动继续"] --> SEND["_sendMessage()"]
+    SEND --> CHECK{"输入有效且当前未回复？"}
+    CHECK -- "否" --> STOP["忽略本次发送"]
+    CHECK -- "是" --> BUILD["组装本轮文本<br/>清理输入、停止旧语音、清除草稿"]
+    BUILD --> USERMSG["AppController.addUserMessage()<br/>写入消息、关系值、用户计数"]
+    USERMSG --> STATE["设置 _isReplying<br/>启动界面动画帧率与 generation"]
+    STATE --> AI{"AI 是否开启？"}
+    AI -- "否" --> DEMO["demoReply()"]
+    DEMO --> DIRECT["addAssistantMessage()"]
+    AI -- "是" --> KEY["读取当前 Provider / Model / API Key"]
+    KEY --> KEYOK{"API Key 有效？"}
+    KEYOK -- "否" --> KEYERR["写入失败消息并结束"]
+    KEYOK -- "是" --> PROMPT["构造请求上下文<br/>buildCharacterPrompt()<br/>contextMessagesForModel()"]
+    PROMPT --> STREAM["OpenAiCompatibleClient.streamChat()"]
+    STREAM --> ROUTE{"Provider / Agent 路由"}
+    ROUTE -- "Gemini" --> GEMINI["_geminiChat()<br/>原生 Interactions 协议"]
+    ROUTE -- "OpenAI 兼容 + Agent 关闭" --> NORMAL["_streamRequest()<br/>SSE 流式请求"]
+    ROUTE -- "OpenAI 兼容 + Agent 开启" --> AGENT["Agent 工具执行器"]
+    GEMINI --> DELTA["输出文本增量 delta"]
+    NORMAL --> DELTA
+    AGENT --> DELTA
+    DIRECT --> POST
+    DELTA --> BUBBLE["beginAssistantStream()<br/>appendAssistantDelta()<br/>实时更新对话气泡"]
+    BUBBLE --> FINISH["finishAssistantStream()<br/>完成消息、触发持久化"]
+    FINISH --> POST["回复后处理"]
+    POST --> TRANS["独立翻译：满足条件时异步执行"]
+    POST --> MEMORY["长期记忆整理：按条件异步执行"]
+    POST --> PLAN["表演规划、语音规划、歌唱规划并行执行"]
+  end
+
+  subgraph AG["Agent 工具执行器：ai_services.dart"]
+    AGENT --> ASK["非流式请求模型决策<br/>_completeMessage(tools: _agentTools)"]
+    ASK --> CALLS{"模型返回 tool_calls？"}
+    CALLS -- "否" --> TEXT["取得最终文本 content"]
+    TEXT --> AGEND["交回主界面流式处理"]
+    CALLS -- "是" --> RECORD["追加 assistant tool_calls<br/>保留 reasoning_content / reasoning_details"]
+    RECORD --> DISPATCH["_executeToolCall()<br/>解析工具名与 JSON 参数"]
+    DISPATCH --> TYPE{"工具类型"}
+    TYPE -- "本地业务 / 上下文工具" --> CONTEXT["contextToolExecutor<br/>AppController.queryContextTool()"]
+    TYPE -- "网页搜索" --> WEB["WebSearchClient"]
+    TYPE -- "设备工具" --> DEVICE["agentToolExecutor<br/>DeviceAgentTools.execute()"]
+    CONTEXT --> RESULT["得到工具结果"]
+    WEB --> RESULT
+    DEVICE --> RESULT
+    RESULT --> TOOLMSG["追加 role=tool 的结果消息"]
+    TOOLMSG --> LIMIT{"达到工具调用上限？"}
+    LIMIT -- "否" --> ASK
+    LIMIT -- "是" --> FINALREQ["最后一次流式请求<br/>toolChoice = none"]
+    FINALREQ --> AGEND
+  end
+
+  subgraph AUX["辅助规划器：主回复之后调用"]
+    PLAN --> PARALLEL["客户端并行调度"]
+    PARALLEL --> EXP["ExpressionPlannerTool<br/>LLM 辅助选择 face / intensity"]
+    PARALLEL --> ACT["ActionPlannerTool<br/>LLM 辅助选择 action / posture"]
+    PARALLEL --> SPEECH["SpeechPlanner<br/>LLM 辅助选择语音情绪 / 停顿"]
+    PARALLEL --> SING["SingingPlannerTool<br/>仅明确歌唱请求时规划 TTS 标签"]
+    EXP --> MERGE["校验 JSON、合并标签、失败局部回退"]
+    ACT --> MERGE
+    SPEECH --> MERGE
+    SING --> MERGE
+    MERGE --> PERF_ENTRY["performanceSegmentsForAssistantResponse()<br/>按旁白 / 莱莎 / NPC / 译文分段"]
+  end
+
+  subgraph PERF_EXEC["角色表演执行器：chat_screen.dart"]
+    PERF_ENTRY --> CUES["解析 face / action / posture / TTS 标签"]
+    CUES --> TTS{"TTS 配置可用？"}
+    TTS -- "否" --> DIRECTPERF["_applyPerformanceFromResponse()<br/>直接应用表情、姿态、动作"]
+    TTS -- "是" --> SYNTH["_playTtsIfConfigured()<br/>逐段合成语音"]
+    SYNTH --> SEGPLAY["每段播放前应用姿态与表情"]
+    SEGPLAY --> QUEUE["动作加入 CharacterPerformanceQueue"]
+    DIRECTPERF --> QUEUE
+    QUEUE --> READY{"Spine 已就绪且不忙？"}
+    READY -- "否" --> WAIT["等待冷却、当前动作完成或清空队列"]
+    WAIT --> READY
+    READY -- "是" --> ACTIONTYPE{"动作类型"}
+    ACTIONTYPE -- "语义动作" --> SEMANTIC["_playSemanticActionNow()<br/>按当前外观选择兼容动作资源"]
+    ACTIONTYPE -- "精确动作组 grp_*" --> GROUP["_playMotionGroupNow()<br/>校验姿态、皮肤和资源"]
+    SEMANTIC --> SPINE["Spine AnimationState 播放<br/>轨道、混合、速度、时长"]
+    GROUP --> SPINE
+    SEGPLAY --> AUDIO["音频播放 + 口型 / 呼吸 / 眨眼同步"]
+    SPINE --> DONE["动作完成后恢复覆盖层与待机状态"]
+    AUDIO --> DONE
+  end
+
+  classDef ui fill:#e8f1ff,stroke:#4b78b8,color:#17243a;
+  classDef agent fill:#fff0dc,stroke:#c47b22,color:#3b250b;
+  classDef aux fill:#f0eaff,stroke:#8064b7,color:#251b3a;
+  classDef perf fill:#e5f5e9,stroke:#4c9960,color:#17351d;
+  class U,SEND,BUILD,USERMSG,STATE,AI,DEMO,DIRECT,KEY,PROMPT,STREAM,ROUTE,GEMINI,NORMAL,DELTA,BUBBLE,FINISH,POST,TRANS,MEMORY,PLAN ui;
+  class AGENT,ASK,CALLS,TEXT,AGEND,RECORD,DISPATCH,TYPE,CONTEXT,WEB,DEVICE,RESULT,TOOLMSG,LIMIT,FINALREQ agent;
+  class PARALLEL,EXP,ACT,SPEECH,SING,MERGE aux;
+  class PERF_ENTRY,CUES,TTS,DIRECTPERF,SYNTH,SEGPLAY,QUEUE,READY,WAIT,ACTIONTYPE,SEMANTIC,GROUP,SPINE,AUDIO,DONE perf;
+      </div>
+    </section>
+
+    <h2>组件分类</h2>
+    <table>
+      <thead>
+        <tr><th>类型</th><th>组件</th><th>职责</th><th>是否是 Agent 工具 / 子智能体</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>界面编排层</td>
+          <td><code>ChatScreen</code>、<code>AppShell</code></td>
+          <td>接收输入、管理回复状态、驱动消息显示、串联后处理。</td>
+          <td>都不是。它们是客户端流程编排者。</td>
+        </tr>
+        <tr>
+          <td>状态与领域层</td>
+          <td><code>AppController</code>、炼金、任务、地图、记忆模型</td>
+          <td>保存消息、用户状态、角色状态、任务、库存、地图和长期记忆；提供本地业务操作。</td>
+          <td>不是子智能体；其中被暴露给模型的方法才形成 Agent 工具实现。</td>
+        </tr>
+        <tr>
+          <td>模型传输层</td>
+          <td><code>OpenAiCompatibleClient</code>、<code>_geminiChat</code>、<code>PlanningHttpClient</code></td>
+          <td>发送普通对话、Agent 决策、辅助规划请求，并解析流式响应。</td>
+          <td>不是。它们是 LLM 客户端和传输组件。</td>
+        </tr>
+        <tr>
+          <td>Agent 工具定义</td>
+          <td><code>_agentTools</code> 中的 <code>web_search</code>、任务、炼金、地图、设备工具等</td>
+          <td>向模型声明可调用的函数名称、参数和说明。</td>
+          <td>是“模型可调用工具的声明”，不是独立子智能体。</td>
+        </tr>
+        <tr>
+          <td>Agent 工具调度器</td>
+          <td><code>_streamAgentChat</code>、<code>_executeToolCall</code></td>
+          <td>请求模型决策、解析 tool call、路由执行、回填 tool 结果、循环直到最终回答。</td>
+          <td>这是 Agent runtime / 工具执行循环，不是单个工具。</td>
+        </tr>
+        <tr>
+          <td>Agent 工具实现</td>
+          <td><code>AppController.queryContextTool</code>、<code>DeviceAgentTools</code>、<code>WebSearchClient</code></td>
+          <td>执行本地业务状态修改、设备查询和网页搜索。</td>
+          <td>是工具实现；不是子智能体。它们不会自行决定下一步。</td>
+        </tr>
+        <tr>
+          <td>辅助规划器</td>
+          <td><code>IndependentPerformanceTools</code>、<code>ExpressionPlannerTool</code>、<code>ActionPlannerTool</code>、<code>SpeechPlanner</code>、<code>SingingPlannerTool</code></td>
+          <td>在主回复生成后，用专用提示词生成表情、动作、姿态和语音标签；结果经过本地 JSON 与能力校验。</td>
+          <td>不是 Agent 工具，也不是子智能体。它们是客户端主动调用的 auxiliary LLM tasks；即使内部调用 LLM，也没有 Agent 工具循环和自主目标。</td>
+        </tr>
+        <tr>
+          <td>规则解析与校验</td>
+          <td><code>chat_segments.dart</code>、<code>PerformancePlanner</code>、各类 <code>Plan.apply</code></td>
+          <td>拆分说话者、提取控制标签、校验候选、合并规划结果，必要时回退。</td>
+          <td>不是。它们是本地纯处理逻辑。</td>
+        </tr>
+        <tr>
+          <td>角色表演执行器</td>
+          <td><code>CharacterPerformanceQueue</code>、<code>_drainPerformanceQueue</code>、<code>_playSemanticActionNow</code>、<code>_playMotionGroupNow</code></td>
+          <td>检查 Spine 状态、姿态和资源兼容性，排队并播放动作，完成后恢复待机。</td>
+          <td>不是 Agent。它是确定性的运行时执行器。</td>
+        </tr>
+        <tr>
+          <td>语音执行器</td>
+          <td><code>FishAudioClient</code>、<code>DashScopeTtsClient</code>、<code>GenericTtsClient</code>、<code>MimoTtsClient</code></td>
+          <td>把规划后的莱莎台词合成为音频，并驱动播放、口型和语音缓存。</td>
+          <td>不是 Agent。它们是外部 TTS 服务适配器。</td>
+        </tr>
+        <tr>
+          <td>持久化与观测</td>
+          <td><code>SharedPreferences</code>、<code>ConversationCollectionStore</code>、<code>RuntimeLog</code></td>
+          <td>保存消息、设置、语音片段、运行日志和诊断信息。</td>
+          <td>不是。它们不参与模型决策。</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h2>判断标准</h2>
+    <div class="note">
+      只有同时满足“出现在 <code>_agentTools</code> 声明中、由模型发起调用、经过 <code>_executeToolCall()</code> 路由”的组件，才属于 Agent 工具链。规划器虽然可能调用 LLM，但它们由 <code>ChatScreen</code> 在主回复之后主动调用，输出的是受校验的计划数据，因此归类为辅助规划器，不归类为 Agent 子智能体。
+    </div>
+  </main>
+  <script>
+    mermaid.initialize({
+      startOnLoad: true,
+      securityLevel: "loose",
+      theme: "base",
+      themeVariables: {
+        fontFamily: "Segoe UI, Microsoft YaHei, sans-serif",
+        primaryTextColor: "#17243a",
+        lineColor: "#66717a",
+        clusterBkg: "transparent",
+        clusterBorder: "#aeb7bf"
+      },
+      flowchart: { htmlLabels: true, useMaxWidth: true, curve: "basis" }
+    });
+  </script>
+</body>
+</html>
