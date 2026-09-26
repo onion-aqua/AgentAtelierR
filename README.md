@@ -1,6 +1,6 @@
 # AgentAtelierR
 
-Current source version: **1.0.0+29 (DX)**.
+Current source version: **1.0.0 DX** (`1.0.0+31`).
 
 Local-first AI character companion for Android and Windows. It combines
 streaming LLM chat, local memory, optional TTS, animated character interaction,

@@ -16,6 +16,7 @@ class SoundscapeController {
   String? _ambientAsset;
   double? _bgmVolume;
   double? _ambientVolume;
+  bool _suspended = false;
   late final Future<Set<String>> _availableAssets = _loadAvailableAssets();
   Future<void>? _pendingSync;
 
@@ -46,12 +47,16 @@ class SoundscapeController {
     AppController controller, {
     required bool worldMapVisible,
   }) async {
-    if (controller.continuousAsmr) {
-      await _bgmPlayer.stop();
-      await _ambientPlayer.stop();
+    if (controller.continuousAsmr || controller.activeCharacterId == 'sophie') {
+      if (!_suspended) {
+        await _bgmPlayer.stop();
+        await _ambientPlayer.stop();
+      }
+      _suspended = true;
       invalidate();
       return;
     }
+    _suspended = false;
     final nextBgmAsset = worldMapVisible
         ? StageEnvironmentCatalog.worldMapBgmAsset
         : await _chatBgmAssetFor(controller.selectedStageId);

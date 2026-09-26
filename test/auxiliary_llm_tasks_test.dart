@@ -50,19 +50,103 @@ void main() {
     controller.addUserMessage('Hello');
     controller.addAssistantMessage(source);
     final original = controller.messages.last;
-    expect(controller.attachTranslation(original, '$source\n译文：你好'), isTrue);
+    expect(
+      await controller.attachTranslation(original, '$source\n译文：你好'),
+      isTrue,
+    );
     final restored = ChatMessage.fromJson(controller.messages.last.toJson());
     expect(restored.text, source);
     expect(restored.displayText, contains('译文：你好'));
     controller.undoLastUserTurn();
-    expect(controller.attachTranslation(original, 'late result'), isFalse);
+    expect(
+      await controller.attachTranslation(original, 'late result'),
+      isFalse,
+    );
     controller.dispose();
+  });
+
+  test(
+    'late translation completes an existing save without adding newer chat',
+    () async {
+      SharedPreferences.setMockInitialValues({});
+      final controller = await AppController.load();
+      addTearDown(controller.dispose);
+      controller.addAssistantMessage('莱莎：你好。');
+      final original = controller.messages.last;
+      await controller.saveToLocalSlot(0, name: '翻译前存档');
+      final before = controller.exportLocalSlot(0);
+
+      controller.addUserMessage('存档之后的新消息');
+      expect(
+        await controller.attachTranslation(original, '莱莎：你好。\n译文：Hello.'),
+        isTrue,
+      );
+
+      final saved = controller.exportLocalSlot(0);
+      expect(saved['savedAt'], before['savedAt']);
+      expect(saved['messageCount'], before['messageCount']);
+      final snapshot = saved['snapshot'] as Map<String, dynamic>;
+      final savedMessages = snapshot['messages'] as List;
+      expect(savedMessages, hasLength(2));
+      expect(savedMessages.last['text'], original.text);
+      expect(savedMessages.last['translatedText'], '莱莎：你好。\n译文：Hello.');
+      expect(jsonEncode(savedMessages), isNot(contains('存档之后的新消息')));
+
+      await controller.loadFromLocalSlot(0);
+      expect(controller.messages.last.translatedText, '莱莎：你好。\n译文：Hello.');
+    },
+  );
+
+  test('concurrent save and translation keep the translated reply', () async {
+    SharedPreferences.setMockInitialValues({});
+    final controller = await AppController.load();
+    addTearDown(controller.dispose);
+    controller.addAssistantMessage('莱莎：早安。');
+    final original = controller.messages.last;
+
+    final saving = controller.saveToLocalSlot(0);
+    final translating = controller.attachTranslation(
+      original,
+      '莱莎：早安。\n译文：Good morning.',
+    );
+    await Future.wait([saving, translating]);
+
+    final snapshot = controller.exportLocalSlot(0)['snapshot'] as Map;
+    final savedMessages = snapshot['messages'] as List;
+    expect(savedMessages.last['translatedText'], '莱莎：早安。\n译文：Good morning.');
   });
 
   test('translation-only view falls back to original while translation unavailable', () {
     final segments = parseAssistantSegments('莱莎：Hello');
     expect(dialogueDisplayIndices(segments, true), [0]);
   });
+
+  test(
+    'Sophie translation retains her identity and rejects speaker markup',
+    () async {
+      const source = '苏菲：おはよう！';
+      final translated = await DialogueTranslator().translate(
+        source: source,
+        language: 'Chinese',
+        complete: (messages) async {
+          final data = jsonDecode(messages.last['content']!) as Map;
+          expect(data['lines'], [
+            {'id': 0, 'speaker': 'sophie', 'text': 'おはよう！'},
+          ]);
+          return '{"translations":[{"id":0,"text":"早上好！"}]}';
+        },
+      );
+      expect(translated, '苏菲：おはよう！\n译文：早上好！');
+      await expectLater(
+        DialogueTranslator().translate(
+          source: source,
+          language: 'Chinese',
+          complete: (_) async => '{"translations":[{"id":0,"text":"苏菲：你好"}]}',
+        ),
+        throwsFormatException,
+      );
+    },
+  );
 
   test(
     'memory service validates structured output and retains protected memories',

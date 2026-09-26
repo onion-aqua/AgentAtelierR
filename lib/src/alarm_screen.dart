@@ -8,6 +8,8 @@ import 'package:permission_handler/permission_handler.dart';
 import 'app_controller.dart';
 import 'app_localization.dart';
 import 'alarm_audio.dart';
+import 'character_alarm_coordinator.dart';
+import 'character_runtime_profile.dart';
 import 'glass_ui.dart';
 import 'runtime_log.dart';
 
@@ -28,6 +30,8 @@ class AlarmScreen extends StatefulWidget {
 class _AlarmScreenState extends State<AlarmScreen> {
   List<AlarmSettings> _alarms = const [];
   StreamSubscription<dynamic>? _subscription;
+  bool get _hasVoiceResources =>
+      widget.controller.activeCharacterId == CharacterRuntimeIds.ryza;
 
   @override
   void initState() {
@@ -43,12 +47,17 @@ class _AlarmScreenState extends State<AlarmScreen> {
   }
 
   Future<void> _refresh() async {
+    if (!_hasVoiceResources) {
+      if (mounted && _alarms.isNotEmpty) setState(() => _alarms = const []);
+      return;
+    }
     final alarms = await Alarm.getAlarms();
     alarms.sort((a, b) => a.dateTime.compareTo(b.dateTime));
-    if (mounted) setState(() => _alarms = alarms);
+    if (mounted && _hasVoiceResources) setState(() => _alarms = alarms);
   }
 
   Future<void> _addAlarm() async {
+    if (!_hasVoiceResources) return;
     final language = widget.controller.interfaceLanguage;
     await Permission.notification.request();
     final exactAlarmStatus = await Permission.scheduleExactAlarm.request();
@@ -90,7 +99,7 @@ class _AlarmScreenState extends State<AlarmScreen> {
     }
     if (!mounted) return;
     final reminderType = await _selectReminderType(language);
-    if (reminderType == null) return;
+    if (reminderType == null || !_hasVoiceResources) return;
 
     final alarmId = DateTime.now().millisecondsSinceEpoch.remainder(1000000000);
     final audioAsset = alarmVoiceAsset(
@@ -105,7 +114,9 @@ class _AlarmScreenState extends State<AlarmScreen> {
       id: alarmId,
       dateTime: dateTime,
       assetAudioPath: audioAsset,
+      payload: CharacterAlarmCoordinator.ryzaVoicePayload,
       loopAudio: true,
+      allowSameSecondScheduling: true,
       vibrate: true,
       androidFullScreenIntent: true,
       volumeSettings: VolumeSettings.fade(
@@ -295,6 +306,35 @@ class _AlarmScreenState extends State<AlarmScreen> {
   @override
   Widget build(BuildContext context) {
     final language = widget.controller.interfaceLanguage;
+    if (!_hasVoiceResources) {
+      return Scaffold(
+        backgroundColor: Colors.transparent,
+        appBar: AppBar(
+          backgroundColor: glassPageHeaderColor(context),
+          automaticallyImplyLeading: false,
+          title: Padding(
+            padding: const EdgeInsets.only(left: 58),
+            child: Text(language.text('语音闹钟', 'Voice alarms', 'ボイスアラーム')),
+          ),
+        ),
+        body: GlassPageSurface(
+          liquidGlass: widget.controller.liquidGlassChatUi,
+          child: Center(
+            child: Padding(
+              padding: const EdgeInsets.all(24),
+              child: Text(
+                language.text(
+                  '苏菲的语音闹钟资源尚未提供',
+                  'Sophie voice alarms are not available yet',
+                  'ソフィーの音声アラームはまだ利用できません',
+                ),
+                textAlign: TextAlign.center,
+              ),
+            ),
+          ),
+        ),
+      );
+    }
     return Scaffold(
       backgroundColor: Colors.transparent,
       appBar: AppBar(

@@ -1,10 +1,49 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:ryza_chat_mvp/src/app_controller.dart';
 import 'package:ryza_chat_mvp/src/settings_screen.dart';
 
 void main() {
+  testWidgets('character choices retain both custom icons after switching', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues({});
+    const pathProvider = MethodChannel('plugins.flutter.io/path_provider');
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      pathProvider,
+      (_) async => null,
+    );
+    addTearDown(
+      () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        pathProvider,
+        null,
+      ),
+    );
+    final controller = (await tester.runAsync(() => AppController.load()))!;
+    addTearDown(controller.dispose);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SettingsScreen(controller: controller, onMenuPressed: () {}),
+      ),
+    );
+    void expectCharacterIcons() {
+      final assets = tester
+          .widgetList<Image>(find.byType(Image))
+          .map((image) => image.image)
+          .whereType<AssetImage>()
+          .map((image) => image.assetName);
+      expect(assets, contains('assets/images/character_switch/ryza.png'));
+      expect(assets, contains('assets/images/character_switch/sophie.png'));
+    }
+
+    expectCharacterIcons();
+    await tester.runAsync(() => controller.setActiveCharacter('sophie'));
+    await tester.pumpAndSettle();
+    expectCharacterIcons();
+  });
+
   testWidgets('export asks whether to include service API keys', (
     tester,
   ) async {

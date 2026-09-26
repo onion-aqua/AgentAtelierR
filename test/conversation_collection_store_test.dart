@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:archive/archive.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ryza_chat_mvp/src/app_controller.dart';
 import 'package:ryza_chat_mvp/src/conversation_collection_store.dart';
@@ -18,6 +19,33 @@ void main() {
     audio = await File('${root.path}/source.wav').writeAsBytes([1, 2, 3, 4]);
   });
   tearDown(() async => root.delete(recursive: true));
+  test('collections and voice caches are isolated by character', () async {
+    const channel = MethodChannel('plugins.flutter.io/path_provider');
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(channel, (_) async => root.path);
+    addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+
+    final ryza = await ConversationCollectionStore.open(characterId: 'ryza');
+    final sophie = await ConversationCollectionStore.open(
+      characterId: 'sophie',
+    );
+    expect(ryza.directory.path, isNot(sophie.directory.path));
+    await ryza.cacheVoice('ryza-line', [audio.path], texts: ['莱莎台词']);
+    await ryza.collect([
+      {
+        'key': 'ryza-line',
+        'text': '莱莎台词',
+        'isUser': false,
+        'saveText': true,
+        'saveVoice': true,
+      },
+    ]);
+
+    expect(await sophie.cards(), isEmpty);
+    expect(await sophie.availableVoiceKeys(), isEmpty);
+    expect(await sophie.voiceSegments('ryza-line'), isEmpty);
+  });
   test(
     'speech mappings survive collection, export and cache eviction',
     () async {

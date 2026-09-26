@@ -11,12 +11,16 @@ import 'alchemy_models.dart';
 import 'character_state.dart';
 import 'attachment_thumbnail_store.dart';
 import 'character_catalog.dart';
+import 'character_alarm_coordinator.dart';
 import 'character_appearance.dart';
+import 'local_skin_store.dart';
 import 'mimo_tts_config.dart';
 import 'memory_timeline.dart';
 import 'model_thinking.dart';
 import 'character_prompt_defaults.dart';
+import 'character_runtime_profile.dart';
 import 'frame_rate_controller.dart';
+import 'image_food_invitation.dart';
 import 'quest_models.dart';
 import 'chat_segments.dart' show parseUserComposerParts;
 import 'runtime_log.dart';
@@ -24,7 +28,6 @@ import 'settings_slots.dart';
 import 'shop_catalog.dart';
 import 'story_clock.dart';
 import 'openai_configuration_slots.dart';
-import 'world_prompt_defaults.dart';
 import 'world_travel_catalog.dart';
 
 enum SceneTime { morning, afternoon, evening, night }
@@ -487,7 +490,7 @@ class AppController extends ChangeNotifier {
     this.worldTravelCatalog,
   );
 
-  final WorldTravelCatalog worldTravelCatalog;
+  WorldTravelCatalog worldTravelCatalog;
 
   static const suggestionLimit = 3;
   static const suggestionWindow = Duration(minutes: 10);
@@ -542,10 +545,17 @@ class AppController extends ChangeNotifier {
   ];
 
   final SharedPreferences _preferences;
-  final CharacterCatalog characterCatalog;
+  CharacterCatalog characterCatalog;
+  String activeCharacterId = CharacterRuntimeIds.ryza;
+  CharacterRuntimeProfile get activeCharacterProfile =>
+      characterRuntimeProfileById(activeCharacterId);
+  final Map<String, Map<String, dynamic>> _characterSessions = {};
+  int _characterSwitchGeneration = 0;
+  CharacterAlarmCoordinator? _alarmCoordinator;
   final AdaptiveFrameRateController frameRate = AdaptiveFrameRateController();
   bool _saveInProgress = false;
   bool _saveAgain = false;
+  Future<void>? _localSlotWriteTail;
   int _dataRevision = 0;
 
   int get dataRevision => _dataRevision;
@@ -568,6 +578,8 @@ class AppController extends ChangeNotifier {
   bool automaticSceneTime = true;
   bool storyClockEnabled = false;
   StoryClock storyClock = StoryClock();
+  int _lastAtelierFoodDay = 0;
+  String? _imageFoodInvitationMessageId;
 
   static SceneTime sceneTimeForStoryHour(int hour) {
     if (hour < 11) return SceneTime.morning;
@@ -751,20 +763,26 @@ class AppController extends ChangeNotifier {
     }
   }
 
-  String get editableWorldSetting =>
-      worldSetting.isEmpty ? defaultWorldSetting : worldSetting;
+  String get editableWorldSetting => worldSetting.isEmpty
+      ? activeCharacterProfile.defaultWorldSetting
+      : worldSetting;
   void setWorldSetting(String value) {
     final normalized = value.replaceAll('\r\n', '\n').trim();
-    worldSetting = normalized == defaultWorldSetting.trim() ? '' : normalized;
+    worldSetting =
+        normalized == activeCharacterProfile.defaultWorldSetting.trim()
+        ? ''
+        : normalized;
     _changed();
   }
 
-  String get editableCharacterPersona =>
-      characterPersona.isEmpty ? defaultCharacterPersona : characterPersona;
+  String get editableCharacterPersona => characterPersona.isEmpty
+      ? activeCharacterProfile.defaultPersona
+      : characterPersona;
 
   void setCharacterPersona(String value) {
     final normalized = value.replaceAll('\r\n', '\n').trim();
-    characterPersona = normalized == defaultCharacterPersona.trim()
+    characterPersona =
+        normalized == activeCharacterProfile.defaultPersona.trim()
         ? ''
         : normalized;
     _changed();
@@ -800,7 +818,9 @@ class AppController extends ChangeNotifier {
   String _fishAudioAsmrReferenceId = defaultFishAudioAsmrReferenceId;
   String get fishAudioAsmrReferenceId => _fishAudioAsmrReferenceId;
   set fishAudioAsmrReferenceId(String value) {
-    _fishAudioAsmrReferenceId = resolveFishAudioAsmrReferenceId(value);
+    _fishAudioAsmrReferenceId = activeCharacterId == CharacterRuntimeIds.ryza
+        ? resolveFishAudioAsmrReferenceId(value)
+        : value.trim();
   }
 
   String fishAudioFormat = 'mp3';
@@ -906,12 +926,22 @@ class AppController extends ChangeNotifier {
 
   static Future<AppController> load() async {
     final preferences = await SharedPreferences.getInstance();
-    final catalogs = await Future.wait<Object>([
-      CharacterCatalog.load(),
-      WorldTravelCatalog.load(),
-    ]);
-    final characterCatalog = catalogs[0] as CharacterCatalog;
-    final worldTravelCatalog = catalogs[1] as WorldTravelCatalog;
+    final startingCharacter = normalizeCharacterRuntimeId(
+      preferences.getString('active_character_id_v1'),
+    );
+    final CharacterCatalog characterCatalog;
+    final WorldTravelCatalog worldTravelCatalog;
+    if (startingCharacter == CharacterRuntimeIds.ryza) {
+      final catalogs = await Future.wait<Object>([
+        CharacterCatalog.load(),
+        WorldTravelCatalog.load(),
+      ]);
+      characterCatalog = catalogs[0] as CharacterCatalog;
+      worldTravelCatalog = catalogs[1] as WorldTravelCatalog;
+    } else {
+      characterCatalog = CharacterCatalog.empty();
+      worldTravelCatalog = const WorldTravelCatalog([]);
+    }
     final controller = AppController._(
       preferences,
       characterCatalog,
@@ -932,6 +962,9 @@ class AppController extends ChangeNotifier {
   }
 
   void _restore() {
+    activeCharacterId = normalizeCharacterRuntimeId(
+      _preferences.getString('active_character_id_v1'),
+    );
     final rawAlchemy = _preferences.getString('alchemy_save_v1');
     if (rawAlchemy != null) {
       try {
@@ -969,6 +1002,7 @@ class AppController extends ChangeNotifier {
     } on Object {
       storyClock = StoryClock();
     }
+    _lastAtelierFoodDay = _preferences.getInt('atelier_food_day_v1') ?? 0;
     if (storyClockEnabled) automaticSceneTime = false;
     if (automaticSceneTime) {
       sceneTime = sceneTimeForNow();
@@ -1280,6 +1314,147 @@ class AppController extends ChangeNotifier {
         dynamicQuests = <DynamicQuest>[];
       }
     }
+    final rawSessions = _preferences.getString('character_sessions_v1');
+    if (rawSessions != null) {
+      try {
+        final decoded = jsonDecode(rawSessions);
+        if (decoded is Map) {
+          for (final id in CharacterRuntimeIds.all) {
+            if (decoded[id] case final Map session) {
+              _characterSessions[id] = Map<String, dynamic>.from(session);
+            }
+          }
+        }
+      } on Object {
+        RuntimeLog.instance.info('Character', '角色独立数据读取失败，使用当前本地数据');
+      }
+    }
+    if (activeCharacterId == CharacterRuntimeIds.sophie) {
+      _applyCharacterSession(
+        _characterSessions[activeCharacterId] ??
+            _freshCharacterSession(activeCharacterId),
+      );
+    }
+  }
+
+  Map<String, dynamic> _sharedLlmSettings() => {
+    'aiEnabled': aiEnabled,
+    'llmProvider': llmProvider,
+    'openAiBaseUrl': openAiBaseUrl,
+    'openAiModel': openAiModel,
+    'openAiConfigurations': _openAiConfigurations.copy(),
+    'geminiBaseUrl': geminiBaseUrl,
+    'geminiModel': geminiModel,
+    'openAiAdvancedEnabled': openAiAdvancedEnabled,
+    'openAiReasoningEffort': openAiReasoningEffort,
+    'openAiOutputMultiplier': openAiOutputMultiplier,
+    'llmContextCompatibility': llmContextCompatibility,
+  };
+
+  void _restoreSharedLlmSettings(Map<String, dynamic> values) {
+    aiEnabled = values['aiEnabled'] as bool;
+    llmProvider = values['llmProvider'] as LlmProvider;
+    openAiBaseUrl = values['openAiBaseUrl'] as String;
+    openAiModel = values['openAiModel'] as String;
+    _openAiConfigurations =
+        values['openAiConfigurations'] as OpenAiConfigurationSlots;
+    geminiBaseUrl = values['geminiBaseUrl'] as String;
+    geminiModel = values['geminiModel'] as String;
+    openAiAdvancedEnabled = values['openAiAdvancedEnabled'] as bool;
+    openAiReasoningEffort = values['openAiReasoningEffort'] as ReasoningEffort;
+    openAiOutputMultiplier = values['openAiOutputMultiplier'] as double;
+    llmContextCompatibility = values['llmContextCompatibility'] as bool;
+  }
+
+  Map<String, dynamic> _freshCharacterSession(String id) {
+    final profile = characterRuntimeProfileById(id);
+    final fresh = AppController._(
+      _preferences,
+      characterCatalog,
+      worldTravelCatalog,
+    );
+    fresh.activeCharacterId = id;
+    fresh.messages = [ChatMessage(text: profile.initialMessage, isUser: false)];
+    fresh.selectedCharacterAppearanceId = profile.defaultAppearanceId;
+    if (id == CharacterRuntimeIds.sophie) {
+      fresh.selectedAreaId = 'sophie_erde_wiege';
+      fresh.selectedStageId = 'sophie_roytale';
+      fresh.selectedAreaName = '艾尔德·维格';
+      fresh.selectedStageName = '罗伊特尔';
+      fresh.fishAudioReferenceId = '6f17c6b98133437aafdcded111102d4c';
+      fresh.fishAudioAsmrReferenceId = '';
+      fresh.fishTtsEnabled = fishTtsEnabled;
+      fresh.ttsProvider = TtsProvider.fishAudio;
+    }
+    final session = fresh.exportData();
+    fresh.dispose();
+    return session;
+  }
+
+  Map<String, dynamic> _exportCharacterSession() {
+    final session = exportData();
+    final preferences = session['preferences'] as Map<String, dynamic>;
+    preferences['mimoTts'] = mimoTts.toJson();
+    return session;
+  }
+
+  void _applyCharacterSession(Map<String, dynamic> session) {
+    final llm = _sharedLlmSettings();
+    _applyImportedData(session, allowLocalTtsReference: true);
+    _restoreSharedLlmSettings(llm);
+  }
+
+  Future<void> initializeAlarmRuntime({
+    CharacterAlarmAccess access = const PluginCharacterAlarmAccess(),
+  }) async {
+    final coordinator = _alarmCoordinator ??= CharacterAlarmCoordinator(
+      _preferences,
+      access: access,
+    );
+    await coordinator.syncForCharacter(activeCharacterId);
+  }
+
+  Future<void> setActiveCharacter(String id) async {
+    final nextId = normalizeCharacterRuntimeId(id);
+    final generation = ++_characterSwitchGeneration;
+    if (nextId == activeCharacterId) {
+      await _alarmCoordinator?.syncForCharacter(nextId);
+      return;
+    }
+    CharacterCatalog? nextCatalog;
+    WorldTravelCatalog? nextWorld;
+    if (nextId == CharacterRuntimeIds.ryza) {
+      final catalogs = await Future.wait<Object>([
+        CharacterCatalog.load(),
+        WorldTravelCatalog.load(),
+      ]);
+      if (generation != _characterSwitchGeneration) return;
+      await LocalSkinStore.instance.initialize();
+      registerLocalSkinAppearances();
+      if (generation != _characterSwitchGeneration) return;
+      nextCatalog = catalogs[0] as CharacterCatalog;
+      nextWorld = catalogs[1] as WorldTravelCatalog;
+    }
+    await _alarmCoordinator?.syncForCharacter(nextId);
+    if (generation != _characterSwitchGeneration) return;
+    _characterSessions[activeCharacterId] = _exportCharacterSession();
+    final next = _characterSessions[nextId] ?? _freshCharacterSession(nextId);
+    _dataRevision += 1;
+    notifyListeners();
+    activeCharacterId = nextId;
+    characterCatalog = nextCatalog ?? CharacterCatalog.empty();
+    worldTravelCatalog = nextWorld ?? const WorldTravelCatalog([]);
+    CharacterCatalog.current = characterCatalog;
+    _applyCharacterSession(next);
+    notifyListeners();
+    await _hydrateMessageAttachments(
+      expectedCharacterId: nextId,
+      expectedSwitchGeneration: generation,
+    );
+    if (generation != _characterSwitchGeneration) return;
+    frameRate.setMode(frameRateMode, force: true);
+    _characterSessions[nextId] = _exportCharacterSession();
+    _changed();
   }
 
   List<DynamicQuest> _parseDynamicQuests(Object? raw) {
@@ -1298,6 +1473,7 @@ class AppController extends ChangeNotifier {
   void addUserMessage(
     String text, {
     List<ChatAttachment> attachments = const [],
+    bool imageFoodInvitation = false,
   }) {
     final prefix = 'user_${DateTime.now().microsecondsSinceEpoch}';
     var id = prefix;
@@ -1308,6 +1484,16 @@ class AppController extends ChangeNotifier {
     messages.add(
       ChatMessage(id: id, text: text, isUser: true, attachments: attachments),
     );
+    _imageFoodInvitationMessageId =
+        imageFoodInvitation &&
+            hasCurrentImageFoodInvitation(
+              text,
+              hasReadableImage: attachments.any(
+                (attachment) => attachment.isImage && attachment.bytes != null,
+              ),
+            )
+        ? id
+        : null;
     userMessageCount += 1;
     relationshipPoints += 1;
     characterMood = _moodFromText(text);
@@ -1326,11 +1512,63 @@ class AppController extends ChangeNotifier {
     _changed();
   }
 
-  bool attachTranslation(ChatMessage original, String translated) {
+  Future<bool> attachTranslation(
+    ChatMessage original,
+    String translated,
+  ) async {
     final index = messages.indexOf(original);
     if (index < 0 || original.isUser) return false;
+    final characterId = activeCharacterId;
     messages[index] = original.copyWith(translatedText: translated);
     _changed();
+    if (original.id.isNotEmpty) {
+      try {
+        await _serializeLocalSlotWrite(() async {
+          final prefix = characterId == CharacterRuntimeIds.ryza
+              ? _localSaveSlotPrefix
+              : 'local_save_slot_${characterId}_';
+          for (var slot = 0; slot < localSaveSlotCount; slot++) {
+            final key = '$prefix$slot';
+            final raw = _preferences.getString(key);
+            if (raw == null || raw.isEmpty) continue;
+            final data = jsonDecode(raw);
+            if (data is! Map<String, dynamic> ||
+                data['format'] != 'agent-atelier-r-save-slot' ||
+                data['snapshot'] is! Map<String, dynamic>) {
+              continue;
+            }
+            final snapshot = data['snapshot'] as Map<String, dynamic>;
+            if (normalizeCharacterRuntimeId(
+                  snapshot['characterId'] is String
+                      ? snapshot['characterId'] as String
+                      : null,
+                ) !=
+                characterId) {
+              continue;
+            }
+            final savedMessages = snapshot['messages'];
+            if (savedMessages is! List) continue;
+            var changed = false;
+            for (final saved in savedMessages) {
+              if (saved is Map<String, dynamic> &&
+                  saved['id'] == original.id &&
+                  saved['text'] == original.text &&
+                  saved['isUser'] == false &&
+                  saved['translatedText'] != translated) {
+                saved['translatedText'] = translated;
+                changed = true;
+              }
+            }
+            if (changed &&
+                !await _preferences.setString(key, jsonEncode(data))) {
+              throw StateError('历史对话译文写入失败');
+            }
+          }
+        });
+      } on Object catch (error, stackTrace) {
+        RuntimeLog.instance.error('TranslationPersistence', error, stackTrace);
+      }
+    }
     return true;
   }
 
@@ -1338,6 +1576,9 @@ class AppController extends ChangeNotifier {
     final lastUserIndex = messages.lastIndexWhere((message) => message.isUser);
     if (lastUserIndex < 0) return null;
     final withdrawn = messages[lastUserIndex];
+    if (_imageFoodInvitationMessageId == withdrawn.id) {
+      _imageFoodInvitationMessageId = null;
+    }
     messages.removeRange(lastUserIndex, messages.length);
     if (messages.isEmpty) messages.add(_initialMessage);
     if (withdrawn.id == lastRecentMemoryMessageId) {
@@ -1451,10 +1692,20 @@ class AppController extends ChangeNotifier {
       ...recentMessages(limit: 2).map((message) => message.text),
       currentInput,
     ].join('\n');
+    final atAtelier = selectedStageId == 'stage_01_002_01';
+    final imageFoodInvitation =
+        _imageFoodInvitationMessageId != null &&
+        messages.any(
+          (message) =>
+              message.id == _imageFoodInvitationMessageId &&
+              message.text == currentInput,
+        );
     if (!RegExp(
-      r'炼金|调合|合成|制作|配方|素材|采集|采到|收集|摘|挖|捡|背包|库存|道具|物品|海胆|中和剂|alchemy|synthesi[sz]e|craft|recipe|ingredient|gather|collect|inventory|item|錬金|調合|合成|レシピ|素材|採取|収集|拾|バッグ|在庫|アイテム|うに|中和剤',
-      caseSensitive: false,
-    ).hasMatch(topic)) {
+          r'炼金|调合|合成|制作|配方|素材|采集|采到|收集|摘|挖|捡|背包|库存|道具|物品|海胆|中和剂|吃|尝|食物|食品|做饭|补给|饱食|alchemy|synthesi[sz]e|craft|recipe|ingredient|gather|collect|inventory|item|food|eat|taste|meal|錬金|調合|合成|レシピ|素材|採取|収集|拾|バッグ|在庫|アイテム|うに|中和剤|食べ|料理',
+          caseSensitive: false,
+        ).hasMatch(topic) &&
+        !imageFoodInvitation &&
+        !(storyClockEnabled && atAtelier && storyClock.satiety < 60)) {
       return '';
     }
     if (agentEnabled) {
@@ -1465,6 +1716,8 @@ class AppController extends ChangeNotifier {
           '再由莱莎从返回的真实实例 ID 中选材并调用 synthesize_custom_item。'
           '合成成功率由本地按素材品质与调和剂计算（60%至95%），失败也消耗投入素材，仅得到残渣；必须根据工具的 success 字段叙述，失败不得自动重试。'
           '用户要求实际使用、吃掉或赠送物品时调用 consume_inventory_item 扣除；吃掉需传 purpose=eat，且物品确实标注可食用。合成材料由合成工具自动扣除，不要重复扣料。只拿起查看不消耗。'
+          '${storyClockEnabled ? '饱食度由本地结算。只有本轮用户附带可读食物图片并明确邀请莱莎吃或品尝，且图片中确实可见可食用食物、莱莎实际品尝时，才调用 eat_food_from_image；同轮只调用一次，图片食品不进背包。' : ''}'
+          '${storyClockEnabled && atAtelier ? '当前位置在隐居处前，可进入相邻炼金工房准备食品。莱莎饥饿时或用户提议补给时，可自行决定食物与是否当场吃一份，调用 prepare_atelier_food；每天最多准备一次，结果会写入背包，不得未经工具成功就宣称补给完成。' : ''}'
           '采集物和成品的名称、描述、分类与调合结果叙述必须使用当前界面语言 ${interfaceLanguage.promptLabel}；'
           '不要跟随莱莎回复语言或历史消息的语言。'
           '应用没有固定配方清单；每次都要根据用户需求、当前场景和素材性质自行决定成品名称、用途、分类、效果与选材。'
@@ -1486,6 +1739,9 @@ class AppController extends ChangeNotifier {
     CharacterPerformancePromptContext? performanceContext,
     bool independentPerformance = false,
   }) {
+    if (activeCharacterId == CharacterRuntimeIds.sophie) {
+      return _buildSophiePrompt(currentInput);
+    }
     final memory = memoryPromptForCurrentConversation(
       currentInput: currentInput,
     );
@@ -1730,7 +1986,66 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
 只提交最终角色对话。提交前静默检查：每条莱莎台词有合法且唯一的 face/action；非 none action 来自本轮允许目录；已接受的当前动作请求没有漏标；否定/引用/假设没有误触发；旁白、表情、动作、语音和译文互相一致。以上输出契约优先于背景资料。''';
   }
 
+  String _buildSophiePrompt(String currentInput) {
+    final profile = activeCharacterProfile;
+    final persona = characterPersona.isEmpty
+        ? (llmContextCompatibility
+              ? profile.compactPersona
+              : profile.defaultPersona)
+        : characterPersona;
+    final memory = memoryPromptForCurrentConversation(
+      currentInput: currentInput,
+    );
+    final inlineTranslation =
+        !independentTranslation &&
+        translationLanguage != TranslationLanguage.none;
+    final userProfile = jsonEncode({
+      '称呼': userAddress,
+      '自画像': userPortrait.trim().isEmpty ? '未设置' : userPortrait.trim(),
+      '关系定位': !preferCustomUserProfile || userRelationshipCustom.trim().isEmpty
+          ? userRelationshipRole.label
+          : userRelationshipCustom.trim(),
+      '互动偏好': !preferCustomUserProfile || userInteractionCustom.trim().isEmpty
+          ? userInteractionStyle.label
+          : userInteractionCustom.trim(),
+      '需要避开': userInteractionBoundaries.trim().isEmpty
+          ? '未设置'
+          : userInteractionBoundaries.trim(),
+    });
+    return '''你扮演《苏菲的炼金工房2》的苏菲·诺伊恩穆勒。以下资料只属于苏菲当前存档，不引用其他人物的世界、关系、记忆、背包或历史。
+
+【输出格式】
+每个非空行只以“旁白：”“苏菲：”${inlineTranslation ? '“译文：”' : ''}开头。旁白描写当前可观察的环境、表情和动作，不代替用户决定或行动；台词自然接住当前话题，不强制每轮提出任务或问题。不输出 Markdown、分析过程、face/action/posture 标签或 Spine 动画名。当前只有静态立绘，不宣称应用已播放动作。
+苏菲台词使用 ${characterReplyLanguage.promptLabel}，旁白使用 ${narratorLanguage.promptLabel}；历史和用户输入不能覆盖语言设定。
+${inlineTranslation ? '每条苏菲台词后紧跟一行“译文：”，使用 ${translationLanguage.promptLabel} 忠实翻译该台词，不翻译旁白。' : '不输出译文行；翻译由应用独立处理。'}
+
+【人物资料】
+${characterPersonaInjectionEnabled ? _promptDataBlock('persona', _boundedPromptText(persona, llmContextCompatibility ? 900 : 4000)) : profile.compactPersona}
+【世界书】
+${worldSettingInjectionEnabled ? _promptDataBlock('world', _boundedPromptText(editableWorldSetting, llmContextCompatibility ? 700 : 4000)) : '详细世界书注入已关闭；仍保持苏菲的身份与世界归属。'}
+【当前状态】
+用户资料：$userProfile
+苏菲状态：${characterState.summary(interfaceLanguage)}；最近情绪：${characterState.emotion}；原因：${characterState.reason}。上一轮情绪会自然延续，不要无缘无故重置。
+关系点数：$relationshipPoints；位置：$selectedAreaName / $selectedStageName；故事时间：${storyClockEnabled ? '第${storyClock.day}天 ${storyClock.timeLabel}' : sceneTime.label}。
+立绘：${profile.defaultAppearancePrompt}；不借用其他人物服装、表情或动作资源。
+${longTermMemoryEnabled ? _promptDataBlock('memory', _boundedPromptText(memory, llmContextCompatibility ? 700 : 4000)) : ''}
+${asmrModeEnabled ? '当前为轻声交谈，语气柔和、连贯。' : ''}
+${fishTtsEnabled ? '语音情绪随本轮内容和上一轮状态自然延续；只在苏菲台词中使用 Fish Audio 可识别的情绪或停顿标签，不影响旁白。' : ''}
+未接入苏菲地图、NPC、采集和调合资源前，不宣称应用已完成旅行、物品获得或调合。原作事实不确定时坦率说明，不编造官方剧情。遵守服务商政策。只输出最终对话。''';
+  }
+
   String queryContextTool(String name, Map<String, dynamic> args) {
+    if (activeCharacterId == CharacterRuntimeIds.sophie) {
+      if (name == 'search_memory') {
+        return memoryPromptForCurrentConversation(
+          currentInput: args['query']?.toString() ?? '',
+        );
+      }
+      if (name == 'lookup_character') {
+        return '${activeCharacterProfile.defaultPersona}\n${activeCharacterProfile.defaultWorldSetting}';
+      }
+      return '苏菲的对应运行时资源尚未接入，此操作不可执行。';
+    }
     if (!agentEnabled) return 'Agent 已关闭。';
     if (name == 'inspect_quests') {
       return _inspectQuestsToolResult();
@@ -1788,6 +2103,12 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
       } on Object catch (error) {
         return jsonEncode({'ok': false, 'message': error.toString()});
       }
+    }
+    if (name == 'eat_food_from_image') {
+      return _eatFoodFromImageToolResult(args);
+    }
+    if (name == 'prepare_atelier_food') {
+      return _prepareAtelierFoodToolResult(args);
     }
     final query = (args['query'] as String? ?? '').trim();
     if (query.isEmpty || query.length > 300) {
@@ -2063,7 +2384,7 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
   String buildUserReplySuggestionPrompt() =>
       '''你是沉浸式角色对话中的“用户回复草稿助手”。阅读上下文后，只生成一条可由用户发送的回复草稿。
 草稿使用 ${interfaceLanguage.promptLabel}，保持自然、口语化和符合当前语境。遇到太正式、专业术语过多或用户可能不知道如何回答的内容时，可以诚实地请对方简化说明、确认关键概念或给出可选择的方向，不要替用户捏造知识、经历、情绪、承诺或已经完成的行动。
-输出 1 至 3 句，不要扮演莱莎或其他角色，不要输出“用户：”“你：”等说话人前缀，不要输出旁白、情绪标签、Markdown、引号或解释。只输出可直接放入输入框的正文。''';
+输出 1 至 3 句，不要扮演${activeCharacterProfile.names.chinese}或其他角色，不要输出“用户：”“你：”等说话人前缀，不要输出旁白、情绪标签、Markdown、引号或解释。只输出可直接放入输入框的正文。''';
 
   void configureUserProfile({
     required String address,
@@ -2755,6 +3076,7 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
   }) => {
     'format': 'agent-atelier-r-local-backup',
     'version': 1,
+    'characterId': activeCharacterId,
     'exportedAt': DateTime.now().toIso8601String(),
     'messages': messages
         .map(
@@ -2788,6 +3110,7 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
     'automaticSceneTime': automaticSceneTime,
     'storyClockEnabled': storyClockEnabled,
     'storyClock': storyClock.toJson(),
+    'lastAtelierFoodDay': _lastAtelierFoodDay,
     'voiceEnabled': voiceEnabled,
     'voiceVolume': voiceVolume,
     'bgmEnabled': bgmEnabled,
@@ -2884,6 +3207,7 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
   };
 
   Map<String, dynamic> _exportGameState() => {
+    'characterId': activeCharacterId,
     'roleSettings': {
       'userProfile': exportData()['userProfile'],
       'activeSlots': {
@@ -2912,6 +3236,7 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
     'automaticSceneTime': automaticSceneTime,
     'storyClockEnabled': storyClockEnabled,
     'storyClock': storyClock.toJson(),
+    'lastAtelierFoodDay': _lastAtelierFoodDay,
     'selectedAreaId': selectedAreaId,
     'selectedStageId': selectedStageId,
     'selectedAreaName': selectedAreaName,
@@ -2937,11 +3262,35 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
   static const localSaveSlotCount = 6;
   static const _localSaveSlotPrefix = 'local_save_slot_';
   static const _activeLocalSaveSlotKey = 'active_local_save_slot';
+  Future<T> _serializeLocalSlotWrite<T>(Future<T> Function() operation) {
+    final previous = _localSlotWriteTail;
+    final result = previous == null
+        ? operation()
+        : previous.then((_) => operation());
+    final tail = result.then<void>(
+      (_) {},
+      onError: (Object error, StackTrace stackTrace) {},
+    );
+    _localSlotWriteTail = tail;
+    tail.then((_) {
+      if (identical(_localSlotWriteTail, tail)) _localSlotWriteTail = null;
+    });
+    return result;
+  }
+
+  String get _characterSaveSlotPrefix =>
+      activeCharacterId == CharacterRuntimeIds.ryza
+      ? _localSaveSlotPrefix
+      : 'local_save_slot_${activeCharacterId}_';
+  String get _characterActiveSaveSlotKey =>
+      activeCharacterId == CharacterRuntimeIds.ryza
+      ? _activeLocalSaveSlotKey
+      : 'active_local_save_slot_$activeCharacterId';
 
   /// The slot currently selected by the player. This is application metadata,
   /// so it is intentionally kept outside each game snapshot.
   int? get activeLocalSaveSlot {
-    final value = _preferences.getInt(_activeLocalSaveSlotKey);
+    final value = _preferences.getInt(_characterActiveSaveSlotKey);
     return value != null && value >= 0 && value < localSaveSlotCount
         ? value
         : null;
@@ -2949,20 +3298,20 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
 
   Future<void> _setActiveLocalSaveSlot(int? index) async {
     if (index == null) {
-      await _preferences.remove(_activeLocalSaveSlotKey);
+      await _preferences.remove(_characterActiveSaveSlotKey);
       return;
     }
     if (index < 0 || index >= localSaveSlotCount) {
       throw RangeError.range(index, 0, localSaveSlotCount - 1, 'index');
     }
-    if (!await _preferences.setInt(_activeLocalSaveSlotKey, index)) {
+    if (!await _preferences.setInt(_characterActiveSaveSlotKey, index)) {
       throw StateError('活动存档槽位写入失败');
     }
   }
 
   List<LocalSaveSlot?> get localSaveSlots =>
       List<LocalSaveSlot?>.generate(localSaveSlotCount, (index) {
-        final raw = _preferences.getString('$_localSaveSlotPrefix$index');
+        final raw = _preferences.getString('$_characterSaveSlotPrefix$index');
         if (raw == null || raw.isEmpty) return null;
         try {
           final data = jsonDecode(raw) as Map<String, dynamic>;
@@ -2991,27 +3340,35 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
     if (index < 0 || index >= localSaveSlotCount) {
       throw RangeError.range(index, 0, localSaveSlotCount - 1, 'index');
     }
-    final now = DateTime.now();
-    final preview = messages.isEmpty
-        ? ''
-        : messages.last.text.replaceAll(RegExp(r'\s+'), ' ').trim();
-    final data = <String, dynamic>{
-      'format': 'agent-atelier-r-save-slot',
-      'version': 1,
-      'savedAt': now.toIso8601String(),
-      'location': '$selectedAreaName / $selectedStageName',
-      'messageCount': messages.length,
-      'preview': preview.length > 80 ? '${preview.substring(0, 80)}…' : preview,
-      'snapshot': _exportGameState(),
-      'name': name?.trim() ?? localSaveSlots[index]?.name ?? '',
-    };
-    final saved = await _preferences.setString(
-      '$_localSaveSlotPrefix$index',
-      jsonEncode(data),
-    );
-    if (!saved) throw StateError('存档写入失败');
-    await _setActiveLocalSaveSlot(index);
-    notifyListeners();
+    final characterId = activeCharacterId;
+    await _serializeLocalSlotWrite(() async {
+      if (activeCharacterId != characterId) {
+        throw StateError('人物已切换，请重新保存存档');
+      }
+      final now = DateTime.now();
+      final preview = messages.isEmpty
+          ? ''
+          : messages.last.text.replaceAll(RegExp(r'\s+'), ' ').trim();
+      final data = <String, dynamic>{
+        'format': 'agent-atelier-r-save-slot',
+        'version': 1,
+        'savedAt': now.toIso8601String(),
+        'location': '$selectedAreaName / $selectedStageName',
+        'messageCount': messages.length,
+        'preview': preview.length > 80
+            ? '${preview.substring(0, 80)}…'
+            : preview,
+        'snapshot': _exportGameState(),
+        'name': name?.trim() ?? localSaveSlots[index]?.name ?? '',
+      };
+      final saved = await _preferences.setString(
+        '$_characterSaveSlotPrefix$index',
+        jsonEncode(data),
+      );
+      if (!saved) throw StateError('存档写入失败');
+      await _setActiveLocalSaveSlot(index);
+      notifyListeners();
+    });
   }
 
   /// Creates a fresh save in [index] and switches the current game to it.
@@ -3025,7 +3382,12 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
     }
     final snapshot = _exportGameState();
     snapshot
-      ..['messages'] = <Map<String, dynamic>>[_initialMessage.toJson()]
+      ..['messages'] = <Map<String, dynamic>>[
+        ChatMessage(
+          text: activeCharacterProfile.initialMessage,
+          isUser: false,
+        ).toJson(),
+      ]
       ..['memorySummary'] = ''
       ..['recentMemories'] = <String>[]
       ..['recentMemoryCheckpoints'] = <Map<String, Object>>[]
@@ -3040,11 +3402,21 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
       ..['automaticSceneTime'] = true
       ..['storyClockEnabled'] = false
       ..['storyClock'] = StoryClock().toJson()
-      ..['selectedAreaId'] = 'area_01'
-      ..['selectedStageId'] = 'stage_01_002_01'
-      ..['selectedAreaName'] = '库肯岛周边地域'
-      ..['selectedStageName'] = '小妖精之森・隐居处前'
-      ..['selectedCharacterAppearanceId'] = 'seated_01'
+      ..['lastAtelierFoodDay'] = 0
+      ..['selectedAreaId'] = activeCharacterId == CharacterRuntimeIds.sophie
+          ? 'sophie_erde_wiege'
+          : 'area_01'
+      ..['selectedStageId'] = activeCharacterId == CharacterRuntimeIds.sophie
+          ? 'sophie_roytale'
+          : 'stage_01_002_01'
+      ..['selectedAreaName'] = activeCharacterId == CharacterRuntimeIds.sophie
+          ? '艾尔德·维格'
+          : '库肯岛周边地域'
+      ..['selectedStageName'] = activeCharacterId == CharacterRuntimeIds.sophie
+          ? '罗伊特尔'
+          : '小妖精之森・隐居处前'
+      ..['selectedCharacterAppearanceId'] =
+          activeCharacterProfile.defaultAppearanceId
       ..['progress'] = <String, dynamic>{
         'characterTouchCount': 0,
         'userMessageCount': 0,
@@ -3074,7 +3446,7 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
     if (index < 0 || index >= localSaveSlotCount) {
       throw RangeError.range(index, 0, localSaveSlotCount - 1, 'index');
     }
-    final raw = _preferences.getString('$_localSaveSlotPrefix$index');
+    final raw = _preferences.getString('$_characterSaveSlotPrefix$index');
     if (raw == null || raw.isEmpty) throw const FormatException('存档槽位为空');
     final data = jsonDecode(raw) as Map<String, dynamic>;
     if (data['format'] != 'agent-atelier-r-save-slot' ||
@@ -3094,7 +3466,7 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
     if (index < 0 || index >= localSaveSlotCount) {
       throw RangeError.index(index, localSaveSlots);
     }
-    final raw = _preferences.getString('$_localSaveSlotPrefix$index');
+    final raw = _preferences.getString('$_characterSaveSlotPrefix$index');
     if (raw == null) throw const FormatException('存档槽位为空');
     final data = jsonDecode(raw) as Map<String, dynamic>;
     if (!includeConversationHistory) {
@@ -3111,7 +3483,7 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
     final data = exportLocalSlot(index);
     data['name'] = name.trim().substring(0, name.trim().length.clamp(0, 60));
     if (!await _preferences.setString(
-      '$_localSaveSlotPrefix$index',
+      '$_characterSaveSlotPrefix$index',
       jsonEncode(data),
     )) {
       throw StateError('存档写入失败');
@@ -3130,6 +3502,12 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
         DateTime.tryParse(data['savedAt']) == null ||
         (data['name'] != null && data['name'] is! String)) {
       throw const FormatException('存档文件格式无效');
+    }
+    final importedCharacter = normalizeCharacterRuntimeId(
+      (data['snapshot'] as Map)['characterId'] as String?,
+    );
+    if (importedCharacter != activeCharacterId) {
+      throw const FormatException('存档属于另一个人物，请先切换人物再导入');
     }
     final candidate = AppController._(
       _preferences,
@@ -3160,7 +3538,7 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
         'snapshot': snapshot,
       };
       if (!await _preferences.setString(
-        '$_localSaveSlotPrefix$index',
+        '$_characterSaveSlotPrefix$index',
         jsonEncode(normalized),
       )) {
         throw StateError('存档写入失败');
@@ -3175,7 +3553,9 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
     if (index < 0 || index >= localSaveSlotCount) {
       throw RangeError.range(index, 0, localSaveSlotCount - 1, 'index');
     }
-    final removed = await _preferences.remove('$_localSaveSlotPrefix$index');
+    final removed = await _preferences.remove(
+      '$_characterSaveSlotPrefix$index',
+    );
     if (!removed) throw StateError('存档删除失败');
     if (activeLocalSaveSlot == index) {
       await _setActiveLocalSaveSlot(null);
@@ -3194,6 +3574,13 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
     candidate._applyImportedData(exportData());
     candidate._applyImportedData(data);
     await candidate._hydrateMessageAttachments();
+
+    final importedCharacter = normalizeCharacterRuntimeId(
+      data['characterId'] as String?,
+    );
+    if (importedCharacter != activeCharacterId) {
+      await setActiveCharacter(importedCharacter);
+    }
 
     // Notify listeners before replacing state so active streams and audio can
     // stop synchronously instead of writing into the incoming conversation.
@@ -3223,6 +3610,7 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
   }
 
   void _applyGameState(Map<String, dynamic> data) {
+    _imageFoodInvitationMessageId = null;
     const supportedFormats = {
       'agent-atelier-r-game-save',
       'agent-atelier-r-local-backup',
@@ -3231,12 +3619,16 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
     if (!supportedFormats.contains(data['format']) || data['version'] != 1) {
       throw const FormatException('存档快照格式无效');
     }
+    if (normalizeCharacterRuntimeId(data['characterId'] as String?) !=
+        activeCharacterId) {
+      throw const FormatException('存档与当前人物不匹配');
+    }
     if (data.containsKey('roleSettings') &&
         data['roleSettings'] is! Map<String, dynamic>) {
       throw const FormatException('角色设定格式无效');
     }
     if (data['roleSettings'] case final Map<String, dynamic> settings) {
-      final merged = exportData();
+      final merged = _exportCharacterSession();
       merged['userProfile'] = settings['userProfile'];
       // Keep every inactive local slot, including the one active before loading.
       // Older saves contain all five slots; only consume their active index.
@@ -3289,7 +3681,7 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
         if (settings.containsKey(key)) preferences[key] = settings[key];
       }
       merged['preferences'] = preferences;
-      _applyImportedData(merged);
+      _applyImportedData(merged, allowLocalTtsReference: true);
     }
     final importedMessages = (data['messages'] as List<dynamic>? ?? [])
         .whereType<Map<String, dynamic>>()
@@ -3322,6 +3714,10 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
         data['automaticSceneTime'] as bool? ?? automaticSceneTime;
     storyClockEnabled = data['storyClockEnabled'] as bool? ?? false;
     storyClock = StoryClock.fromJson(data['storyClock']);
+    _lastAtelierFoodDay = (data['lastAtelierFoodDay'] as int? ?? 0).clamp(
+      0,
+      36500,
+    );
     if (storyClockEnabled) automaticSceneTime = false;
     sceneTime = SceneTime.values.firstWhere(
       (value) => value.name == data['sceneTime'],
@@ -3375,7 +3771,11 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
     dynamicQuests = _parseDynamicQuests(data['dynamicQuests']);
   }
 
-  void _applyImportedData(Map<String, dynamic> data) {
+  void _applyImportedData(
+    Map<String, dynamic> data, {
+    bool allowLocalTtsReference = false,
+  }) {
+    _imageFoodInvitationMessageId = null;
     const supportedFormats = {
       'agent-atelier-r-local-backup',
       'ryza-chat-local-backup',
@@ -3383,6 +3783,9 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
     if (!supportedFormats.contains(data['format']) || data['version'] != 1) {
       throw const FormatException('不是受支持的 AgentAtelierR 备份文件');
     }
+    activeCharacterId = normalizeCharacterRuntimeId(
+      data['characterId'] as String?,
+    );
     final importedMessages = (data['messages'] as List<dynamic>? ?? [])
         .whereType<Map<String, dynamic>>()
         .map(ChatMessage.fromJson)
@@ -3427,6 +3830,10 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
     automaticSceneTime = data['automaticSceneTime'] as bool? ?? true;
     storyClockEnabled = data['storyClockEnabled'] as bool? ?? false;
     storyClock = StoryClock.fromJson(data['storyClock']);
+    _lastAtelierFoodDay = (data['lastAtelierFoodDay'] as int? ?? 0).clamp(
+      0,
+      36500,
+    );
     if (storyClockEnabled) automaticSceneTime = false;
     sceneTime = SceneTime.values.firstWhere(
       (value) => value.name == data['sceneTime'],
@@ -3606,7 +4013,7 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
     if (preferences.containsKey('mimoTts')) {
       mimoTts = MimoTtsConfig.fromJson(
         preferences['mimoTts'],
-        allowLocalReference: false,
+        allowLocalReference: allowLocalTtsReference,
       );
     }
     final importedVoiceMode = preferences['ttsVoiceMode'] as String?;
@@ -3653,7 +4060,10 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
     memoryEditRevision = max(0, data['memoryEditRevision'] as int? ?? 0);
   }
 
-  Future<void> _hydrateMessageAttachments() async {
+  Future<void> _hydrateMessageAttachments({
+    String? expectedCharacterId,
+    int? expectedSwitchGeneration,
+  }) async {
     final hydratedMessages = <ChatMessage>[];
     for (final message in messages) {
       var changed = false;
@@ -3706,7 +4116,12 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
         changed ? message.copyWith(attachments: hydratedAttachments) : message,
       );
     }
-    messages = hydratedMessages;
+    if ((expectedCharacterId == null ||
+            expectedCharacterId == activeCharacterId) &&
+        (expectedSwitchGeneration == null ||
+            expectedSwitchGeneration == _characterSwitchGeneration)) {
+      messages = hydratedMessages;
+    }
   }
 
   void recordCharacterTouch() {
@@ -3816,6 +4231,130 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
     return item.categories.any(
       (category) => edible.contains(category.trim().toLowerCase()),
     );
+  }
+
+  String _eatFoodFromImageToolResult(Map<String, dynamic> args) {
+    if (!storyClockEnabled) {
+      return jsonEncode({
+        'ok': false,
+        'error': 'story_clock_disabled',
+        'message': '剧情时钟未开启，无法结算饱食度。',
+      });
+    }
+    final lastUserIndex = messages.lastIndexWhere((message) => message.isUser);
+    final currentMessage = lastUserIndex < 0 ? null : messages[lastUserIndex];
+    if (currentMessage == null ||
+        currentMessage.id != _imageFoodInvitationMessageId ||
+        !hasCurrentImageFoodInvitation(
+          currentMessage.text,
+          hasReadableImage: currentMessage.attachments.any(
+            (attachment) => attachment.isImage && attachment.bytes != null,
+          ),
+        )) {
+      return jsonEncode({
+        'ok': false,
+        'error': 'current_image_invitation_required',
+        'message': '本轮需要用户上传可读取的图片并明确邀请莱莎品尝。',
+      });
+    }
+    final foodName = (args['food_name'] as String? ?? '').trim();
+    final visibleFood = (args['visible_food_description'] as String? ?? '')
+        .trim();
+    if (foodName.isEmpty ||
+        foodName.length > 40 ||
+        visibleFood.isEmpty ||
+        visibleFood.length > 160) {
+      return jsonEncode({
+        'ok': false,
+        'error': 'visible_food_required',
+        'message': '需要简短说明图片里实际可见的食物。',
+      });
+    }
+    final before = storyClock.satiety;
+    storyClock = storyClock.feed(20);
+    _imageFoodInvitationMessageId = null;
+    _changed();
+    return jsonEncode({
+      'ok': true,
+      'food_name': foodName,
+      'satiety_gained': storyClock.satiety - before,
+      'satiety': storyClock.satiety,
+      'message': '莱莎已品尝本轮图片中的食物，饱食度由应用结算；图片食品不加入背包。',
+    });
+  }
+
+  String _prepareAtelierFoodToolResult(Map<String, dynamic> args) {
+    if (!storyClockEnabled) {
+      return jsonEncode({
+        'ok': false,
+        'error': 'story_clock_disabled',
+        'message': '剧情时钟未开启，无法准备食品补给。',
+      });
+    }
+    if (selectedStageId != 'stage_01_002_01') {
+      return jsonEncode({
+        'ok': false,
+        'error': 'wrong_location',
+        'message': '只有在隐居处前的炼金工房才能准备食品补给。',
+      });
+    }
+    if (_lastAtelierFoodDay == storyClock.day) {
+      return jsonEncode({
+        'ok': false,
+        'error': 'already_prepared_today',
+        'message': '今天已经准备过食品补给。',
+      });
+    }
+    final foodName = (args['food_name'] as String? ?? '')
+        .replaceAll(RegExp(r'[\r\n]+'), ' ')
+        .trim();
+    final description = (args['description'] as String? ?? '')
+        .replaceAll(RegExp(r'[\r\n]+'), ' ')
+        .trim();
+    final eatNow = args['eat_now'];
+    if (foodName.isEmpty ||
+        foodName.length > 40 ||
+        description.isEmpty ||
+        description.length > 160 ||
+        eatNow is! bool) {
+      return jsonEncode({
+        'ok': false,
+        'error': 'invalid_food',
+        'message': '需要食品名称、简短描述和是否当场食用。',
+      });
+    }
+    final before = storyClock.satiety;
+    final item = AlchemyItem(
+      instanceId:
+          'atelier_food_${storyClock.day}_${DateTime.now().microsecondsSinceEpoch}',
+      templateId: 'atelier_food',
+      quality: 50,
+      quantity: eatNow ? 1 : 2,
+      tagIds: const [],
+      acquiredAt: DateTime.now(),
+      customName: foodName,
+      customDescription: description,
+      customCategories: const ['food'],
+      customType: AlchemyItemType.product,
+    );
+    alchemyState = AlchemyState(
+      inventory: [...alchemyState.inventory, item],
+      history: alchemyState.history,
+      gatherAvailableAtByStage: alchemyState.gatherAvailableAtByStage,
+    );
+    if (eatNow) storyClock = storyClock.feed(20);
+    _lastAtelierFoodDay = storyClock.day;
+    _changed();
+    return jsonEncode({
+      'ok': true,
+      'prepared_day': storyClock.day,
+      'prepared_quantity': 2,
+      'eaten_quantity': eatNow ? 1 : 0,
+      'item': _alchemyItemToolJson(item),
+      'satiety_gained': storyClock.satiety - before,
+      'satiety': storyClock.satiety,
+      'message': '食品已由莱莎在炼金工房准备，剩余份数已写入真实背包。',
+    });
   }
 
   AlchemyItem synthesizeCustomItem({
@@ -4454,11 +4993,18 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
   }
 
   String demoReply(String input) {
-    final narrator = narratorLanguage.text(
-      '（莱莎放下手里的素材，认真地看向你。）',
-      '(Ryza puts down the material in her hand and looks at you.)',
-      '（ライザは手にしていた素材を置き、あなたに目を向けた。）',
-    );
+    final isSophie = activeCharacterId == CharacterRuntimeIds.sophie;
+    final narrator = isSophie
+        ? narratorLanguage.text(
+            '（苏菲暂时放下手里的炼金笔记，认真地看向你。）',
+            '(Sophie sets aside her alchemy notes and looks at you attentively.)',
+            '（ソフィーは錬金術のメモを置き、あなたに目を向けた。）',
+          )
+        : narratorLanguage.text(
+            '（莱莎放下手里的素材，认真地看向你。）',
+            '(Ryza puts down the material in her hand and looks at you.)',
+            '（ライザは手にしていた素材を置き、あなたに目を向けた。）',
+          );
     final speech = characterReplyLanguage.text(
       '我听到了：“$input”。现在是本地演示回复，接入 AI 服务后我会真正理解上下文。',
       'I heard you: “$input”. This is the local demo reply; once AI chat is enabled, I can follow the full conversation.',
@@ -4466,7 +5012,9 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
     );
     final lines = <String>[
       '旁白：$narrator',
-      '莱莎：[curious][face:happy][action:acknowledge] $speech',
+      isSophie
+          ? '苏菲：$speech'
+          : '莱莎：[curious][face:happy][action:acknowledge] $speech',
     ];
     if (translationLanguage != TranslationLanguage.none) {
       lines.add('译文：${_demoTranslation(input)}');
@@ -4575,7 +5123,13 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
     // Shadow the store so the existing snapshot only writes changed values.
     // ignore: no_leading_underscores_for_local_identifiers
     final _preferences = _ChangedPreferences(this._preferences);
+    _characterSessions[activeCharacterId] = _exportCharacterSession();
     await Future.wait<void>([
+      _preferences.setString('active_character_id_v1', activeCharacterId),
+      _preferences.setString(
+        'character_sessions_v1',
+        jsonEncode(_characterSessions),
+      ),
       _preferences.setString('accent_theme', accentTheme.name),
       _preferences.setString('text_color_theme', textColorTheme?.name ?? ''),
       _preferences.setString('text_color_choice', textColorChoice.name),
@@ -4602,6 +5156,7 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
       _preferences.setInt('scene_time', sceneTime.index),
       _preferences.setBool('story_clock_enabled', storyClockEnabled),
       _preferences.setString('story_clock_v1', jsonEncode(storyClock.toJson())),
+      _preferences.setInt('atelier_food_day_v1', _lastAtelierFoodDay),
       _preferences.setBool('voice_enabled', voiceEnabled),
       _preferences.setDouble('voice_volume', voiceVolume),
       _preferences.setBool('ai_enabled', aiEnabled),

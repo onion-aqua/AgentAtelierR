@@ -105,6 +105,7 @@ extension _GeminiInteractions on OpenAiCompatibleClient {
     String model,
     List<Map<String, dynamic>> conversation,
     bool agent, {
+    String characterId = CharacterRuntimeIds.ryza,
     bool? thinkingEnabled,
     String? reasoningEffort,
   }) async* {
@@ -138,7 +139,7 @@ extension _GeminiInteractions on OpenAiCompatibleClient {
         ).requestFields(enabled: thinkingEnabled, effort: reasoningEffort),
         if (useTools)
           'tools': [
-            for (final tool in _agentTools)
+            for (final tool in _agentTools(characterId))
               {'type': 'function', ...tool['function'] as Map<String, dynamic>},
           ],
       };
@@ -225,7 +226,7 @@ extension _GeminiInteractions on OpenAiCompatibleClient {
                         'name': call['name'],
                         'arguments': jsonEncode(call['arguments'] ?? {}),
                       },
-                    });
+                    }, characterId: characterId);
                   })(),
           });
         }

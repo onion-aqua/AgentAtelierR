@@ -235,6 +235,32 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
+  testWidgets('manual memory button checks LLM configuration before saving', (
+    tester,
+  ) async {
+    final controller = await setup(tester);
+    controller.setLongTermMemoryEnabled(true);
+    await tapVisible(
+      tester,
+      find.byKey(const ValueKey('settings-category-data')),
+    );
+    await tapVisible(tester, find.text('长期记忆'));
+    final organize = find.byKey(const ValueKey('memory-organize-now'));
+    expect(organize, findsOneWidget);
+    expect(tester.getRect(organize).right, lessThanOrEqualTo(320));
+    expect(
+      tester.getRect(find.byKey(const ValueKey('memory-prompt-editor-open')))
+          .right,
+      lessThanOrEqualTo(320),
+    );
+    await tester.tap(organize);
+    await tester.pumpAndSettle();
+    expect(find.textContaining('请先启用并配置 LLM 服务'), findsOneWidget);
+    expect(controller.memorySummary, isEmpty);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
   testWidgets(
     'appearance settings can pause character animation on full pages',
     (tester) async {

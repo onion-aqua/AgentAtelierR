@@ -351,6 +351,34 @@ void main() {
     expect(restored.inventory.single.quantity, 2);
   });
 
+  test('large inventory stacks survive save and restore', () {
+    final acquiredAt = DateTime.utc(2026, 9, 26);
+    final state = AlchemyState(
+      inventory: [
+        for (var index = 0; index < 256; index++)
+          AlchemyItem(
+            instanceId: 'item_$index',
+            templateId: 'custom_material',
+            quality: 60,
+            quantity: index == 0 ? 2048 : 1,
+            tagIds: const [],
+            acquiredAt: acquiredAt,
+            customName: '素材 $index',
+            customType: AlchemyItemType.material,
+          ),
+      ],
+      history: const [],
+    );
+
+    final restored = AlchemyState.fromJson(
+      jsonDecode(jsonEncode(state.toJson())) as Map<String, dynamic>,
+    );
+
+    expect(restored.inventory, hasLength(256));
+    expect(restored.inventory.first.quantity, 2048);
+    expect(restored.inventory.last.displayName, '素材 255');
+  });
+
   test(
     'alchemy state participates in local slots and on-demand prompts',
     () async {

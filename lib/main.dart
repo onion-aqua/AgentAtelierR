@@ -16,6 +16,7 @@ import 'src/app_shell.dart';
 import 'src/runtime_log.dart';
 import 'src/local_skin_store.dart';
 import 'src/character_appearance.dart';
+import 'src/character_runtime_profile.dart';
 import 'src/ryza_loading_indicator.dart';
 
 void main() {
@@ -93,7 +94,7 @@ class _BootstrapAppState extends State<_BootstrapApp> {
   Future<void> _initialize() async {
     try {
       await RuntimeLog.instance.initialize();
-      RuntimeLog.instance.info('App', '应用启动，版本 1.0.0 正式版（构建 20）');
+      RuntimeLog.instance.info('App', '应用启动，版本 1.0.0 正式版 DX（构建 31）');
       await initSpineFlutter(enableMemoryDebugging: false);
       await Alarm.init();
       await AudioPlayer.global.setAudioContext(
@@ -106,9 +107,12 @@ class _BootstrapAppState extends State<_BootstrapApp> {
           ),
         ),
       );
-      await LocalSkinStore.instance.initialize();
-      registerLocalSkinAppearances();
       final controller = await AppController.load();
+      await controller.initializeAlarmRuntime();
+      if (controller.activeCharacterId == CharacterRuntimeIds.ryza) {
+        await LocalSkinStore.instance.initialize();
+        registerLocalSkinAppearances();
+      }
       if (mounted) {
         _controller?.removeListener(_handleControllerChanged);
         controller.addListener(_handleControllerChanged);
@@ -179,10 +183,15 @@ class _BootstrapAppState extends State<_BootstrapApp> {
                 child: ColoredBox(
                   color: Colors.black,
                   child: Center(
-                    child: RyzaLoadingPanel(
-                      language:
-                          controller?.interfaceLanguage ?? AppLanguage.chinese,
-                    ),
+                    child:
+                        controller?.activeCharacterId ==
+                            CharacterRuntimeIds.sophie
+                        ? const CircularProgressIndicator.adaptive()
+                        : RyzaLoadingPanel(
+                            language:
+                                controller?.interfaceLanguage ??
+                                AppLanguage.chinese,
+                          ),
                   ),
                 ),
               ),

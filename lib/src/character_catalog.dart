@@ -84,6 +84,8 @@ class _NpcPlacement {
 class CharacterCatalog {
   CharacterCatalog._(this._profiles, this._placements);
 
+  factory CharacterCatalog.empty() => CharacterCatalog._({}, const []);
+
   static CharacterCatalog? current;
 
   final Map<String, CharacterProfile> _profiles;

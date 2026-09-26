@@ -155,7 +155,7 @@ String mimoReferenceDataUri(Uint8List bytes, String name) {
             : config.asmrInstructions.trim(),
       if (asmr) '即使情绪加强，也保持低音量和近距离感，不喊叫。',
       if (language != null)
-        '本次语音的目标语言为${language.promptLabel}（由“莱莎回复语言”设置指定）。'
+        '本次语音的目标语言为${language.promptLabel}（由“角色回复语言”设置指定）。'
             '使用该语言自然发音，不受参考音频语言或其他演绎指令影响。'
             '只朗读提供的台词，不添加翻译、解释或语言名称；专有名词和外语引用按原文发音。',
     ].join('\n'),

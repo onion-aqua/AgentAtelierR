@@ -1,7 +1,7 @@
 param(
     [string]$Repository = 'onion-aqua/AgentAtelierR',
     [string]$Tag = 'v1.0.0-dx',
-    [string]$ReleaseName = 'AgentAtelierR 1.0.0 DX',
+    [string]$ReleaseName = 'AgentAtelierR 1.0.0 正式版 DX',
     [string]$NotesPath = 'docs/CHANGELOG_1.0.0-DX.md',
     [string]$ApkPath = 'build/app/outputs/flutter-apk/app-release.apk',
     [string]$AssetName = 'AgentAtelierR-1.0.0-DX-release.apk',

@@ -156,7 +156,7 @@ class AlchemyItem {
       instanceId: instanceId,
       templateId: templateId,
       quality: (json['quality'] as num? ?? 0).round().clamp(0, 100),
-      quantity: (json['quantity'] as num? ?? 1).round().clamp(1, 999),
+      quantity: (json['quantity'] as num? ?? 1).round().clamp(1, 9999),
       tagIds: (json['tagIds'] as List<dynamic>? ?? const [])
           .whereType<String>()
           .where(AlchemyCatalog.tags.containsKey)

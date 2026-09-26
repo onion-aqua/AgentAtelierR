@@ -12,6 +12,81 @@ import 'package:shared_preferences/shared_preferences.dart';
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
+  test(
+    'Sophie agent excludes Ryza world tools and rejects their calls',
+    () async {
+      SharedPreferences.setMockInitialValues({});
+      var requests = 0;
+      var worldToolCalls = 0;
+      final transport = MockClient((request) async {
+        requests++;
+        final body = jsonDecode(request.body) as Map<String, dynamic>;
+        final messages = body['messages'] as List<dynamic>;
+        final system = (messages.first as Map)['content'] as String;
+        expect(system, isNot(contains('莱莎')));
+        final names = (body['tools'] as List<dynamic>)
+            .map((tool) => (tool as Map)['function']['name'] as String)
+            .toSet();
+        expect(
+          names,
+          containsAll(['lookup_character', 'search_memory', 'web_search']),
+        );
+        expect(names, isNot(contains('create_quest')));
+        expect(names, isNot(contains('travel_to_stage')));
+        if (requests == 1) {
+          return http.Response(
+            jsonEncode({
+              'choices': [
+                {
+                  'message': {
+                    'content': '',
+                    'tool_calls': [
+                      {
+                        'id': 'forbidden',
+                        'type': 'function',
+                        'function': {'name': 'create_quest', 'arguments': '{}'},
+                      },
+                    ],
+                  },
+                },
+              ],
+            }),
+            200,
+          );
+        }
+        expect((messages.last as Map)['content'], contains('当前人物未启用该工具'));
+      return http.Response.bytes(
+        utf8.encode('{"choices":[{"message":{"content":"苏菲的回答"}}]}'),
+        200,
+        headers: {'content-type': 'application/json; charset=utf-8'},
+      );
+      });
+      final client = OpenAiCompatibleClient(
+        client: transport,
+        contextToolExecutor: (_, _) async {
+          worldToolCalls++;
+          return 'unexpected';
+        },
+      );
+
+      final output = await client
+          .streamChat(
+            baseUrl: 'https://example.test/v1',
+            apiKey: 'test-key',
+            model: 'test-model',
+            systemPrompt: '你是苏菲',
+            messages: const [ChatMessage(text: '你好', isUser: true)],
+            agentEnabled: true,
+            characterId: 'sophie',
+          )
+          .join();
+      expect(output, '苏菲的回答');
+      expect(worldToolCalls, 0);
+      expect(requests, 2);
+      transport.close();
+    },
+  );
+
   test('auxiliary completion reuses authentication without tools or heavy reasoning', () async {
     SharedPreferences.setMockInitialValues({});
     final client = MockClient((request) async {

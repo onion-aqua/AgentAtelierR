@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:ryza_chat_mvp/src/app_controller.dart';
@@ -147,5 +149,29 @@ void main() {
     expect(prompt, isNot(contains('grp_b_03')));
     expect(prompt, contains('表演由独立模块处理'));
     controller.dispose();
+  });
+
+  test('Sophie with a static portrait has no playable actions', () async {
+    final staticCapabilities = CharacterPerformancePromptContext(
+      appearanceId: 'sophie-portrait',
+      posture: 'static',
+      revision: 1,
+      resourcesReady: false,
+      playableActionDescriptions: const {},
+    );
+    final result = await PerformancePlanner().plan(
+      userInput: '你好',
+      source: '苏菲：你好！',
+      capabilities: staticCapabilities,
+      currentFace: 'neutral',
+      recentActions: const [],
+      complete: (messages) async {
+        final data = jsonDecode(messages.last['content']!) as Map;
+        expect(data['line_ids'], [0]);
+        expect(data['candidates'], {'none': '不发起新动作'});
+        return '{"segments":[{"id":0,"face":"happy","action":"none"}]}';
+      },
+    );
+    expect(result, '苏菲：[face:happy][action:none]你好！');
   });
 }

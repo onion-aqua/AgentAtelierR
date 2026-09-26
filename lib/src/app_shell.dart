@@ -165,7 +165,8 @@ class _AppShellState extends State<AppShell>
     }
     unawaited(
       _transitionTo(value, () {
-        if (value == AppDestination.worldMap) {
+        if (value == AppDestination.worldMap &&
+            widget.controller.activeCharacterId != 'sophie') {
           widget.controller.recordMapVisit();
         }
         _navigation.select(value);
@@ -174,16 +175,22 @@ class _AppShellState extends State<AppShell>
   }
 
   Future<void> _prepareDestination(AppDestination destination) async {
+    if (widget.controller.activeCharacterId == 'sophie' &&
+        (destination == AppDestination.worldMap ||
+            destination == AppDestination.alchemy ||
+            destination == AppDestination.missions ||
+            destination == AppDestination.shop)) {
+      return;
+    }
     if (destination == AppDestination.worldMap) {
       await WorldMapScreen.preload(context, widget.controller);
     } else if (destination == AppDestination.settings) {
-      await Future.wait([
-        for (final character in ['ryza', 'sophie'])
-          precacheImage(
-            AssetImage('assets/images/character_switch/$character.png'),
-            context,
-          ),
-      ]);
+      await precacheImage(
+        AssetImage(
+          'assets/images/character_switch/${widget.controller.activeCharacterId}.png',
+        ),
+        context,
+      );
     } else if (destination == AppDestination.shop ||
         destination == AppDestination.alchemy) {
       final items = destination == AppDestination.shop
@@ -285,45 +292,99 @@ class _AppShellState extends State<AppShell>
     widget.controller.frameRate.boost(FrameRateActivity.interfaceAnimation);
   }
 
-  Widget _buildDestinationPage(AppDestination destination) =>
-      switch (destination) {
-        AppDestination.chat => const SizedBox.shrink(),
-        AppDestination.worldMap => WorldMapScreen(
-          key: _worldMapKey,
-          controller: widget.controller,
-          onMenuPressed: _openMenu,
-          onClose: () => _selectDestination(AppDestination.chat),
+  Widget _buildDestinationPage(AppDestination destination) {
+    if (widget.controller.activeCharacterId == 'sophie' &&
+        (destination == AppDestination.worldMap ||
+            destination == AppDestination.alchemy ||
+            destination == AppDestination.missions ||
+            destination == AppDestination.shop)) {
+      return _buildSophiePendingPage(destination);
+    }
+    return switch (destination) {
+      AppDestination.chat => const SizedBox.shrink(),
+      AppDestination.worldMap => WorldMapScreen(
+        key: _worldMapKey,
+        controller: widget.controller,
+        onMenuPressed: _openMenu,
+        onClose: () => _selectDestination(AppDestination.chat),
+      ),
+      AppDestination.alarms => AlarmScreen(
+        key: _alarmsKey,
+        controller: widget.controller,
+        onMenuPressed: _openMenu,
+      ),
+      AppDestination.runtimeLogs => RuntimeLogScreen(
+        key: _runtimeLogsKey,
+        language: widget.controller.interfaceLanguage,
+        liquidGlass: widget.controller.liquidGlassChatUi,
+        onMenuPressed: _openMenu,
+      ),
+      AppDestination.settings => SettingsScreen(
+        key: _settingsKey,
+        backHandledByShell: true,
+        controller: widget.controller,
+        onMenuPressed: _openMenu,
+      ),
+      AppDestination.alchemy => AlchemyScreen(
+        key: _alchemyKey,
+        controller: widget.controller,
+      ),
+      AppDestination.missions => MissionScreen(
+        key: _missionsKey,
+        controller: widget.controller,
+      ),
+      AppDestination.shop => ShopScreen(
+        key: _shopKey,
+        controller: widget.controller,
+      ),
+    };
+  }
+
+  Widget _buildSophiePendingPage(AppDestination destination) {
+    final language = widget.controller.interfaceLanguage;
+    final title = destination.label(language);
+    return Scaffold(
+      backgroundColor: Theme.of(context).colorScheme.surface,
+      appBar: AppBar(
+        automaticallyImplyLeading: false,
+        title: Padding(
+          padding: const EdgeInsets.only(left: 58),
+          child: Text(title),
         ),
-        AppDestination.alarms => AlarmScreen(
-          key: _alarmsKey,
-          controller: widget.controller,
-          onMenuPressed: _openMenu,
+      ),
+      body: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                destination.icon,
+                size: 48,
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
+              const SizedBox(height: 16),
+              Text(
+                language.text(
+                  '苏菲的$title内容尚未提供',
+                  '$title for Sophie is not available yet',
+                  'ソフィーの$titleはまだ利用できません',
+                ),
+                textAlign: TextAlign.center,
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
+              const SizedBox(height: 24),
+              OutlinedButton.icon(
+                onPressed: () => _selectDestination(AppDestination.chat),
+                icon: const Icon(Icons.arrow_back_rounded),
+                label: Text(language.text('返回聊天', 'Back to chat', '会話に戻る')),
+              ),
+            ],
+          ),
         ),
-        AppDestination.runtimeLogs => RuntimeLogScreen(
-          key: _runtimeLogsKey,
-          language: widget.controller.interfaceLanguage,
-          liquidGlass: widget.controller.liquidGlassChatUi,
-          onMenuPressed: _openMenu,
-        ),
-        AppDestination.settings => SettingsScreen(
-          key: _settingsKey,
-          backHandledByShell: true,
-          controller: widget.controller,
-          onMenuPressed: _openMenu,
-        ),
-        AppDestination.alchemy => AlchemyScreen(
-          key: _alchemyKey,
-          controller: widget.controller,
-        ),
-        AppDestination.missions => MissionScreen(
-          key: _missionsKey,
-          controller: widget.controller,
-        ),
-        AppDestination.shop => ShopScreen(
-          key: _shopKey,
-          controller: widget.controller,
-        ),
-      };
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -491,14 +552,26 @@ class _AppShellState extends State<AppShell>
                     active: _pageTransitionActive,
                     loadingIndicator: TickerMode(
                       enabled: true,
-                      child: ClipRRect(
-                        borderRadius: BorderRadius.circular(10),
-                        child: RyzaLoadingIndicator(
-                          size: 76,
-                          semanticsLabel: widget.controller.interfaceLanguage
-                              .text('正在加载', 'Loading', '読み込み中'),
-                        ),
-                      ),
+                      child: widget.controller.activeCharacterId == 'sophie'
+                          ? SizedBox.square(
+                              dimension: 48,
+                              child: CircularProgressIndicator.adaptive(
+                                semanticsLabel: widget
+                                    .controller
+                                    .interfaceLanguage
+                                    .text('正在加载', 'Loading', '読み込み中'),
+                              ),
+                            )
+                          : ClipRRect(
+                              borderRadius: BorderRadius.circular(10),
+                              child: RyzaLoadingIndicator(
+                                size: 76,
+                                semanticsLabel: widget
+                                    .controller
+                                    .interfaceLanguage
+                                    .text('正在加载', 'Loading', '読み込み中'),
+                              ),
+                            ),
                     ),
                   ),
                 ),

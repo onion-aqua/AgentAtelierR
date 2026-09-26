@@ -3,9 +3,7 @@ import 'package:flutter/material.dart';
 import 'app_controller.dart';
 import 'settings_detail_page.dart';
 import 'app_localization.dart';
-import 'character_prompt_defaults.dart';
 import 'glass_ui.dart';
-import 'world_prompt_defaults.dart';
 import 'settings_slots.dart';
 import 'settings_slot_selector.dart';
 
@@ -24,6 +22,9 @@ class CharacterPromptEditor extends StatefulWidget {
 class _CharacterPromptEditorState extends State<CharacterPromptEditor> {
   SettingsSlotKind get _kind =>
       widget.world ? SettingsSlotKind.world : SettingsSlotKind.character;
+  String get _defaultText => widget.world
+      ? widget.controller.activeCharacterProfile.defaultWorldSetting
+      : widget.controller.activeCharacterProfile.defaultPersona;
   late final _slots = widget.controller.settingsSlots(_kind);
   late final _text = TextEditingController(
     text: widget.world
@@ -75,11 +76,8 @@ class _CharacterPromptEditorState extends State<CharacterPromptEditor> {
   }
 
   void _stashSlot() {
-    final defaultText = widget.world
-        ? defaultWorldSetting
-        : defaultCharacterPersona;
     _slots.entries[_slots.active] = {
-      'text': _text.text.trim() == defaultText.trim() ? '' : _text.text,
+      'text': _text.text.trim() == _defaultText.trim() ? '' : _text.text,
     };
   }
 
@@ -89,9 +87,7 @@ class _CharacterPromptEditorState extends State<CharacterPromptEditor> {
     setState(() {
       _slots.active = index;
       final value = _slots.entries[index]?['text'] ?? '';
-      _text.text = value.isEmpty
-          ? (widget.world ? defaultWorldSetting : defaultCharacterPersona)
-          : value;
+      _text.text = value.isEmpty ? _defaultText : value;
     });
   }
 
@@ -140,7 +136,7 @@ class _CharacterPromptEditorState extends State<CharacterPromptEditor> {
       ),
     );
     if (restore == true && mounted) {
-      _text.text = widget.world ? defaultWorldSetting : defaultCharacterPersona;
+      _text.text = _defaultText;
     }
   }
 
@@ -149,10 +145,7 @@ class _CharacterPromptEditorState extends State<CharacterPromptEditor> {
     final language = widget.controller.interfaceLanguage;
     final theme = Theme.of(context);
     final dark = theme.brightness == Brightness.dark;
-    final defaultText = widget.world
-        ? defaultWorldSetting
-        : defaultCharacterPersona;
-    final isDefault = _text.text.trim() == defaultText.trim();
+    final isDefault = _text.text.trim() == _defaultText.trim();
     final estimatedTokens = (_text.text.runes.length / 2.5).ceil();
     return SettingsDetailPage(
       controller: widget.controller,
@@ -220,9 +213,9 @@ class _CharacterPromptEditorState extends State<CharacterPromptEditor> {
                                             'AgentAtelierR ワールドブック',
                                           )
                                         : language.text(
-                                            '莱莎人物卡',
-                                            'Ryza Character Card',
-                                            'ライザ キャラクターカード',
+                                            '${widget.controller.activeCharacterProfile.names.chinese}人物卡',
+                                            '${widget.controller.activeCharacterProfile.names.english} Character Card',
+                                            '${widget.controller.activeCharacterProfile.names.japanese} キャラクターカード',
                                           ),
                                     style: theme.textTheme.titleMedium
                                         ?.copyWith(fontWeight: FontWeight.w700),

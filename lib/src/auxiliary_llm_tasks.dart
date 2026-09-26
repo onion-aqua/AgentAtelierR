@@ -26,7 +26,9 @@ class DialogueTranslator {
           segment.speaker == ChatSpeaker.character) {
         lines.add({
           'id': i,
-          'speaker': segment.characterId ?? 'ryza',
+          'speaker': segment.speaker == ChatSpeaker.ryza
+              ? segment.primaryCharacterId ?? 'ryza'
+              : segment.characterId ?? 'unknown',
           'text': displayTextForAssistantSegment(segment),
         });
       }
@@ -68,7 +70,7 @@ class DialogueTranslator {
       if (text.isEmpty ||
           translations.containsKey(id) ||
           RegExp(
-            r'\[[^\]]+\]|(?:旁白|莱莎|译文|角色|narrator|ryza|translation)\s*[:：]',
+            r'\[[^\]]+\]|(?:旁白|莱莎|苏菲|ソフィー|译文|角色|narrator|ryza|sophie|translation)\s*[:：]',
             caseSensitive: false,
           ).hasMatch(text)) {
         throw const FormatException('Invalid translation content');
@@ -80,11 +82,7 @@ class DialogueTranslator {
     }
     return [
       for (var i = 0; i < segments.length; i++) ...[
-        '${switch (segments[i].speaker) {
-          ChatSpeaker.narrator => '旁白',
-          ChatSpeaker.character => '角色[${segments[i].characterId}]',
-          _ => '莱莎',
-        }}：${segments[i].text}',
+        '${assistantSpeakerLabel(segments[i])}：${segments[i].text}',
         if (translations[i] != null) '译文：${translations[i]}',
       ],
     ].join('\n');

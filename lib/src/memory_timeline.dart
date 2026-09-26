@@ -227,6 +227,10 @@ class MemoryTimeline {
       'category': category.isEmpty ? 'other' : category,
       'importance': importance,
       'summary': capSummary ? _take(summary, 50) : summary,
+      if ('${raw['translation'] ?? ''}'.trim().isNotEmpty)
+        'translation': capSummary
+            ? _take('${raw['translation']}'.trim(), 300)
+            : '${raw['translation']}'.trim(),
       'status': '${raw['status'] ?? 'active'}'.trim().isEmpty
           ? 'active'
           : '${raw['status']}',

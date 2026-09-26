@@ -82,9 +82,9 @@ class _LocalSaveDialogState extends State<_LocalSaveDialog> {
             ),
             content: Text(
               _text(
-                '历史对话包含此存档中的用户发言、旁白和莱莎回复。不包含时，导入后的存档将从空白对话开始。',
-                'History includes the user, narration and Ryza replies in this save. Without it, the imported save starts with an empty conversation.',
-                'このセーブ内のユーザー、ナレーション、ライザの会話を含みます。含めない場合、読み込んだセーブの会話は空になります。',
+                '历史对话包含此存档中的用户发言、旁白和${widget.controller.activeCharacterProfile.names.chinese}回复。不包含时，导入后的存档将从空白对话开始。',
+                'History includes the user, narration and ${widget.controller.activeCharacterProfile.names.english} replies in this save. Without it, the imported save starts with an empty conversation.',
+                'このセーブ内のユーザー、ナレーション、${widget.controller.activeCharacterProfile.names.japanese}の会話を含みます。含めない場合、読み込んだセーブの会話は空になります。',
               ),
             ),
             actions: [

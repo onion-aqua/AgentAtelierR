@@ -6,6 +6,7 @@ import 'package:archive/archive.dart';
 import 'package:path_provider/path_provider.dart';
 
 import 'chat_segments.dart';
+import 'character_runtime_profile.dart';
 
 ({int dialogue, int narration}) collectionTextCounts(
   String source,
@@ -57,11 +58,21 @@ import 'chat_segments.dart';
 class ConversationCollectionStore {
   ConversationCollectionStore(this.directory);
   final Directory directory;
-  static Future<ConversationCollectionStore>? _instance;
-  static Future<ConversationCollectionStore> open() => _instance ??= () async {
-    final root = await getApplicationSupportDirectory();
-    return ConversationCollectionStore(Directory('${root.path}/collections'));
-  }();
+  static final Map<String, Future<ConversationCollectionStore>> _instances = {};
+  static Future<ConversationCollectionStore> open({
+    String characterId = CharacterRuntimeIds.ryza,
+  }) {
+    if (!CharacterRuntimeIds.all.contains(characterId)) {
+      throw ArgumentError.value(characterId, 'characterId');
+    }
+    return _instances.putIfAbsent(characterId, () async {
+      final root = await getApplicationSupportDirectory();
+      final name = characterId == CharacterRuntimeIds.ryza
+          ? 'collections'
+          : 'collections_$characterId';
+      return ConversationCollectionStore(Directory('${root.path}/$name'));
+    });
+  }
 
   Future<void> _queue = Future.value();
   Future<T> _locked<T>(Future<T> Function() operation) {

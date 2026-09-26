@@ -11,6 +11,7 @@ import 'app_localization.dart';
 import 'app_theme.dart';
 import 'auxiliary_llm_tasks.dart';
 import 'character_prompt_editor.dart';
+import 'character_runtime_profile.dart';
 import 'chat_segments.dart';
 import 'frame_rate_controller.dart';
 import 'runtime_log.dart';
@@ -20,6 +21,7 @@ import 'platform_slider.dart';
 import 'glass_ui.dart';
 import 'mimo_tts_settings.dart';
 import 'memory_timeline.dart';
+import 'manual_memory_consolidation.dart';
 import 'settings_slots.dart';
 import 'settings_slot_selector.dart';
 import 'openai_settings_dialog.dart';
@@ -35,6 +37,9 @@ String _activeTtsModel(AppController controller) =>
       TtsProvider.generic => controller.genericTtsModel,
       TtsProvider.mimo => controller.mimoTts.model,
     };
+
+String _activeCharacterName(AppController controller, AppLanguage language) =>
+    controller.activeCharacterProfile.names.forLocale(language.name);
 
 // Keep the category rows visually consistent with the main scene's controls.
 // Only direct tiles are wrapped; embedded cards and section headings retain
@@ -114,7 +119,7 @@ extension on _SettingsCategory {
       'Memory, local import, export and chat history',
       '長期記憶、データの読み込み・書き出し、会話履歴',
     ),
-    _SettingsCategory.about => 'AgentAtelierR · 1.0.3 beta3',
+    _SettingsCategory.about => 'AgentAtelierR · 1.0.0 DX',
   };
 
   IconData get icon => switch (this) {
@@ -148,6 +153,26 @@ class SettingsScreenState extends State<SettingsScreen> {
   AppController get controller => widget.controller;
   _SettingsCategory? _category;
   int _detailPages = 0;
+
+  Future<void> _switchCharacter(String id) async {
+    try {
+      await controller.setActiveCharacter(id);
+    } on Object catch (error, stackTrace) {
+      RuntimeLog.instance.error('Character', error, stackTrace);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            controller.interfaceLanguage.text(
+              '角色切换失败，请重试',
+              'Could not switch character. Please try again.',
+              'キャラクターを切り替えられませんでした。もう一度お試しください。',
+            ),
+          ),
+        ),
+      );
+    }
+  }
 
   Future<T?> _openDetailPage<T>({
     required BuildContext context,
@@ -257,8 +282,8 @@ class SettingsScreenState extends State<SettingsScreen> {
                             child: _CharacterChoice(
                               name: language.text('莱莎', 'Ryza', 'ライザ'),
                               asset: 'assets/images/character_switch/ryza.png',
-                              selected: true,
-                              onTap: null,
+                              selected: controller.activeCharacterId == 'ryza',
+                              onTap: () => _switchCharacter('ryza'),
                             ),
                           ),
                           Container(
@@ -271,8 +296,9 @@ class SettingsScreenState extends State<SettingsScreen> {
                               name: language.text('苏菲', 'Sophie', 'ソフィー'),
                               asset:
                                   'assets/images/character_switch/sophie.png',
-                              selected: false,
-                              onTap: null,
+                              selected:
+                                  controller.activeCharacterId == 'sophie',
+                              onTap: () => _switchCharacter('sophie'),
                             ),
                           ),
                         ],
@@ -336,7 +362,7 @@ class SettingsScreenState extends State<SettingsScreen> {
                   title: Text(language.text('语言', 'Languages', '言語')),
                   subtitle: Text(
                     '${controller.interfaceLanguage.nativeLabel} · '
-                    '${language.text('莱莎', 'Ryza', 'ライザ')} '
+                    '${_activeCharacterName(controller, language)} '
                     '${controller.characterReplyLanguage.nativeLabel}',
                   ),
                   trailing: const Icon(Icons.chevron_right),
@@ -396,22 +422,32 @@ class SettingsScreenState extends State<SettingsScreen> {
                   subtitle: Text(
                     language.text(
                       '可提前编辑下一条消息；当前回复结束前不能再次发送',
-                      'Draft the next message while Ryza replies; sending stays disabled until the reply ends',
+                      'Draft the next message while the character replies; sending stays disabled until the reply ends',
                       '返信中に次のメッセージを編集できます。返信完了までは送信できません',
                     ),
                   ),
                 ),
                 SwitchListTile(
-                  value: controller.gazeTrackingEnabled,
-                  onChanged: controller.setGazeTrackingEnabled,
+                  value:
+                      controller.activeCharacterProfile.hasSpineResources &&
+                      controller.gazeTrackingEnabled,
+                  onChanged: controller.activeCharacterProfile.hasSpineResources
+                      ? controller.setGazeTrackingEnabled
+                      : null,
                   secondary: const Icon(Icons.visibility_rounded),
                   title: Text(language.text('视线追踪', 'Gaze tracking', '視線追跡')),
                   subtitle: Text(
-                    language.text(
-                      '按住角色区域时，眼睛与高光跟随手指方向',
-                      'Eyes and highlights follow your finger while held',
-                      '押している間、目とハイライトが指を追跡',
-                    ),
+                    controller.activeCharacterProfile.hasSpineResources
+                        ? language.text(
+                            '按住角色区域时，眼睛与高光跟随手指方向',
+                            'Eyes and highlights follow your finger while held',
+                            '押している間、目とハイライトが指を追跡',
+                          )
+                        : language.text(
+                            '当前角色的动态资源尚未提供',
+                            'Animated resources are not available for this character yet',
+                            'このキャラクターのアニメーション素材はまだありません',
+                          ),
                   ),
                 ),
                 ListTile(
@@ -536,16 +572,26 @@ class SettingsScreenState extends State<SettingsScreen> {
               if (_category == _SettingsCategory.audio) ...[
                 _SectionLabel(language.text('声音', 'Audio', 'サウンド')),
                 SwitchListTile(
-                  value: controller.voiceEnabled,
-                  onChanged: controller.setVoiceEnabled,
+                  value:
+                      controller.activeCharacterProfile.hasSpineResources &&
+                      controller.voiceEnabled,
+                  onChanged: controller.activeCharacterProfile.hasSpineResources
+                      ? controller.setVoiceEnabled
+                      : null,
                   secondary: const Icon(Icons.record_voice_over_outlined),
                   title: Text(language.text('点击语音', 'Tap voice', 'タップ音声')),
                   subtitle: Text(
-                    language.text(
-                      '点击角色时播放对应语音',
-                      'Play a voice line when Ryza is tapped',
-                      'ライザをタップすると音声を再生します',
-                    ),
+                    controller.activeCharacterProfile.hasSpineResources
+                        ? language.text(
+                            '点击角色时播放对应语音',
+                            'Play a voice line when the character is tapped',
+                            'キャラクターをタップすると音声を再生します',
+                          )
+                        : language.text(
+                            '当前角色的点击语音资源尚未提供',
+                            'Tap voice lines are not available for this character yet',
+                            'このキャラクターのタップ音声はまだありません',
+                          ),
                   ),
                 ),
                 ListTile(
@@ -725,9 +771,9 @@ class SettingsScreenState extends State<SettingsScreen> {
                   ),
                   subtitle: Text(
                     language.text(
-                      '向 LLM 发送莱莎的详细人物设定；关闭后仍保留最小身份和输出协议',
-                      'Send Ryza\'s detailed profile; core identity and output rules remain when disabled',
-                      'ライザの詳細設定を送信します。無効でも最小限の身元と出力規則は維持されます',
+                      '向 LLM 发送${_activeCharacterName(controller, AppLanguage.chinese)}的详细人物设定；关闭后仍保留最小身份和输出协议',
+                      'Send ${_activeCharacterName(controller, AppLanguage.english)}\'s detailed profile; core identity and output rules remain when disabled',
+                      '${_activeCharacterName(controller, AppLanguage.japanese)}の詳細設定を送信します。無効でも最小限の身元と出力規則は維持されます',
                     ),
                   ),
                 ),
@@ -1084,9 +1130,9 @@ class SettingsScreenState extends State<SettingsScreen> {
                   ),
                   subtitle: Text(
                     language.text(
-                      '按存档查看和搜索用户、旁白与莱莎的对话',
-                      'Browse and search user, narration and Ryza dialogue by save',
-                      'セーブ別にユーザー・ナレーション・ライザの会話を検索',
+                      '按存档查看和搜索用户、旁白与${_activeCharacterName(controller, AppLanguage.chinese)}的对话',
+                      'Browse and search user, narration and ${_activeCharacterName(controller, AppLanguage.english)} dialogue by save',
+                      'セーブ別にユーザー・ナレーション・${_activeCharacterName(controller, AppLanguage.japanese)}の会話を検索',
                     ),
                   ),
                   trailing: const Icon(Icons.chevron_right),
@@ -1174,9 +1220,9 @@ class SettingsScreenState extends State<SettingsScreen> {
                   title: const Text('AgentAtelierR'),
                   subtitle: Text(
                     language.text(
-                      '版本 1.0.3 beta3 测试版',
-                      'Version 1.0.3 beta3',
-                      'バージョン 1.0.3 beta3',
+                      '版本 1.0.0 正式版 DX',
+                      'Version 1.0.0 DX',
+                      'バージョン 1.0.0 DX',
                     ),
                   ),
                 ),
@@ -1184,9 +1230,9 @@ class SettingsScreenState extends State<SettingsScreen> {
                   padding: const EdgeInsets.fromLTRB(72, 0, 24, 12),
                   child: Text(
                     language.text(
-                      '当前仅用于本地原型验证。角色、美术、语音资源请仅在合法授权范围内使用。',
-                      'Local prototype only. Use character, artwork, and voice assets only with proper authorization.',
-                      'ローカル試作版です。キャラクター、画像、音声素材は適切な許諾の範囲でのみ使用してください。',
+                      '本地运行版本。角色、美术、语音资源请仅在合法授权范围内使用。',
+                      'Local release. Use character, artwork, and voice assets only with proper authorization.',
+                      'ローカル版です。キャラクター、画像、音声素材は適切な許諾の範囲でのみ使用してください。',
                     ),
                     style: TextStyle(
                       color: Theme.of(context).colorScheme.onSurfaceVariant,
@@ -1237,6 +1283,7 @@ class SettingsScreenState extends State<SettingsScreen> {
     final result = await _openDetailPage<_LanguageSettingsDraft>(
       context: context,
       builder: (context) => _LanguageSettingsDialog(
+        characterNames: controller.activeCharacterProfile.names,
         interfaceLanguage: controller.interfaceLanguage,
         narratorLanguage: controller.narratorLanguage,
         characterReplyLanguage: controller.characterReplyLanguage,
@@ -1267,9 +1314,9 @@ class SettingsScreenState extends State<SettingsScreen> {
         ),
         content: Text(
           language.text(
-            '是否同时删除长期记忆？保留记忆时，莱莎仍会记得之前记录的事情。\n\n仅清除当前对话的数据，不影响已有存档、任务和地图进度。清除操作无法撤销。',
-            'Also delete long-term memory? If you keep it, Ryza can still recall previously recorded events.\n\nThis clears the current conversation only. Existing save slots, quests and map progress are unaffected. This cannot be undone.',
-            '長期記憶も削除しますか？記憶を残すと、ライザは記録された出来事を引き続き思い出せます。\n\n現在の会話のみが対象です。既存のセーブ、クエスト、マップの進行には影響しません。元に戻すことはできません。',
+            '是否同时删除长期记忆？保留记忆时，${_activeCharacterName(controller, AppLanguage.chinese)}仍会记得之前记录的事情。\n\n仅清除当前对话的数据，不影响已有存档、任务和地图进度。清除操作无法撤销。',
+            'Also delete long-term memory? If you keep it, ${_activeCharacterName(controller, AppLanguage.english)} can still recall previously recorded events.\n\nThis clears the current conversation only. Existing save slots, quests and map progress are unaffected. This cannot be undone.',
+            '長期記憶も削除しますか？記憶を残すと、${_activeCharacterName(controller, AppLanguage.japanese)}は記録された出来事を引き続き思い出せます。\n\n現在の会話のみが対象です。既存のセーブ、クエスト、マップの進行には影響しません。元に戻すことはできません。',
           ),
         ),
         actions: [
@@ -1701,7 +1748,9 @@ class SettingsScreenState extends State<SettingsScreen> {
                         onChanged: (value) =>
                             setDialogState(() => enabled = value),
                         title: const Text('AI 回复后自动播放'),
-                        subtitle: const Text('只合成“莱莎：”台词，旁白不会发声'),
+                        subtitle: Text(
+                          '只合成“${_activeCharacterName(controller, AppLanguage.chinese)}：”台词，旁白不会发声',
+                        ),
                       ),
                     ),
                     _TtsEmotionSlider(
@@ -2981,6 +3030,7 @@ class _LanguageSettingsDraft {
 
 class _LanguageSettingsDialog extends StatefulWidget {
   const _LanguageSettingsDialog({
+    required this.characterNames,
     required this.independentTranslation,
     required this.interfaceLanguage,
     required this.narratorLanguage,
@@ -2989,6 +3039,7 @@ class _LanguageSettingsDialog extends StatefulWidget {
     required this.translationOnly,
   });
 
+  final CharacterRuntimeNames characterNames;
   final AppLanguage interfaceLanguage;
   final AppLanguage narratorLanguage;
   final AppLanguage characterReplyLanguage;
@@ -3046,9 +3097,9 @@ class _LanguageSettingsDialogState extends State<_LanguageSettingsDialog> {
               const SizedBox(height: 14),
               _languageDropdown(
                 label: language.text(
-                  '莱莎回复语言',
-                  'Ryza reply language',
-                  'ライザの返答言語',
+                  '${widget.characterNames.chinese}回复语言',
+                  '${widget.characterNames.english} reply language',
+                  '${widget.characterNames.japanese}の返答言語',
                 ),
                 value: _characterReplyLanguage,
                 onChanged: (value) =>
@@ -3112,9 +3163,9 @@ class _LanguageSettingsDialogState extends State<_LanguageSettingsDialog> {
                 alignment: Alignment.centerLeft,
                 child: Text(
                   language.text(
-                    '选择是否将莱莎的回复额外翻译为指定语言；不影响原始回复语言。语言设置仅对保存后发送的新消息生效，历史消息不会重新翻译。',
-                    'Optionally add a translation of Ryza\'s reply. The original reply language is unchanged. Language changes apply to new messages after saving; history is not translated again.',
-                    'ライザの返答に指定言語の翻訳を追加します。元の返答言語は変わりません。保存後の新しいメッセージにのみ適用され、履歴は再翻訳されません。',
+                    '选择是否将${widget.characterNames.chinese}的回复额外翻译为指定语言；不影响原始回复语言。语言设置仅对保存后发送的新消息生效，历史消息不会重新翻译。',
+                    'Optionally add a translation of ${widget.characterNames.english}\'s reply. The original reply language is unchanged. Language changes apply to new messages after saving; history is not translated again.',
+                    '${widget.characterNames.japanese}の返答に指定言語の翻訳を追加します。元の返答言語は変わりません。保存後の新しいメッセージにのみ適用され、履歴は再翻訳されません。',
                   ),
                   style: Theme.of(context).textTheme.bodySmall?.copyWith(
                     color: Theme.of(context).colorScheme.onSurfaceVariant,
@@ -3205,6 +3256,7 @@ class _LongTermMemoryDialogState extends State<_LongTermMemoryDialog> {
   Map<String, dynamic>? _document;
   List<dynamic>? _entries;
   bool _editRaw = false;
+  bool _manualBusy = false;
 
   void _parseMemory() {
     _document = null;
@@ -3251,6 +3303,95 @@ class _LongTermMemoryDialogState extends State<_LongTermMemoryDialog> {
     if (prompt != null) widget.controller.setMemoryConsolidationPrompt(prompt);
   }
 
+  Future<void> _organizeNow() async {
+    if (_manualBusy) return;
+    final controller = widget.controller;
+    final language = widget.language;
+    if (_summary.text != controller.memorySummary ||
+        _enabled != controller.longTermMemoryEnabled) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(language.text(
+          '请先保存当前记忆编辑，再开始整理',
+          'Save your memory edits before organizing',
+          '先に記憶の編集を保存してください',
+        )),
+      ));
+      return;
+    }
+    setState(() => _manualBusy = true);
+    try {
+      if (!controller.aiEnabled) {
+        throw StateError('请先启用并配置 LLM 服务');
+      }
+      final apiKey = await const SecretStore().readLlmKey(
+        controller.llmProvider,
+        openAiSlot: controller.activeOpenAiSlot,
+      );
+      if (apiKey.trim().isEmpty) {
+        throw StateError('当前 LLM API Key 为空，请先完成 AI 接口设置');
+      }
+      final provider = controller.llmProvider;
+      final baseUrl = controller.activeLlmBaseUrl;
+      final model = controller.activeLlmModel;
+      final client = OpenAiCompatibleClient();
+      final proposal = await ManualMemoryConsolidation().prepare(
+        controller: controller,
+        complete: (messages) => client.complete(
+          lightweight: true,
+          provider: provider,
+          baseUrl: baseUrl,
+          apiKey: apiKey,
+          model: model,
+          messages: messages,
+        ),
+      );
+      if (!mounted) return;
+      if (proposal == null) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(language.text(
+            '没有待整理的对话或最近记忆',
+            'There is no new dialogue or recent memory to organize',
+            '整理する新しい会話や最近の記憶はありません',
+          )),
+        ));
+        return;
+      }
+      if (!proposal.isCurrent(controller)) {
+        throw StateError('对话或记忆已变化，请重新整理');
+      }
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (context) => _ManualMemoryReviewDialog(
+          proposal: proposal,
+          language: language,
+        ),
+      );
+      if (!mounted || confirmed != true) return;
+      if (!proposal.commit(controller)) {
+        throw StateError('记忆已变化或确认内容无效，请重新整理');
+      }
+      setState(() {
+        _summary.text = controller.memorySummary;
+        _parseMemory();
+      });
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(language.text(
+          '记忆与译文已保存',
+          'Memory and translations saved',
+          '記憶と翻訳を保存しました',
+        )),
+      ));
+    } on Object catch (error, stackTrace) {
+      RuntimeLog.instance.error('Memory', error, stackTrace);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('$error'),
+      ));
+    } finally {
+      if (mounted) setState(() => _manualBusy = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final language = widget.language;
@@ -3258,6 +3399,18 @@ class _LongTermMemoryDialogState extends State<_LongTermMemoryDialog> {
       title: Row(
         children: [
           Expanded(child: Text(language.text('记忆', 'Memory', '記憶'))),
+          TextButton.icon(
+            key: const ValueKey('memory-organize-now'),
+            onPressed: _manualBusy ? null : _organizeNow,
+            icon: _manualBusy
+                ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.auto_awesome_outlined, size: 20),
+            label: Text(language.text('马上整理', 'Organize', '今すぐ整理')),
+          ),
           IconButton(
             key: const ValueKey('memory-prompt-editor-open'),
             tooltip: language.text(
@@ -3383,6 +3536,24 @@ class _LongTermMemoryDialogState extends State<_LongTermMemoryDialog> {
                               _summary.text = jsonEncode(_document);
                             },
                           ),
+                          if (_entries![index]['translation'] is String) ...[
+                            const SizedBox(height: 6),
+                            TextFormField(
+                              key: ValueKey('memory-entry-translation-${_entries![index]['sequence']}'),
+                              initialValue: _entries![index]['translation'] as String,
+                              minLines: 1,
+                              maxLines: null,
+                              decoration: InputDecoration(
+                                isDense: true,
+                                border: InputBorder.none,
+                                labelText: language.text('译文', 'Translation', '翻訳'),
+                              ),
+                              onChanged: (value) {
+                                _entries![index]['translation'] = value;
+                                _summary.text = jsonEncode(_document);
+                              },
+                            ),
+                          ],
                           if (_entries![index]['state_change'] is Map) ...[
                             const SizedBox(height: 6),
                             Text(
@@ -3501,6 +3672,159 @@ class _LongTermMemoryDialogState extends State<_LongTermMemoryDialog> {
             _LongTermMemoryDraft(enabled: _enabled, summary: _summary.text),
           ),
           child: Text(language.text('保存', 'Save', '保存')),
+        ),
+      ],
+    );
+  }
+}
+
+class _ManualMemoryReviewDialog extends StatefulWidget {
+  const _ManualMemoryReviewDialog({
+    required this.proposal,
+    required this.language,
+  });
+
+  final ManualMemoryProposal proposal;
+  final AppLanguage language;
+
+  @override
+  State<_ManualMemoryReviewDialog> createState() =>
+      _ManualMemoryReviewDialogState();
+}
+
+class _ManualMemoryReviewDialogState extends State<_ManualMemoryReviewDialog> {
+  bool _invalid = false;
+
+  void _confirm() {
+    if (widget.proposal.recent.any(
+          (item) =>
+              item.summary.trim().isEmpty ||
+              item.translation.trim().isEmpty ||
+              item.savedText.length > 1200,
+        ) ||
+        widget.proposal.newEntries.any(
+          (entry) =>
+              '${entry['summary'] ?? ''}'.trim().isEmpty ||
+              '${entry['translation'] ?? ''}'.trim().isEmpty,
+        )) {
+      setState(() => _invalid = true);
+      return;
+    }
+    Navigator.pop(context, true);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final language = widget.language;
+    final proposal = widget.proposal;
+    return AlertDialog(
+      title: Text(language.text('确认整理的记忆', 'Review memories', '整理した記憶を確認')),
+      content: SizedBox(
+        width: 560,
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              if (proposal.recent.isNotEmpty) ...[
+                Text(language.text('最近记忆', 'Recent memories', '最近の記憶'),
+                    style: Theme.of(context).textTheme.titleSmall),
+                const SizedBox(height: 8),
+                for (var index = 0; index < proposal.recent.length; index++) ...[
+                  TextFormField(
+                    key: ValueKey('manual-memory-recent-$index'),
+                    initialValue: proposal.recent[index].summary,
+                    maxLines: null,
+                    maxLength: 500,
+                    decoration: InputDecoration(
+                      labelText: language.text('记忆 ${index + 1}',
+                          'Memory ${index + 1}', '記憶 ${index + 1}'),
+                      border: const OutlineInputBorder(),
+                    ),
+                    onChanged: (value) => proposal.recent[index].summary = value,
+                  ),
+                  const SizedBox(height: 8),
+                  TextFormField(
+                    key: ValueKey('manual-memory-recent-translation-$index'),
+                    initialValue: proposal.recent[index].translation,
+                    maxLines: null,
+                    maxLength: 500,
+                    decoration: InputDecoration(
+                      labelText: language.text('译文 · ${proposal.translationLanguage}',
+                          'Translation · ${proposal.translationLanguage}',
+                          '翻訳 · ${proposal.translationLanguage}'),
+                      border: const OutlineInputBorder(),
+                    ),
+                    onChanged: (value) =>
+                        proposal.recent[index].translation = value,
+                  ),
+                  const SizedBox(height: 16),
+                ],
+              ],
+              Text(language.text('长期记忆', 'Long-term memories', '長期記憶'),
+                  style: Theme.of(context).textTheme.titleSmall),
+              const SizedBox(height: 8),
+              if (proposal.newEntries.isEmpty)
+                Text(language.text('没有提取到新的长期记忆',
+                    'No new long-term memories were found', '新しい長期記憶はありません')),
+              for (final entry in proposal.newEntries) ...[
+                Row(children: [
+                  Expanded(child: Text('${entry['date'] ?? ''} · ${entry['category'] ?? ''}')),
+                  IconButton(
+                    tooltip: language.text('删除这条记忆', 'Delete memory', 'この記憶を削除'),
+                    icon: const Icon(Icons.delete_outline),
+                    onPressed: () => setState(() {
+                      (proposal.document['entries'] as List).remove(entry);
+                      proposal.newEntrySequences.remove(entry['sequence']);
+                    }),
+                  ),
+                ]),
+                TextFormField(
+                  key: ValueKey('manual-memory-entry-${entry['sequence']}'),
+                  initialValue: '${entry['summary'] ?? ''}',
+                  maxLines: null,
+                  decoration: InputDecoration(
+                    labelText: language.text('记忆内容', 'Memory', '記憶の内容'),
+                    border: const OutlineInputBorder(),
+                  ),
+                  onChanged: (value) => entry['summary'] = value,
+                ),
+                const SizedBox(height: 8),
+                TextFormField(
+                  key: ValueKey('manual-memory-entry-translation-${entry['sequence']}'),
+                  initialValue: '${entry['translation'] ?? ''}',
+                  maxLines: null,
+                  decoration: InputDecoration(
+                    labelText: language.text('译文 · ${proposal.translationLanguage}',
+                        'Translation · ${proposal.translationLanguage}',
+                        '翻訳 · ${proposal.translationLanguage}'),
+                    border: const OutlineInputBorder(),
+                  ),
+                  onChanged: (value) => entry['translation'] = value,
+                ),
+                const SizedBox(height: 16),
+              ],
+              if (_invalid)
+                Text(
+                  language.text('记忆和译文不能为空，最近记忆不超过 1200 字',
+                      'Memory and translation are required; recent memory must stay within 1200 characters',
+                      '記憶と翻訳を入力し、最近の記憶は1200文字以内にしてください'),
+                  style: TextStyle(color: Theme.of(context).colorScheme.error),
+                ),
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context, false),
+          child: Text(language.text('取消', 'Cancel', 'キャンセル')),
+        ),
+        FilledButton(
+          key: const ValueKey('manual-memory-confirm'),
+          onPressed: _confirm,
+          child: Text(language.text('保存记忆与译文', 'Save memories and translations',
+              '記憶と翻訳を保存')),
         ),
       ],
     );
@@ -3691,10 +4015,11 @@ class _UserProfileDialogState extends State<_UserProfileDialog> {
               TextField(
                 controller: _address,
                 maxLength: 24,
-                decoration: const InputDecoration(
-                  labelText: '莱莎对你的称呼',
+                decoration: InputDecoration(
+                  labelText:
+                      '${_activeCharacterName(widget.controller, AppLanguage.chinese)}对你的称呼',
                   hintText: '伙伴',
-                  border: OutlineInputBorder(),
+                  border: const OutlineInputBorder(),
                 ),
               ),
               const SizedBox(height: 12),

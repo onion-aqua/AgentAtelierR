@@ -27,6 +27,7 @@ import 'narration_composer_fields.dart';
 import 'app_theme.dart';
 import 'app_localization.dart';
 import 'attachment_thumbnail_store.dart';
+import 'image_food_invitation.dart';
 import 'audio_envelope.dart';
 import 'speech_envelope_loader.dart';
 import 'speech_loudness.dart';
@@ -43,6 +44,7 @@ import 'mimo_tts_client.dart';
 import 'protected_character_assets.dart';
 import 'device_agent_tools.dart';
 import 'character_appearance.dart';
+import 'character_runtime_profile.dart';
 import 'local_skin_store.dart';
 import 'character_catalog.dart';
 import 'character_camera.dart';
@@ -263,6 +265,12 @@ class _ChatScreenState extends State<ChatScreen> {
   late Future<ProtectedCharacterAssetBundle> _appearanceBundleFuture;
   late final SpineWidgetController _seatObjectController;
   late CharacterAppearance _appearance;
+  late String _activeCharacterId;
+  bool _staticPortraitReady = false;
+  CharacterRuntimeProfile get _activeCharacterProfile =>
+      characterRuntimeProfileById(_activeCharacterId);
+  bool get _usesProtectedSpine =>
+      _activeCharacterProfile.renderMode == CharacterRenderMode.protectedSpine;
   Timer? _idleTimer;
   Timer? _tapReactionTimer;
   Timer? _microMotionTimer;
@@ -383,19 +391,30 @@ class _ChatScreenState extends State<ChatScreen> {
   final Map<String, Set<String>> _collectionSelection = {};
   Set<String> _availableCollectionVoices = {};
 
+  bool _conversationIsCurrent(String characterId, int revision) =>
+      mounted &&
+      widget.controller.activeCharacterId == characterId &&
+      widget.controller.dataRevision == revision;
+
   Future<void> _toggleCollection() async {
     if (_savingCollection) return;
+    final characterId = widget.controller.activeCharacterId;
+    final revision = widget.controller.dataRevision;
     setState(() => _savingCollection = true);
     try {
-      final store = await ConversationCollectionStore.open();
+      final store = await ConversationCollectionStore.open(
+        characterId: characterId,
+      );
+      if (!_conversationIsCurrent(characterId, revision)) return;
       if (!_selectingCollection) {
         final keys = await store.availableVoiceKeys();
-        if (!mounted) return;
+        if (!_conversationIsCurrent(characterId, revision)) return;
         setState(() {
           _availableCollectionVoices = keys;
           _collectionSelection.clear();
           _selectingCollection = true;
         });
+        if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
@@ -424,6 +443,7 @@ class _ChatScreenState extends State<ChatScreen> {
               },
         ];
         if (selections.isNotEmpty) {
+          if (!_conversationIsCurrent(characterId, revision)) return;
           if (!mounted) return;
           final language = widget.controller.interfaceLanguage;
           var draftName = '';
@@ -484,7 +504,7 @@ class _ChatScreenState extends State<ChatScreen> {
               );
             },
           );
-          if (!mounted) return;
+          if (!_conversationIsCurrent(characterId, revision)) return;
           if (name == null) {
             setState(() {
               _selectingCollection = false;
@@ -494,9 +514,10 @@ class _ChatScreenState extends State<ChatScreen> {
           }
           await store.collect(selections, name: name);
         }
-        if (!mounted) return;
+        if (!_conversationIsCurrent(characterId, revision)) return;
         setState(() => _selectingCollection = false);
         if (selections.isNotEmpty) {
+          if (!mounted) return;
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
               content: Text(
@@ -511,7 +532,8 @@ class _ChatScreenState extends State<ChatScreen> {
         }
       }
     } catch (error) {
-      if (mounted) {
+      if (_conversationIsCurrent(characterId, revision)) {
+        if (!mounted) return;
         ScaffoldMessenger.of(context)
             .showSnackBar(SnackBar(content: Text('$error')));
       }
@@ -550,14 +572,15 @@ class _ChatScreenState extends State<ChatScreen> {
   @override
   void initState() {
     super.initState();
+    _activeCharacterId = widget.controller.activeCharacterId;
     _appearance = characterAppearanceById(
       widget.controller.selectedCharacterAppearanceId,
     );
-    _appearanceBundleFuture = ProtectedCharacterAssets.bundleFor(
-      _appearance.assetName,
-    );
+    _appearanceBundleFuture = _usesProtectedSpine
+        ? ProtectedCharacterAssets.bundleFor(_appearance.assetName)
+        : Future.value(ProtectedCharacterAssetBundle(const {}));
     _observedDataRevision = widget.controller.dataRevision;
-    if (_appearance.animated) {
+    if (_usesProtectedSpine && _appearance.animated) {
       _spineController = _createSpineController(_appearance);
     }
     _seatObjectController = SpineWidgetController(
@@ -638,7 +661,7 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   void _syncCharacterAnimationPause() {
-    if (widget.pauseCharacterAnimation) {
+    if (widget.pauseCharacterAnimation || !_usesProtectedSpine) {
       _spineController?.pause();
       _seatObjectController.pause();
       _idleTimer?.cancel();
@@ -667,17 +690,30 @@ class _ChatScreenState extends State<ChatScreen> {
 
   void _handleControllerChange({bool forceAppearanceReload = false}) {
     _syncBackgroundVoicePolicy();
-    if (_observedDataRevision != widget.controller.dataRevision) {
+    final characterChanged =
+        _activeCharacterId != widget.controller.activeCharacterId;
+    if (characterChanged ||
+        _observedDataRevision != widget.controller.dataRevision) {
       _selectingCollection = false;
       _collectionSelection.clear();
       _observedDataRevision = widget.controller.dataRevision;
       _resetConversationWorkForDataReplacement();
     }
+    if (characterChanged) {
+      _activeCharacterId = widget.controller.activeCharacterId;
+      _staticPortraitReady = false;
+      if (!_usesProtectedSpine) ProtectedCharacterAssets.clearCache();
+      _syncCharacterAnimationPause();
+    }
     if (!widget.controller.gazeTrackingEnabled) _endGaze();
     final next = characterAppearanceById(
       widget.controller.selectedCharacterAppearanceId,
     );
-    if (next.id == _appearance.id && !forceAppearanceReload) return;
+    if (next.id == _appearance.id &&
+        !forceAppearanceReload &&
+        !characterChanged) {
+      return;
+    }
     _clearPerformanceQueue();
     _lipSyncEntry = null;
     _gazeHeld = false;
@@ -728,12 +764,16 @@ class _ChatScreenState extends State<ChatScreen> {
       _recipeAnimationNames = const {};
       _recentAmbientGroupIds.clear();
       _lastPerformanceActionKey = null;
-      _appearanceBundleFuture = ProtectedCharacterAssets.bundleFor(
-        next.assetName,
-      );
-      _spineController = next.animated ? _createSpineController(next) : null;
+      _appearanceBundleFuture = _usesProtectedSpine
+          ? ProtectedCharacterAssets.bundleFor(next.assetName)
+          : Future.value(ProtectedCharacterAssetBundle(const {}));
+      _spineController = _usesProtectedSpine && next.animated
+          ? _createSpineController(next)
+          : null;
     });
-    unawaited(_playSkinChangeEffect());
+    if (_usesProtectedSpine && !characterChanged) {
+      unawaited(_playSkinChangeEffect());
+    }
   }
 
   void _resetConversationWorkForDataReplacement() {
@@ -785,6 +825,8 @@ class _ChatScreenState extends State<ChatScreen> {
     );
     unawaited(_clearLastSpeech());
     _inputController.clear();
+    _narrationInputController.clear();
+    _narrationBottomInputController.clear();
     if (!mounted) return;
     setState(() {
       _isReplying = false;
@@ -1050,6 +1092,15 @@ class _ChatScreenState extends State<ChatScreen> {
   /// of user text: the model chooses a semantic action, while this snapshot
   /// tells it which semantic actions can be rendered right now.
   CharacterPerformancePromptContext _buildPerformancePromptContext() {
+    if (!_usesProtectedSpine) {
+      return CharacterPerformancePromptContext(
+        appearanceId: _activeCharacterProfile.defaultAppearanceId,
+        posture: 'static',
+        revision: _motionLoadGeneration,
+        resourcesReady: false,
+        playableActionDescriptions: const {},
+      );
+    }
     final spineController = _spineController;
     final ready =
         _spineReady && spineController != null && _motionGroups.isNotEmpty;
@@ -2438,6 +2489,7 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   void _applySpeechSegmentPerformance(RyzaPerformanceSegment segment) {
+    if (!_usesProtectedSpine) return;
     if (segment.posture case final posture?) _selectPosture(posture);
     if (segment.expression case final expression?) {
       _applyExpression(expression, intensity: segment.expressionIntensity);
@@ -2983,7 +3035,16 @@ class _ChatScreenState extends State<ChatScreen> {
     if (!isAutomatic) _narrationInputController.clear();
     if (!isAutomatic) _narrationBottomInputController.clear();
     if (!isAutomatic) {
-      widget.controller.addUserMessage(text, attachments: attachments);
+      widget.controller.addUserMessage(
+        text,
+        attachments: attachments,
+        imageFoodInvitation: hasCurrentImageFoodInvitation(
+          text,
+          hasReadableImage: attachments.any(
+            (attachment) => attachment.isImage && attachment.bytes != null,
+          ),
+        ),
+      );
     }
     _lastPerformanceActionKey = null;
     _lastPostureCue = null;
@@ -3076,6 +3137,7 @@ class _ChatScreenState extends State<ChatScreen> {
           thinkingEnabled: widget.controller.activeThinkingEnabled,
           outputMultiplier: null,
           agentEnabled: widget.controller.agentEnabled,
+          characterId: widget.controller.activeCharacterId,
         ),
       );
       _replyIterator = iterator;
@@ -3552,7 +3614,7 @@ class _ChatScreenState extends State<ChatScreen> {
   void _continueConversation() {
     _sendMessage(
       automaticPrompt:
-          '请基于当前对话自然地继续说下去。不要解释这是自动继续，也不要重复上一条内容；用莱莎的口吻补充一个有意义的回应或问题。',
+          '请基于当前对话自然地继续说下去。不要解释这是自动继续，也不要重复上一条内容；用${_activeCharacterProfile.names.chinese}的口吻补充一个有意义的回应或问题。',
     );
   }
 
@@ -3701,6 +3763,7 @@ class _ChatScreenState extends State<ChatScreen> {
     Future<String>? plannedPerformance,
   }) async {
     final replyGeneration = _replyGeneration;
+    final characterId = widget.controller.activeCharacterId;
     Future<String> fallbackPerformance() async {
       if (plannedPerformance == null) return text;
       try {
@@ -3923,14 +3986,19 @@ class _ChatScreenState extends State<ChatScreen> {
           _stopSpeakingAnimation();
         }
       }
-      if (collectionMessage != null) {
+      if (collectionMessage != null &&
+          generation == _speechPlaybackGeneration) {
         try {
-          final store = await ConversationCollectionStore.open();
-          await store.cacheVoice(
-            collectionMessage.collectionKey,
-            completedSegments.map((s) => s.path).toList(),
-            texts: completedSegments.map((s) => s.text).toList(),
+          final store = await ConversationCollectionStore.open(
+            characterId: characterId,
           );
+          if (generation == _speechPlaybackGeneration) {
+            await store.cacheVoice(
+              collectionMessage.collectionKey,
+              completedSegments.map((s) => s.path).toList(),
+              texts: completedSegments.map((s) => s.text).toList(),
+            );
+          }
         } catch (error) {
           RuntimeLog.instance.warning('TTS', '语音缓存保存失败：$error');
         }
@@ -4189,9 +4257,14 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Future<void> _playMessageSpeech(ChatMessage message, String text) async {
     if (_isReplying || !_mayPlayVoice) return;
+    final characterId = widget.controller.activeCharacterId;
+    final revision = widget.controller.dataRevision;
     try {
-      final store = await ConversationCollectionStore.open();
+      final store = await ConversationCollectionStore.open(
+        characterId: characterId,
+      );
       final entries = await store.voiceSegments(message.collectionKey);
+      if (!_conversationIsCurrent(characterId, revision)) return;
       final normalized = text.replaceAll(RegExp(r'\s+'), '');
       final index = entries.indexWhere(
         (e) => e.text.replaceAll(RegExp(r'\s+'), '') == normalized,
@@ -4215,7 +4288,9 @@ class _ChatScreenState extends State<ChatScreen> {
       final entry = entries[index];
       final bytes = await File(entry.path).readAsBytes();
       final envelope = await loadSpeechEnvelope(entry.path, bytes);
-      if (!mounted || _isReplying) return;
+      if (!_conversationIsCurrent(characterId, revision) || _isReplying) {
+        return;
+      }
       await _playCachedSpeech([
         _CachedSpeechSegment(
           path: entry.path,
@@ -4226,7 +4301,8 @@ class _ChatScreenState extends State<ChatScreen> {
         ),
       ], highlightLatest: false);
     } catch (error) {
-      if (mounted) {
+      if (_conversationIsCurrent(characterId, revision)) {
+        if (!mounted) return;
         ScaffoldMessenger.of(context)
             .showSnackBar(SnackBar(content: Text('$error')));
       }
@@ -4263,12 +4339,17 @@ class _ChatScreenState extends State<ChatScreen> {
             const Duration(seconds: 6),
           );
         }
-        if (segment.posture case final posture?) _selectPosture(posture);
-        if (segment.expression case final expression?) {
-          _applyExpression(expression, intensity: segment.expressionIntensity);
-        }
-        if (segment.action case final action?) {
-          _performSemanticAction(action);
+        if (_usesProtectedSpine) {
+          if (segment.posture case final posture?) _selectPosture(posture);
+          if (segment.expression case final expression?) {
+            _applyExpression(
+              expression,
+              intensity: segment.expressionIntensity,
+            );
+          }
+          if (segment.action case final action?) {
+            _performSemanticAction(action);
+          }
         }
         await _audioPlayer.stop();
         await _audioPlayer.setVolume(widget.controller.voiceVolume);
@@ -4276,8 +4357,10 @@ class _ChatScreenState extends State<ChatScreen> {
           envelope: segment.envelope,
           awaitingAudio: true,
         );
-        for (final id in segment.motionGroupIds.take(2)) {
-          _performMotionGroupIntent(id);
+        if (_usesProtectedSpine) {
+          for (final id in segment.motionGroupIds.take(2)) {
+            _performMotionGroupIntent(id);
+          }
         }
         final completed = _audioPlayer.onPlayerComplete.first;
         await _audioPlayer.play(DeviceFileSource(segment.path));
@@ -4417,10 +4500,6 @@ class _ChatScreenState extends State<ChatScreen> {
       final sourceSegments = parseAssistantSegments(message.text)
           .where((s) => displayTextForAssistantSegment(s).isNotEmpty)
           .toList();
-      final isLatest = identical(
-        widget.controller.messages.lastOrNull,
-        message,
-      );
       final ordinal = active != null && active < sourceSegments.length
           ? sourceSegments
                     .take(active + 1)
@@ -4428,8 +4507,14 @@ class _ChatScreenState extends State<ChatScreen> {
                     .length -
                 1
           : -1;
-      if (widget.controller.attachTranslation(message, translated) &&
-          isLatest &&
+      final attached = await widget.controller.attachTranslation(
+        message,
+        translated,
+      );
+      if (attached &&
+          mounted &&
+          revision == widget.controller.dataRevision &&
+          widget.controller.messages.lastOrNull?.id == message.id &&
           ordinal >= 0) {
         setState(
           () => _activeAssistantSegmentIndex = _displayIndexForRyzaSegment(
@@ -4745,7 +4830,8 @@ class _ChatScreenState extends State<ChatScreen> {
                             ),
                           ),
                         ),
-                        if (widget.controller.storyClockEnabled)
+                        if (_usesProtectedSpine &&
+                            widget.controller.storyClockEnabled)
                           Text(
                             language.text(
                               '第${widget.controller.storyClock.day}天 · ${widget.controller.storyClock.timeLabel}',
@@ -4778,7 +4864,8 @@ class _ChatScreenState extends State<ChatScreen> {
                               language,
                             ),
                           ),
-                          if (widget.controller.storyClockEnabled)
+                          if (_usesProtectedSpine &&
+                              widget.controller.storyClockEnabled)
                             _CharacterStatusRow(
                               icon: Icons.restaurant_rounded,
                               label: language.text('饱食度', 'Satiety', '満腹度'),
@@ -4813,16 +4900,18 @@ class _ChatScreenState extends State<ChatScreen> {
                           label: language.text('关系点数', 'Bond', '親密度'),
                           value: '${widget.controller.relationshipPoints}',
                         ),
-                        _CharacterStatusRow(
-                          icon: Icons.checkroom_outlined,
-                          label: language.text('服装姿态', 'Outfit', '衣装と姿勢'),
-                          value: _appearance.label,
-                        ),
-                        _CharacterStatusRow(
-                          icon: widget.controller.sceneTime.icon,
-                          label: language.text('场景时间', 'Scene time', 'シーン時間'),
-                          value: widget.controller.sceneTime.label,
-                        ),
+                        if (_usesProtectedSpine) ...[
+                          _CharacterStatusRow(
+                            icon: Icons.checkroom_outlined,
+                            label: language.text('服装姿态', 'Outfit', '衣装と姿勢'),
+                            value: _appearance.label,
+                          ),
+                          _CharacterStatusRow(
+                            icon: widget.controller.sceneTime.icon,
+                            label: language.text('场景时间', 'Scene time', 'シーン時間'),
+                            value: widget.controller.sceneTime.label,
+                          ),
+                        ],
                         _CharacterStatusRow(
                           icon: Icons.psychology_alt_outlined,
                           label: language.text('长期记忆', 'Memory', '長期記憶'),
@@ -4935,6 +5024,8 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Future<void> _takePhoto() async {
     if (_isReplying) return;
+    final characterId = widget.controller.activeCharacterId;
+    final revision = widget.controller.dataRevision;
     if (!Platform.isAndroid && !Platform.isIOS) {
       ScaffoldMessenger.of(context)
           .showSnackBar(const SnackBar(content: Text('当前平台暂不支持直接拍照，请选择已有图片')));
@@ -4942,6 +5033,7 @@ class _ChatScreenState extends State<ChatScreen> {
     }
     var status = await Permission.camera.status;
     if (!status.isGranted) status = await Permission.camera.request();
+    if (!_conversationIsCurrent(characterId, revision)) return;
     if (!status.isGranted) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -4961,8 +5053,11 @@ class _ChatScreenState extends State<ChatScreen> {
         imageQuality: 92,
         requestFullMetadata: false,
       );
-      if (photo == null || !mounted) return;
+      if (photo == null || !_conversationIsCurrent(characterId, revision)) {
+        return;
+      }
       final size = await photo.length();
+      if (!_conversationIsCurrent(characterId, revision)) return;
       final currentTotal = _pendingAttachments.fold<int>(
         0,
         (total, attachment) => total + attachment.size,
@@ -4974,18 +5069,20 @@ class _ChatScreenState extends State<ChatScreen> {
         return;
       }
       final bytes = await photo.readAsBytes();
+      if (!_conversationIsCurrent(characterId, revision)) return;
       final name = photo.name.isEmpty ? 'camera.jpg' : photo.name;
       final attachment = await _createAttachment(
         name: name,
         mimeType: _mimeTypeForFile(name),
         bytes: bytes,
       );
-      if (!mounted) return;
+      if (!_conversationIsCurrent(characterId, revision)) return;
       setState(() {
         _pendingAttachments.add(attachment);
       });
     } on Object catch (error, stackTrace) {
       RuntimeLog.instance.error('Camera', error, stackTrace);
+      if (!_conversationIsCurrent(characterId, revision)) return;
       if (!mounted) return;
       ScaffoldMessenger.of(context)
           .showSnackBar(const SnackBar(content: Text('拍照失败，请重试或从相册选择图片')));
@@ -4993,6 +5090,8 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _pickAttachments({required bool imagesOnly}) async {
+    final characterId = widget.controller.activeCharacterId;
+    final revision = widget.controller.dataRevision;
     const maxBytes = 10 * 1024 * 1024;
     final files = await FilePicker.pickFiles(
       type: imagesOnly ? FileType.image : FileType.custom,
@@ -5012,7 +5111,9 @@ class _ChatScreenState extends State<ChatScreen> {
               'pptx',
             ],
     );
-    if (files.isEmpty || !mounted) return;
+    if (files.isEmpty || !_conversationIsCurrent(characterId, revision)) {
+      return;
+    }
     var totalBytes = _pendingAttachments.fold<int>(
       0,
       (total, attachment) => total + attachment.size,
@@ -5020,13 +5121,16 @@ class _ChatScreenState extends State<ChatScreen> {
     final accepted = <ChatAttachment>[];
     final rejected = <String>[];
     for (final file in files) {
+      if (!_conversationIsCurrent(characterId, revision)) return;
       final size = await file.length();
+      if (!_conversationIsCurrent(characterId, revision)) return;
       if (size > maxBytes || totalBytes + size > maxBytes) {
         rejected.add(file.name);
         continue;
       }
       try {
         final bytes = await file.readAsBytes();
+        if (!_conversationIsCurrent(characterId, revision)) return;
         accepted.add(
           await _createAttachment(
             name: file.name,
@@ -5036,10 +5140,11 @@ class _ChatScreenState extends State<ChatScreen> {
         );
         totalBytes += bytes.length;
       } on Object {
+        if (!_conversationIsCurrent(characterId, revision)) return;
         rejected.add(file.name);
       }
     }
-    if (!mounted) return;
+    if (!_conversationIsCurrent(characterId, revision)) return;
     if (accepted.isNotEmpty) {
       setState(() => _pendingAttachments.addAll(accepted));
     }
@@ -5048,6 +5153,7 @@ class _ChatScreenState extends State<ChatScreen> {
         'Attachment',
         '附件读取或大小校验失败，数量=${rejected.length}',
       );
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('附件读取失败或单次总大小超过 10MB：${rejected.join('、')}')),
       );
@@ -5115,6 +5221,7 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   void _showMotionPicker() {
+    if (!_usesProtectedSpine) return;
     if (!_appearance.animated) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -5194,6 +5301,7 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   void _showAppearancePicker() {
+    if (!_usesProtectedSpine) return;
     showGeneralDialog<void>(
       context: context,
       barrierDismissible: true,
@@ -5260,11 +5368,13 @@ class _ChatScreenState extends State<ChatScreen> {
                 left: 0,
                 right: 0,
                 height: viewportConstraints.maxHeight,
-                child: _SceneBackground(
-                  sceneTime: widget.controller.sceneTime,
-                  stageId: widget.controller.selectedStageId,
-                  frameRate: widget.controller.frameRate,
-                ),
+                child: _usesProtectedSpine
+                    ? _SceneBackground(
+                        sceneTime: widget.controller.sceneTime,
+                        stageId: widget.controller.selectedStageId,
+                        frameRate: widget.controller.frameRate,
+                      )
+                    : const ColoredBox(color: Color(0xFF15191B)),
               ),
               Positioned(
                 top: mediaQuery.viewPadding.top,
@@ -5280,7 +5390,7 @@ class _ChatScreenState extends State<ChatScreen> {
                   ),
                 ),
               ),
-              if (_appearance.animated && !_spineReady)
+              if (_usesProtectedSpine && _appearance.animated && !_spineReady)
                 Positioned.fill(
                   child: FutureBuilder<ProtectedCharacterAssetBundle>(
                     future: _appearanceBundleFuture,
@@ -5351,6 +5461,7 @@ class _ChatScreenState extends State<ChatScreen> {
               language: widget.controller.interfaceLanguage,
               liquidGlass: liquidGlass,
               sceneTime: widget.controller.sceneTime,
+              showSceneTime: _usesProtectedSpine,
               onSceneChanged: widget.controller.setSceneTime,
               onMenuPressed: widget.onMenuPressed,
               onStatusPressed: _showCharacterStatus,
@@ -5368,6 +5479,7 @@ class _ChatScreenState extends State<ChatScreen> {
             height: panelBounds.height,
             child: _LiquidGlassConversation(
               language: widget.controller.interfaceLanguage,
+              characterProfile: _activeCharacterProfile,
               liquidGlass: liquidGlass,
               translationOnly:
                   widget.controller.translationOnly &&
@@ -5563,51 +5675,90 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
+  Widget _buildStaticPortrait() {
+    final profile = _activeCharacterProfile;
+    return Center(
+      child: Image.asset(
+        profile.staticPortraitAsset,
+        key: ValueKey('portrait-${profile.id}'),
+        fit: BoxFit.contain,
+        alignment: Alignment.topCenter,
+        filterQuality: FilterQuality.high,
+        frameBuilder: (context, child, frame, wasSynchronouslyLoaded) {
+          if ((wasSynchronouslyLoaded || frame != null) &&
+              !_staticPortraitReady) {
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (!mounted ||
+                  _activeCharacterId != profile.id ||
+                  _staticPortraitReady) {
+                return;
+              }
+              _staticPortraitReady = true;
+              widget.onCharacterReady?.call();
+            });
+          }
+          return child;
+        },
+        errorBuilder: (context, error, stackTrace) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted && _activeCharacterId == profile.id) {
+              widget.onCharacterLoadFailed?.call();
+            }
+          });
+          return const SizedBox.shrink();
+        },
+      ),
+    );
+  }
+
   Widget _buildCharacter() {
     return Stack(
       fit: StackFit.expand,
       clipBehavior: Clip.none,
       children: [
-        CharacterCamera(
-          keepSceneProportions: true,
-          onTap: _reactToTap,
-          onGazeChanged: widget.controller.gazeTrackingEnabled
-              ? _updateGaze
-              : null,
-          onGazeEnd: widget.controller.gazeTrackingEnabled ? _endGaze : null,
-          child: Stack(
-            fit: StackFit.expand,
-            clipBehavior: Clip.none,
-            children: [
-              if (_appearance.animated && !_appearance.isStanding)
-                Positioned.fill(
-                  child: IgnorePointer(
-                    child: Transform.translate(
-                      offset: const Offset(0, -204),
-                      child: SpineWidget.fromAsset(
-                        'assets/spine/objects/obj_001/obj_001.atlas',
-                        'assets/spine/objects/obj_001/obj_001.skel',
-                        _seatObjectController,
-                        fit: BoxFit.contain,
-                        alignment: Alignment.bottomCenter,
+        if (_usesProtectedSpine)
+          CharacterCamera(
+            keepSceneProportions: true,
+            onTap: _reactToTap,
+            onGazeChanged: widget.controller.gazeTrackingEnabled
+                ? _updateGaze
+                : null,
+            onGazeEnd: widget.controller.gazeTrackingEnabled ? _endGaze : null,
+            child: Stack(
+              fit: StackFit.expand,
+              clipBehavior: Clip.none,
+              children: [
+                if (_appearance.animated && !_appearance.isStanding)
+                  Positioned.fill(
+                    child: IgnorePointer(
+                      child: Transform.translate(
+                        offset: const Offset(0, -204),
+                        child: SpineWidget.fromAsset(
+                          'assets/spine/objects/obj_001/obj_001.atlas',
+                          'assets/spine/objects/obj_001/obj_001.skel',
+                          _seatObjectController,
+                          fit: BoxFit.contain,
+                          alignment: Alignment.bottomCenter,
+                        ),
                       ),
                     ),
                   ),
-                ),
-              if (_appearance.animated)
-                _buildProtectedCharacter()
-              else
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(12, 28, 12, 0),
-                  child: _ProtectedAppearancePreview(
-                    appearance: _appearance,
-                    fit: BoxFit.contain,
-                    alignment: Alignment.bottomCenter,
+                if (_appearance.animated)
+                  _buildProtectedCharacter()
+                else
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(12, 28, 12, 0),
+                    child: _ProtectedAppearancePreview(
+                      appearance: _appearance,
+                      fit: BoxFit.contain,
+                      alignment: Alignment.bottomCenter,
+                    ),
                   ),
-                ),
-            ],
-          ),
-        ),
+              ],
+            ),
+          )
+        else
+          _buildStaticPortrait(),
         if (!widget.hideUi)
           Positioned(
             right: 12,
@@ -5634,7 +5785,7 @@ class _ChatScreenState extends State<ChatScreen> {
               onPressed: () => showLocalSaveDialog(context, widget.controller),
             ),
           ),
-        if (!widget.hideUi)
+        if (!widget.hideUi && _usesProtectedSpine)
           Positioned(
             right: 12,
             top: 126,
@@ -5650,7 +5801,7 @@ class _ChatScreenState extends State<ChatScreen> {
               onShopPressed: widget.onShopPressed,
             ),
           ),
-        if (!widget.hideUi && !_appearance.animated)
+        if (!widget.hideUi && _usesProtectedSpine && !_appearance.animated)
           Positioned(
             right: 16,
             bottom: 10,
@@ -5865,6 +6016,7 @@ class _TopBar extends StatelessWidget {
     required this.language,
     required this.liquidGlass,
     required this.sceneTime,
+    required this.showSceneTime,
     required this.onSceneChanged,
     required this.onMenuPressed,
     required this.onStatusPressed,
@@ -5873,6 +6025,7 @@ class _TopBar extends StatelessWidget {
   final AppLanguage language;
   final bool liquidGlass;
   final SceneTime sceneTime;
+  final bool showSceneTime;
   final ValueChanged<SceneTime> onSceneChanged;
   final VoidCallback onMenuPressed;
   final VoidCallback onStatusPressed;
@@ -5888,13 +6041,15 @@ class _TopBar extends StatelessWidget {
           children: [
             const SizedBox(width: 58),
             const Spacer(),
-            _SceneTimeMenu(
-              liquidGlass: liquidGlass,
-              language: language,
-              sceneTime: sceneTime,
-              onSceneChanged: onSceneChanged,
-            ),
-            const SizedBox(width: 8),
+            if (showSceneTime) ...[
+              _SceneTimeMenu(
+                liquidGlass: liquidGlass,
+                language: language,
+                sceneTime: sceneTime,
+                onSceneChanged: onSceneChanged,
+              ),
+              const SizedBox(width: 8),
+            ],
             _RoundIcon(
               liquidGlass: liquidGlass,
               icon: Icons.favorite_border_rounded,
@@ -7063,6 +7218,7 @@ class _LiquidGlassConversation extends StatelessWidget {
     required this.onToggleCollection,
     required this.onSelectCollection,
     required this.language,
+    required this.characterProfile,
     required this.liquidGlass,
     required this.translationOnly,
     required this.messages,
@@ -7113,6 +7269,7 @@ class _LiquidGlassConversation extends StatelessWidget {
   });
 
   final AppLanguage language;
+  final CharacterRuntimeProfile characterProfile;
   final bool selectingCollection;
   final bool savingCollection;
   final Map<String, Set<String>> collectionSelection;
@@ -7195,6 +7352,7 @@ class _LiquidGlassConversation extends StatelessWidget {
                               ),
                             ),
                             child: _GlassMessageList(
+                              characterProfile: characterProfile,
                               selecting: selectingCollection,
                               selection: collectionSelection,
                               availableVoices: availableCollectionVoices,
@@ -7247,6 +7405,7 @@ class _LiquidGlassConversation extends StatelessWidget {
                             max(0.0, constraints.maxHeight - 90),
                           ),
                           language: language,
+                          characterProfile: characterProfile,
                           controller: inputController,
                           narrationController: narrationController,
                           bottomNarrationController: bottomNarrationController,
@@ -7318,9 +7477,9 @@ class _LiquidGlassConversation extends StatelessWidget {
                         ? const _RotatingIcon(Icons.autorenew_rounded)
                         : null,
                     tooltip: language.text(
-                      '让莱莎继续对话',
-                      'Let Ryza continue',
-                      'ライザに会話を続けてもらう',
+                      '让${characterProfile.names.chinese}继续对话',
+                      'Let ${characterProfile.names.english} continue',
+                      '${characterProfile.names.japanese}に会話を続けてもらう',
                     ),
                     onPressed:
                         canContinue && !isContinuing && !selectingCollection
@@ -7437,7 +7596,7 @@ class _LiquidGlassSurface extends StatelessWidget {
           offset: Offset(0, 10),
         ),
       ],
-      child: child,
+      child: Padding(padding: const EdgeInsets.only(top: 32), child: child),
     );
   }
 }
@@ -7470,6 +7629,7 @@ class _GlassDragHandle extends StatelessWidget {
 
 class _GlassMessageList extends StatelessWidget {
   const _GlassMessageList({
+    required this.characterProfile,
     required this.selecting,
     required this.selection,
     required this.availableVoices,
@@ -7485,6 +7645,7 @@ class _GlassMessageList extends StatelessWidget {
   });
 
   final AppLanguage language;
+  final CharacterRuntimeProfile characterProfile;
   final void Function(ChatMessage, String) onPlaySpeech;
   final List<ChatMessage> messages;
   final ScrollController controller;
@@ -7518,6 +7679,7 @@ class _GlassMessageList extends StatelessWidget {
               key: index == 0 ? latestAssistantMessageKey : null,
               padding: const EdgeInsets.symmetric(vertical: 10),
               child: _SeparatedAssistantMessage(
+                characterProfile: characterProfile,
                 onSpeechText: selecting
                     ? null
                     : (text) => onPlaySpeech(message, text),
@@ -7647,7 +7809,7 @@ String _glassMessageText(ChatMessage message) {
   if (message.isUser) return _userComposerDisplayText(message.text);
   return displayTextForAssistantResponse(message.displayText)
       .replaceAll(
-        RegExp(r'^\s*(旁白|莱莎|译文|角色\s*\[[^\]]+\])\s*[：:]\s*', multiLine: true),
+        RegExp(r'^\s*(旁白|莱莎|苏菲|译文|角色\s*\[[^\]]+\])\s*[：:]\s*', multiLine: true),
         '',
       )
       .trim();
@@ -7738,6 +7900,7 @@ class _SeparatedAssistantMessage extends StatelessWidget {
     required this.response,
     required this.translationOnly,
     required this.language,
+    this.characterProfile,
     required this.attachments,
     required this.glass,
     this.activeSegmentIndex,
@@ -7748,6 +7911,7 @@ class _SeparatedAssistantMessage extends StatelessWidget {
   final ValueChanged<String>? onSpeechText;
   final bool translationOnly;
   final AppLanguage language;
+  final CharacterRuntimeProfile? characterProfile;
   final List<ChatAttachment> attachments;
   final bool glass;
   final int? activeSegmentIndex;
@@ -7790,6 +7954,9 @@ class _SeparatedAssistantMessage extends StatelessWidget {
       } else {
         children.add(
           _RyzaRun(
+            characterProfile:
+                characterProfile ??
+                characterRuntimeProfileById(CharacterRuntimeIds.ryza),
             onSpeechText: onSpeechText,
             segments: run,
             language: language,
@@ -7871,6 +8038,7 @@ class _NarratorRun extends StatelessWidget {
 
 class _RyzaRun extends StatelessWidget {
   const _RyzaRun({
+    required this.characterProfile,
     this.onSpeechText,
     required this.segments,
     required this.language,
@@ -7881,6 +8049,7 @@ class _RyzaRun extends StatelessWidget {
   });
 
   final List<ChatSegment> segments;
+  final CharacterRuntimeProfile characterProfile;
   final ValueChanged<String>? onSpeechText;
   final AppLanguage language;
   final bool glass;
@@ -7906,7 +8075,9 @@ class _RyzaRun extends StatelessWidget {
       ),
       clipBehavior: Clip.antiAlias,
       child: Image.asset(
-        'assets/images/chara_icons/ryza.png',
+        characterProfile.id == CharacterRuntimeIds.ryza
+            ? 'assets/images/chara_icons/ryza.png'
+            : characterProfile.switchAsset,
         fit: BoxFit.cover,
         errorBuilder: (_, _, _) => Icon(
           Icons.person_outline_rounded,
@@ -7925,7 +8096,11 @@ class _RyzaRun extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                language.text('莱莎', 'Ryza', 'ライザ'),
+                language.text(
+                  characterProfile.names.chinese,
+                  characterProfile.names.english,
+                  characterProfile.names.japanese,
+                ),
                 style: TextStyle(
                   color: glass
                       ? Colors.white70
@@ -8422,6 +8597,7 @@ class _GlassComposer extends StatelessWidget {
   const _GlassComposer({
     required this.availableHeight,
     required this.language,
+    required this.characterProfile,
     required this.controller,
     required this.narrationController,
     required this.bottomNarrationController,
@@ -8444,6 +8620,7 @@ class _GlassComposer extends StatelessWidget {
   });
 
   final AppLanguage language;
+  final CharacterRuntimeProfile characterProfile;
   final TextEditingController controller;
   final TextEditingController narrationController;
   final TextEditingController bottomNarrationController;
@@ -8590,14 +8767,14 @@ class _GlassComposer extends StatelessWidget {
                             ),
                             hintText: !isReplying
                                 ? language.text(
-                                    '和莱莎说点什么…',
-                                    'Say something to Ryza…',
-                                    'ライザに話しかける…',
+                                    '和${characterProfile.names.chinese}说点什么…',
+                                    'Say something to ${characterProfile.names.english}…',
+                                    '${characterProfile.names.japanese}に話しかける…',
                                   )
                                 : language.text(
-                                    '莱莎正在回复…',
-                                    'Ryza is replying…',
-                                    'ライザが返信中…',
+                                    '${characterProfile.names.chinese}正在回复…',
+                                    '${characterProfile.names.english} is replying…',
+                                    '${characterProfile.names.japanese}が返信中…',
                                   ),
                             hintStyle: const TextStyle(color: Colors.white60),
                             border: InputBorder.none,

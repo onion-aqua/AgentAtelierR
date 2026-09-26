@@ -68,9 +68,14 @@ class _CollectionsState extends State<ConversationCollectionsPage> {
   }
 
   Future<void> _refresh() async {
-    final store = await ConversationCollectionStore.open();
+    final characterId = widget.controller.activeCharacterId;
+    final store = await ConversationCollectionStore.open(
+      characterId: characterId,
+    );
     final cards = await store.cards();
-    if (mounted) setState(() => _cards = cards.reversed.toList());
+    if (mounted && widget.controller.activeCharacterId == characterId) {
+      setState(() => _cards = cards.reversed.toList());
+    }
   }
 
   Future<void> _run(Future<void> Function() action) async {
@@ -101,7 +106,9 @@ class _CollectionsState extends State<ConversationCollectionsPage> {
     await _player.stop();
     if (stop) return;
     try {
-      final store = await ConversationCollectionStore.open();
+      final store = await ConversationCollectionStore.open(
+        characterId: widget.controller.activeCharacterId,
+      );
       final files = card['audio'] as List;
       for (final audio in audioIndex == null ? files : [files[audioIndex]]) {
         if (!mounted || generation != _generation) return;
@@ -130,7 +137,9 @@ class _CollectionsState extends State<ConversationCollectionsPage> {
   }
 
   Future<void> _action(Map<String, dynamic> card, String action) async {
-    final store = await ConversationCollectionStore.open();
+    final store = await ConversationCollectionStore.open(
+      characterId: widget.controller.activeCharacterId,
+    );
     if (!mounted) return;
     final id = card['id'] as String;
     if (action == 'export') {

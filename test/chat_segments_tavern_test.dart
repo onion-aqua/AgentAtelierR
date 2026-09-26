@@ -94,4 +94,47 @@ void main() {
       ChatSpeaker.narrator,
     ]);
   });
+
+  test('Sophie dialogue stays on the primary speech channel', () {
+    const response =
+        '旁白：书页翻动。 苏菲：[happy][face:happy][action:none]找到配方了！\n'
+        'ソフィー：再看看材料。';
+    final segments = parseAssistantSegments(response);
+    expect(segments.map((segment) => segment.speaker), [
+      ChatSpeaker.narrator,
+      ChatSpeaker.ryza,
+      ChatSpeaker.ryza,
+    ]);
+    expect(segments[1].primaryCharacterId, 'sophie');
+    expect(segments[2].primaryCharacterId, 'sophie');
+    expect(
+      displayTextForAssistantResponse(response),
+      '旁白：书页翻动。\n苏菲：找到配方了！\n苏菲：再看看材料。',
+    );
+    expect(
+      ttsTextForAssistantResponse(
+        response,
+        fallbackMood: CharacterMood.neutral,
+      ),
+      contains('找到配方了！'),
+    );
+    expect(
+      performanceSegmentsForAssistantResponse(
+        response,
+        fallbackMood: CharacterMood.neutral,
+      ),
+      hasLength(2),
+    );
+  });
+
+  test('performance plans cannot be reused across different protagonists', () {
+    expect(
+      performanceSegmentsMatchingSpeech(
+        '苏菲：你好。',
+        '莱莎：[face:happy][action:none]你好。',
+        fallbackMood: CharacterMood.neutral,
+      ),
+      isNull,
+    );
+  });
 }

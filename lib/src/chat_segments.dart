@@ -10,20 +10,29 @@ class ChatSegment {
     required this.speaker,
     required this.text,
     this.characterId,
+    this.primaryCharacterId,
   });
 
   final ChatSpeaker speaker;
   final String text;
   final String? characterId;
+  final String? primaryCharacterId;
 }
 
+String assistantSpeakerLabel(ChatSegment segment) => switch (segment.speaker) {
+  ChatSpeaker.narrator => '旁白',
+  ChatSpeaker.ryza => segment.primaryCharacterId == 'sophie' ? '苏菲' : '莱莎',
+  ChatSpeaker.character => '角色[${segment.characterId ?? 'unknown'}]',
+  ChatSpeaker.translation => '译文',
+};
+
 final RegExp _speakerPrefix = RegExp(
-  r'^\s*(旁白|莱莎|译文|narrator|ryza|translation|角色\s*\[\s*([^\]\r\n]+?)\s*\])\s*[：:]\s*',
+  r'^\s*(旁白|莱莎|苏菲|ソフィー|译文|narrator|ryza|sophie|translation|角色\s*\[\s*([^\]\r\n]+?)\s*\])\s*[：:]\s*',
   multiLine: true,
   caseSensitive: false,
 );
 final RegExp _inlineSpeakerPrefix = RegExp(
-  r'(旁白|莱莎|译文|narrator|ryza|translation|角色\s*\[\s*([^\]\r\n]+?)\s*\])\s*[：:]',
+  r'(旁白|莱莎|苏菲|ソフィー|译文|narrator|ryza|sophie|translation|角色\s*\[\s*([^\]\r\n]+?)\s*\])\s*[：:]',
   caseSensitive: false,
 );
 final RegExp _fishCue = RegExp(r'\[[^\[\]\r\n]+\]');
@@ -155,11 +164,15 @@ final RegExp _metadataLine = RegExp(
   caseSensitive: false,
 );
 final RegExp _controlTag = RegExp(
-  r'\\?<\s*(/?)\s*(think|answer|tool_call|function_call|code)\b[^>]*>',
+  r'\\?<[ \t]*(/?)[ \t]*(think|answer|tool_call|function_call|code)\b[^<>\r\n]*>',
   caseSensitive: false,
 );
 final RegExp _partialControlTag = RegExp(
-  r'^\\?<\s*/?\s*([a-z_]+)',
+  r'^\\?<[ \t]*/?[ \t]*([a-z_]+)(?:[ \t/][^<>\r\n]*)?$',
+  caseSensitive: false,
+);
+final RegExp _unclosedPrivateBlockRecovery = RegExp(
+  r'\r?\n[ \t]*\r?\n(?=[ \t]*(?:旁白|莱莎|苏菲|ソフィー|narrator|ryza|sophie|角色[ \t]*\[[^\]\r\n]+\])[ \t]*[：:])',
   caseSensitive: false,
 );
 const _controlTagNames = {
@@ -173,11 +186,48 @@ const _controlTagNames = {
 String filterAssistantControlMarkup(String response) {
   final visible = StringBuffer();
   final hidden = <String>[];
+  final matches = _controlTag.allMatches(response).toList(growable: false);
   var cursor = 0;
-  for (final match in _controlTag.allMatches(response)) {
-    if (hidden.isEmpty) visible.write(response.substring(cursor, match.start));
+  void appendBody(String body, int nextMatch) {
+    if (hidden.isEmpty) {
+      visible.write(body);
+      return;
+    }
+    if (hidden.length != 1) return;
+    final privateTag = hidden.single;
+    final hasClosingTag = matches
+        .skip(nextMatch)
+        .any(
+          (match) =>
+              match.group(1) == '/' &&
+              match.group(2)!.toLowerCase() == privateTag,
+        );
+    if (hasClosingTag) return;
+    final recovery = _unclosedPrivateBlockRecovery.firstMatch(body);
+    if (recovery != null) {
+      hidden.clear();
+      visible.write(body.substring(recovery.end));
+    }
+  }
+
+  for (var i = 0; i < matches.length; i++) {
+    final match = matches[i];
+    appendBody(response.substring(cursor, match.start), i);
     final tag = match.group(2)!.toLowerCase();
-    if (tag != 'answer' && tag != 'code') {
+    final startsFinalAnswer =
+        tag == 'answer' &&
+        match.group(1) != '/' &&
+        hidden.length == 1 &&
+        !matches
+            .skip(i + 1)
+            .any(
+              (later) =>
+                  later.group(1) == '/' &&
+                  later.group(2)!.toLowerCase() == hidden.single,
+            );
+    if (startsFinalAnswer) {
+      hidden.clear();
+    } else if (tag != 'answer' && tag != 'code') {
       if (match.group(1) == '/') {
         final index = hidden.lastIndexOf(tag);
         if (index >= 0) hidden.removeRange(index, hidden.length);
@@ -187,22 +237,25 @@ String filterAssistantControlMarkup(String response) {
     }
     cursor = match.end;
   }
+  appendBody(response.substring(cursor), matches.length);
   if (hidden.isEmpty) {
-    var tail = response.substring(cursor);
+    var tail = visible.toString();
     final opening = tail.lastIndexOf('<');
     if (opening >= 0) {
       final start = opening > 0 && tail[opening - 1] == r'\'
           ? opening - 1
           : opening;
-      final partial = _partialControlTag.firstMatch(tail.substring(start));
+      final candidate = tail.substring(start);
+      final partial = _partialControlTag.firstMatch(candidate);
       if (partial != null &&
+          partial.group(1)!.length >= 3 &&
           _controlTagNames.any(
             (name) => name.startsWith(partial.group(1)!.toLowerCase()),
           )) {
         tail = tail.substring(0, start);
       }
     }
-    visible.write(tail);
+    return tail;
   }
   return visible.toString();
 }
@@ -232,11 +285,15 @@ parseUserComposerParts(String text) {
   );
 }
 
-List<ChatSegment> parseAssistantSegments(String response) {
+List<ChatSegment> parseAssistantSegments(
+  String response, {
+  String defaultPrimaryCharacterId = 'ryza',
+}) {
   response = filterAssistantControlMarkup(response);
   final segments = <ChatSegment>[];
   ChatSpeaker? activeSpeaker;
   String? activeCharacterId;
+  var primaryCharacterId = defaultPrimaryCharacterId;
 
   for (final rawLine in _expandInlineSpeakerLines(response)) {
     final line = rawLine.trim();
@@ -252,11 +309,18 @@ List<ChatSegment> parseAssistantSegments(String response) {
         '旁白' => ChatSpeaker.narrator,
         '译文' => ChatSpeaker.translation,
         '莱莎' => ChatSpeaker.ryza,
+        '苏菲' || 'ソフィー' => ChatSpeaker.ryza,
         'narrator' => ChatSpeaker.narrator,
         'translation' => ChatSpeaker.translation,
         'ryza' => ChatSpeaker.ryza,
+        'sophie' => ChatSpeaker.ryza,
         _ => ChatSpeaker.character,
       };
+      if (label == '莱莎' || label == 'ryza') {
+        primaryCharacterId = 'ryza';
+      } else if (label == '苏菲' || label == 'ソフィー' || label == 'sophie') {
+        primaryCharacterId = 'sophie';
+      }
       activeCharacterId = activeSpeaker == ChatSpeaker.character
           ? prefix.group(2)?.toLowerCase()
           : null;
@@ -267,6 +331,9 @@ List<ChatSegment> parseAssistantSegments(String response) {
             speaker: activeSpeaker,
             text: content,
             characterId: activeCharacterId,
+            primaryCharacterId: activeSpeaker == ChatSpeaker.ryza
+                ? primaryCharacterId
+                : null,
           ),
         );
       }
@@ -290,6 +357,9 @@ List<ChatSegment> parseAssistantSegments(String response) {
         text: content,
         characterId: speaker == ChatSpeaker.character
             ? activeCharacterId
+            : null,
+        primaryCharacterId: speaker == ChatSpeaker.ryza
+            ? primaryCharacterId
             : null,
       ),
     );
@@ -346,7 +416,8 @@ List<List<ChatSegment>> groupAssistantSegmentsForDisplay(String response) {
     final sameSpeaker =
         previous != null &&
         previous.speaker == segment.speaker &&
-        previous.characterId == segment.characterId;
+        previous.characterId == segment.characterId &&
+        previous.primaryCharacterId == segment.primaryCharacterId;
     if (runs.isEmpty || (!sameSpeaker && !continuesDialogueTranslation)) {
       runs.add(<ChatSegment>[]);
     }
@@ -719,6 +790,7 @@ class RyzaPerformanceSegment {
   const RyzaPerformanceSegment({
     this.expressionIntensity = 'normal',
     required this.speechText,
+    this.primaryCharacterId = 'ryza',
     this.expression,
     this.action,
     this.actions = const [],
@@ -727,6 +799,7 @@ class RyzaPerformanceSegment {
   });
 
   final String speechText;
+  final String primaryCharacterId;
   final String expressionIntensity;
   final String? posture;
   final CharacterExpression? expression;
@@ -775,7 +848,10 @@ List<RyzaPerformanceSegment> performanceSegmentsForAssistantResponse(
     result.add(
       RyzaPerformanceSegment(
         speechText: speechText,
-        posture: postureCueForAssistantResponse('莱莎：${segment.text}'),
+        primaryCharacterId: segment.primaryCharacterId ?? 'ryza',
+        posture: postureCueForAssistantResponse(
+          '${assistantSpeakerLabel(segment)}：${segment.text}',
+        ),
         expression: expression,
         expressionIntensity: expressionIntensity,
         action: action,
@@ -805,6 +881,9 @@ List<RyzaPerformanceSegment>? performanceSegmentsMatchingSpeech(
   );
   if (speech.length != planned.length) return null;
   for (var i = 0; i < speech.length; i++) {
+    if (speech[i].primaryCharacterId != planned[i].primaryCharacterId) {
+      return null;
+    }
     String visible(RyzaPerformanceSegment segment) =>
         displayTextForAssistantSegment(
           ChatSegment(speaker: ChatSpeaker.ryza, text: segment.speechText),
@@ -896,12 +975,7 @@ String displayTextForAssistantResponse(String response) {
         if (!hasExplicitSpeaker && segment.speaker == ChatSpeaker.ryza) {
           return text;
         }
-        final label = switch (segment.speaker) {
-          ChatSpeaker.narrator => '旁白',
-          ChatSpeaker.ryza => '莱莎',
-          ChatSpeaker.character => '角色[${segment.characterId ?? 'unknown'}]',
-          ChatSpeaker.translation => '译文',
-        };
+        final label = assistantSpeakerLabel(segment);
         return '$label：$text';
       })
       .where((line) => line.isNotEmpty)

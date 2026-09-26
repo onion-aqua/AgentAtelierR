@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'app_controller.dart';
 import 'app_localization.dart';
 import 'app_theme.dart';
+import 'character_runtime_profile.dart';
 import 'chat_segments.dart';
 import 'glass_ui.dart';
 import 'settings_detail_page.dart';
@@ -10,10 +11,15 @@ import 'settings_detail_page.dart';
 enum ConversationHistorySpeaker { user, narrator, ryza }
 
 class ConversationHistoryEntry {
-  const ConversationHistoryEntry({required this.speaker, required this.text});
+  const ConversationHistoryEntry({
+    required this.speaker,
+    required this.text,
+    this.translation,
+  });
 
   final ConversationHistorySpeaker speaker;
   final String text;
+  final String? translation;
 }
 
 class ConversationHistoryGroup {
@@ -64,7 +70,26 @@ List<ConversationHistoryEntry> visibleConversationHistory(
       }
       continue;
     }
-    for (final segment in parseAssistantSegments(message.text)) {
+    int? translatableEntryIndex;
+    for (final segment in parseAssistantSegments(message.displayText)) {
+      if (segment.speaker == ChatSpeaker.translation) {
+        if (translatableEntryIndex != null) {
+          final translation = displayTextForAssistantSegment(segment).trim();
+          if (translation.isNotEmpty) {
+            final previous = result[translatableEntryIndex];
+            result[translatableEntryIndex] = ConversationHistoryEntry(
+              speaker: previous.speaker,
+              text: previous.text,
+              translation: [
+                if (previous.translation != null) previous.translation!,
+                translation,
+              ].join('\n'),
+            );
+          }
+        }
+        continue;
+      }
+      translatableEntryIndex = null;
       final speaker = switch (segment.speaker) {
         ChatSpeaker.narrator => ConversationHistorySpeaker.narrator,
         ChatSpeaker.ryza => ConversationHistorySpeaker.ryza,
@@ -74,6 +99,9 @@ List<ConversationHistoryEntry> visibleConversationHistory(
       final text = displayTextForAssistantSegment(segment).trim();
       if (text.isNotEmpty) {
         result.add(ConversationHistoryEntry(speaker: speaker, text: text));
+        if (speaker == ConversationHistorySpeaker.ryza) {
+          translatableEntryIndex = result.length - 1;
+        }
       }
     }
   }
@@ -141,7 +169,8 @@ class _ConversationHistoryPageState extends State<ConversationHistoryPage> {
   String _speakerLabel(ConversationHistorySpeaker speaker) => switch (speaker) {
     ConversationHistorySpeaker.user => _t('用户', 'You', 'あなた'),
     ConversationHistorySpeaker.narrator => _t('旁白', 'Narration', 'ナレーション'),
-    ConversationHistorySpeaker.ryza => _t('莱莎', 'Ryza', 'ライザ'),
+    ConversationHistorySpeaker.ryza =>
+      widget.controller.activeCharacterProfile.names.forLocale(_language.name),
   };
 
   String _formatTime(DateTime value) {
@@ -168,6 +197,10 @@ class _ConversationHistoryPageState extends State<ConversationHistoryPage> {
                     .where(
                       (entry) =>
                           entry.text.toLowerCase().contains(normalizedQuery) ||
+                          (entry.translation?.toLowerCase().contains(
+                                normalizedQuery,
+                              ) ??
+                              false) ||
                           _speakerLabel(entry.speaker)
                               .toLowerCase()
                               .contains(normalizedQuery),
@@ -292,6 +325,8 @@ class _ConversationHistoryPageState extends State<ConversationHistoryPage> {
                               _HistoryDialogueEntry(
                                 entry: entry,
                                 language: _language,
+                                characterProfile:
+                                    widget.controller.activeCharacterProfile,
                               ),
                           ],
                         ),
@@ -309,10 +344,15 @@ class _ConversationHistoryPageState extends State<ConversationHistoryPage> {
 }
 
 class _HistoryDialogueEntry extends StatelessWidget {
-  const _HistoryDialogueEntry({required this.entry, required this.language});
+  const _HistoryDialogueEntry({
+    required this.entry,
+    required this.language,
+    required this.characterProfile,
+  });
 
   final ConversationHistoryEntry entry;
   final AppLanguage language;
+  final CharacterRuntimeProfile characterProfile;
 
   @override
   Widget build(BuildContext context) => Padding(
@@ -393,7 +433,9 @@ class _HistoryDialogueEntry extends StatelessWidget {
             ),
             clipBehavior: Clip.antiAlias,
             child: Image.asset(
-              'assets/images/chara_icons/ryza.png',
+              characterProfile.id == CharacterRuntimeIds.ryza
+                  ? 'assets/images/chara_icons/ryza.png'
+                  : characterProfile.switchAsset,
               fit: BoxFit.cover,
               errorBuilder: (_, _, _) => Icon(
                 Icons.person_outline_rounded,
@@ -408,7 +450,11 @@ class _HistoryDialogueEntry extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  language.text('莱莎', 'Ryza', 'ライザ'),
+                  language.text(
+                    characterProfile.names.chinese,
+                    characterProfile.names.english,
+                    characterProfile.names.japanese,
+                  ),
                   style: TextStyle(
                     color: Theme.of(context).colorScheme.onSurfaceVariant,
                     fontSize: 11,
@@ -427,6 +473,17 @@ class _HistoryDialogueEntry extends StatelessWidget {
                     height: 1.4,
                   ),
                 ),
+                if (entry.translation != null) ...[
+                  const SizedBox(height: 6),
+                  Text(
+                    '${language.text('译文', 'Translation', '翻訳')}：${entry.translation}',
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                      fontSize: 13,
+                      height: 1.4,
+                    ),
+                  ),
+                ],
               ],
             ),
           ),

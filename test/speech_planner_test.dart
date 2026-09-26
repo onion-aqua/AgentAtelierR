@@ -215,4 +215,25 @@ void main() {
     );
     expect(plan.apply('莱莎：我明白了。'), '莱莎：[sad]我明白了。');
   });
+
+  test('Sophie speech plan keeps her dialogue prefix and voice text', () async {
+    final plan = await SpeechPlanner().plan(
+      source: '旁白：她合上书。\n苏菲：我找到办法了。',
+      previousEmotion: 'relaxed',
+      intensity: TtsEmotionIntensity.natural,
+      density: TtsCueDensity.off,
+      asmr: false,
+      complete: (messages) async {
+        final data = jsonDecode(messages.last['content']!) as Map;
+        expect(data['lines'], [
+          {'id': 1, 'text': '我找到办法了。'},
+        ]);
+        return '{"segments":[{"id":1,"emotion":"happy","cues":[]}]}';
+      },
+    );
+    expect(
+      plan.apply('旁白：她合上书。\n苏菲：[face:happy]我找到办法了。'),
+      '旁白：她合上书。\n苏菲：[face:happy][happy]我找到办法了。',
+    );
+  });
 }
