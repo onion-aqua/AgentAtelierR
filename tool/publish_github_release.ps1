@@ -1,7 +1,7 @@
 param(
     [string]$Repository = 'onion-aqua/AgentAtelierR',
     [string]$Tag = 'v1.0.0-dx',
-    [string]$ReleaseName = 'AgentAtelierR 1.0.0 正式版 DX',
+    [string]$ReleaseName = 'AgentAtelierR 1.0.0 DX RC2',
     [string]$NotesPath = 'docs/CHANGELOG_1.0.0-DX.md',
     [string]$ApkPath = 'build/app/outputs/flutter-apk/app-release.apk',
     [string]$AssetName = 'AgentAtelierR-1.0.0-DX-release.apk',
@@ -250,7 +250,7 @@ try {
                 name = $ReleaseName
                 body = $notesText
                 draft = $true
-                prerelease = $false
+                prerelease = $true
                 generate_release_notes = $false
             }
             $release = $create.Data
@@ -292,7 +292,7 @@ try {
             name = $ReleaseName
             body = $notesText
             draft = $false
-            prerelease = $false
+            prerelease = $true
         }
         Write-Host "Published release: $($published.Data['html_url'])"
         Write-Host "APK SHA-256: $sha256"

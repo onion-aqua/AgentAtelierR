@@ -183,6 +183,120 @@ const _controlTagNames = {
   'code',
 };
 
+final RegExp _japaneseKana = RegExp(r'[\u3040-\u30ff]');
+final RegExp _japaneseReadable = RegExp(r'[\u3040-\u30ff\u3400-\u9fff々ー]');
+const _japaneseFunctionWords = {
+  'の',
+  'は',
+  'が',
+  'を',
+  'に',
+  'へ',
+  'と',
+  'で',
+  'や',
+  'も',
+  'から',
+  'まで',
+  'より',
+  'だけ',
+  'ほど',
+  'なら',
+  'けど',
+  'ので',
+  'て',
+};
+const _japaneseInterjections = {
+  'うん',
+  'あ',
+  'え',
+  'まあ',
+  'そう',
+  'ね',
+  'はい',
+  'いや',
+  'ほら',
+  'えっと',
+  'あの',
+};
+
+/// Repairs the distinctive failure mode where a Japanese model response puts
+/// a comma after nearly every short word or particle. Normal Japanese commas
+/// are left untouched; this only runs when a line has both unusually many
+/// commas and a high share of short comma-separated runs. The original model
+/// response remains stored unchanged for diagnostics and export.
+String normalizeDenseJapanesePunctuation(String text) {
+  if (!text.contains('、')) return text;
+  return text.split('\n').map(_normalizeJapaneseLine).join('\n');
+}
+
+String _normalizeJapaneseLine(String line) {
+  final commaCount = '、'.allMatches(line).length;
+  if (commaCount < 5) return line;
+  final readableCount = _japaneseReadable.allMatches(line).length;
+  final kanaCount = _japaneseKana.allMatches(line).length;
+  if (kanaCount < 2 || readableCount < 24 || commaCount * 10 < readableCount) {
+    return line;
+  }
+
+  final pieces = line.split('、');
+  var shortBoundaryCount = 0;
+  var functionWordBoundaryCount = 0;
+  for (var index = 0; index < pieces.length - 1; index += 1) {
+    final leftToken = _edgeJapaneseRun(pieces[index], fromEnd: true);
+    final rightToken = _edgeJapaneseRun(pieces[index + 1], fromEnd: false);
+    final leftLength = leftToken.runes.length;
+    final rightLength = rightToken.runes.length;
+    if (leftLength <= 2 || rightLength <= 2) shortBoundaryCount += 1;
+    if (_japaneseFunctionWords.contains(leftToken) ||
+        _japaneseFunctionWords.contains(rightToken)) {
+      functionWordBoundaryCount += 1;
+    }
+  }
+  final requiredShortBoundaries = commaCount * 6 ~/ 10 > 4
+      ? commaCount * 6 ~/ 10
+      : 4;
+  if (shortBoundaryCount < requiredShortBoundaries ||
+      functionWordBoundaryCount < 2) {
+    return line;
+  }
+
+  final normalized = StringBuffer(pieces.first);
+  for (var index = 1; index < pieces.length; index += 1) {
+    final leftToken = _edgeJapaneseRun(pieces[index - 1], fromEnd: true);
+    final leftLength = leftToken.runes.length;
+    final rightLength = _edgeJapaneseRun(
+      pieces[index],
+      fromEnd: false,
+    ).runes.length;
+    if (_japaneseInterjections.contains(leftToken) ||
+        (leftLength > 2 && rightLength > 2)) {
+      normalized.write('、');
+    }
+    normalized.write(pieces[index]);
+  }
+  return normalized.toString();
+}
+
+String _edgeJapaneseRun(String value, {required bool fromEnd}) {
+  final characters = value.runes
+      .map(String.fromCharCode)
+      .toList(growable: false);
+  var index = fromEnd ? characters.length - 1 : 0;
+  final run = StringBuffer();
+  while (index >= 0 && index < characters.length) {
+    final character = characters[index];
+    if (_japaneseReadable.hasMatch(character)) {
+      run.write(character);
+    } else if (run.length > 0) {
+      break;
+    }
+    index += fromEnd ? -1 : 1;
+  }
+  final result = run.toString();
+  return fromEnd ? result.split('').reversed.join() : result;
+}
+
 String filterAssistantControlMarkup(String response) {
   final visible = StringBuffer();
   final hidden = <String>[];
@@ -289,7 +403,9 @@ List<ChatSegment> parseAssistantSegments(
   String response, {
   String defaultPrimaryCharacterId = 'ryza',
 }) {
-  response = filterAssistantControlMarkup(response);
+  response = normalizeDenseJapanesePunctuation(
+    filterAssistantControlMarkup(response),
+  );
   final segments = <ChatSegment>[];
   ChatSpeaker? activeSpeaker;
   String? activeCharacterId;
@@ -983,7 +1099,9 @@ String displayTextForAssistantResponse(String response) {
 }
 
 String displayTextForAssistantSegment(ChatSegment segment) =>
-    filterAssistantControlMarkup(segment.text).replaceAll(_fishCue, '').trim();
+    normalizeDenseJapanesePunctuation(
+      filterAssistantControlMarkup(segment.text),
+    ).replaceAll(_fishCue, '').trim();
 
 String conversationTextForAssistantResponse(
   String response, {

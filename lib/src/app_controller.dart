@@ -22,7 +22,8 @@ import 'character_runtime_profile.dart';
 import 'frame_rate_controller.dart';
 import 'image_food_invitation.dart';
 import 'quest_models.dart';
-import 'chat_segments.dart' show parseUserComposerParts;
+import 'chat_segments.dart'
+    show normalizeDenseJapanesePunctuation, parseUserComposerParts;
 import 'runtime_log.dart';
 import 'settings_slots.dart';
 import 'shop_catalog.dart';
@@ -1679,9 +1680,15 @@ class AppController extends ChangeNotifier {
     var used = 0;
     final result = <ChatMessage>[];
     for (final message in messages.reversed) {
-      final cost = message.text.length + message.attachments.length * 120;
+      final modelMessage = message.isUser
+          ? message
+          : message.copyWith(
+              text: normalizeDenseJapanesePunctuation(message.text),
+            );
+      final cost =
+          modelMessage.text.length + modelMessage.attachments.length * 120;
       if (result.isNotEmpty && used + cost > budget) break;
-      result.add(message);
+      result.add(modelMessage);
       used += cost;
     }
     return result.reversed.toList(growable: false);
@@ -1798,6 +1805,11 @@ class AppController extends ChangeNotifier {
         '歌唱边界：莱莎觉得自己的歌声不够好，平时会害羞，不主动唱歌；只有用户明确且强烈要求她唱歌、哼唱或把歌唱给用户时才尝试。普通提到音乐、歌词、歌手或唱歌能力不触发歌唱演出。';
     const fishSpeechTextRule =
         '最高优先级语音文本规则：台词中绝不将省略号与日语促音“っ”连用，禁止“……っ”“…っ”“...っ”（包括中间有空格的形式）；改用自然停顿或重写语句。普通词中的促音，如“待って”，照常使用。';
+    final japanesePunctuationRule =
+        narratorLanguage == AppLanguage.japanese ||
+            characterReplyLanguage == AppLanguage.japanese
+        ? '日语断句规则：使用自然的日语句読点。不要在每个词、助词、汉字或短语之间机械添加「、」；「、」只用于自然分句或列举。台词和旁白都要按正常日语词组连贯书写，也不要模仿历史回复中的逐词顿号。'
+        : '';
     if (independentPerformance) {
       return '''你扮演莱莎，自然回应用户，不代替用户行动，不编造未知事实。
 动作由后续能力校验决定；用户要求精确肢体动作时可以表达接受和准备，不要在未经确认的旁白中宣称已经完成特定抬臂角度、手指交扣或多阶段姿势。保持自然叙述，不讨论程序或动画限制。
@@ -1819,6 +1831,7 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆时调用 search_memory�
 ${asmrModeEnabled ? '当前是ASMR轻声交谈，语气亲近、柔和。' : ''}
 $singingRule
 $fishSpeechTextRule
+$japanesePunctuationRule
 ${independentSpeechPerformance || !fishTtsEnabled ? '只输出台词和旁白正文，不输出任何语音情绪、停顿、表情或动作标签；语音演出和肢体表演由独立模块处理。' : '传统语音演出模式：仅为莱莎台词添加与语义一致的情绪标签（如[happy]、[sad]、[relaxed]）及必要的句内[emphasis]、[short pause]；上下句情绪自然衔接。${ttsEmotionIntensity.voiceInstruction} ${ttsCueDensity.promptInstruction} ${ttsEmotionIntensity == TtsEmotionIntensity.off ? "不要添加情绪标签。" : ""} ${asmrModeEnabled ? "优先使用[breathy]、[whispering]、[soft breathy voice]表达轻声气声。" : ""} 旁白和NPC不带语音标签，不输出face/action/posture标签，肢体表演仍由独立模块处理。'}
 不输出分析过程。遵守服务商政策。''';
     }
@@ -1915,6 +1928,7 @@ $voiceRule
 ${asmrModeEnabled ? 'ASMR 已开启：以轻声、近距离、克制的语气为主，可按密度使用 whispering、near-whisper、breathy、short pause 等标签，不喊叫、不堆叠。' : ''}
 $singingRule
 $fishSpeechTextRule
+$japanesePunctuationRule
 只提交最终对话；提交前检查每条莱莎台词都有合法 face/action，旁白与台词分离，动作来自当前能力且与语义一致。''';
     }
 
@@ -1962,6 +1976,7 @@ ${asmrModeEnabled ? 'ASMR 已开启：以轻声、近距离、克制的耳语为
 ${asmrModeEnabled ? '当前已开启 ASMR 模式。' : '当前未开启 ASMR 模式。'}
 $singingRule
 $fishSpeechTextRule
+$japanesePunctuationRule
 主情绪、face、action 和句内语音标签表达同一情绪轨迹但不要求同名；上下句逐步过渡，避免前一句极度悲伤、后一句无理由欢快。语音关闭也不能省略 face/action。
 
 【角色、世界与当前状态】
@@ -1999,6 +2014,11 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要回忆过往事件、约定或�
     final inlineTranslation =
         !independentTranslation &&
         translationLanguage != TranslationLanguage.none;
+    final japanesePunctuationRule =
+        narratorLanguage == AppLanguage.japanese ||
+            characterReplyLanguage == AppLanguage.japanese
+        ? '日语断句规则：使用自然的日语句読点。不要在每个词、助词、汉字或短语之间机械添加「、」；「、」只用于自然分句或列举。台词和旁白都要按正常日语词组连贯书写，也不要模仿历史回复中的逐词顿号。'
+        : '';
     final userProfile = jsonEncode({
       '称呼': userAddress,
       '自画像': userPortrait.trim().isEmpty ? '未设置' : userPortrait.trim(),
@@ -2031,6 +2051,7 @@ ${worldSettingInjectionEnabled ? _promptDataBlock('world', _boundedPromptText(ed
 ${longTermMemoryEnabled ? _promptDataBlock('memory', _boundedPromptText(memory, llmContextCompatibility ? 700 : 4000)) : ''}
 ${asmrModeEnabled ? '当前为轻声交谈，语气柔和、连贯。' : ''}
 ${fishTtsEnabled ? '语音情绪随本轮内容和上一轮状态自然延续；只在苏菲台词中使用 Fish Audio 可识别的情绪或停顿标签，不影响旁白。' : ''}
+$japanesePunctuationRule
 未接入苏菲地图、NPC、采集和调合资源前，不宣称应用已完成旅行、物品获得或调合。原作事实不确定时坦率说明，不编造官方剧情。遵守服务商政策。只输出最终对话。''';
   }
 
