@@ -141,6 +141,7 @@ class ConversationCollectionStore {
     String key,
     List<String> paths, {
     List<String> texts = const [],
+    List<ChatSpeaker> speakers = const [],
   }) => _locked(() async {
     if (paths.isEmpty) return;
     final records = await _read('voice_cache');
@@ -154,6 +155,8 @@ class ConversationCollectionStore {
       'key': key,
       'audio': files,
       if (texts.length == paths.length) 'texts': texts,
+      if (speakers.length == paths.length)
+        'speakers': speakers.map((speaker) => speaker.name).toList(),
     });
     while (records.length > 50) {
       removed.add(records.removeAt(0));
@@ -176,20 +179,31 @@ class ConversationCollectionStore {
     }
     return result;
   });
-  Future<List<({String text, String path})>> voiceSegments(String key) =>
-      _locked(() async {
-        final entry = (await _read('voice_cache'))
-            .where((r) => r['key'] == key)
-            .firstOrNull;
-        if (entry == null || entry['texts'] is! List) return [];
-        final audio = entry['audio'] as List;
-        final texts = entry['texts'] as List;
-        if (audio.length != texts.length) return [];
-        return [
-          for (var i = 0; i < audio.length; i++)
-            (text: texts[i] as String, path: path(audio[i] as String)),
-        ];
-      });
+  Future<List<({String text, String path, ChatSpeaker speaker})>> voiceSegments(
+    String key,
+  ) => _locked(() async {
+    final entry = (await _read('voice_cache'))
+        .where((r) => r['key'] == key)
+        .firstOrNull;
+    if (entry == null || entry['texts'] is! List) return [];
+    final audio = entry['audio'] as List;
+    final texts = entry['texts'] as List;
+    final speakers = entry['speakers'] as List?;
+    if (audio.length != texts.length) return [];
+    return [
+      for (var i = 0; i < audio.length; i++)
+        (
+          text: texts[i] as String,
+          path: path(audio[i] as String),
+          speaker: speakers != null && i < speakers.length
+              ? ChatSpeaker.values.firstWhere(
+                  (speaker) => speaker.name == speakers[i],
+                  orElse: () => ChatSpeaker.ryza,
+                )
+              : ChatSpeaker.ryza,
+        ),
+    ];
+  });
 
   Future<List<Map<String, dynamic>>> cards() =>
       _locked(() => _read('favorites'));

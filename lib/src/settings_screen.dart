@@ -119,7 +119,7 @@ extension on _SettingsCategory {
       'Memory, local import, export and chat history',
       '長期記憶、データの読み込み・書き出し、会話履歴',
     ),
-    _SettingsCategory.about => 'AgentAtelierR · 1.0.0 DX RC2',
+    _SettingsCategory.about => 'AgentAtelierR · 1.0.0 DX RC3',
   };
 
   IconData get icon => switch (this) {
@@ -1220,9 +1220,9 @@ class SettingsScreenState extends State<SettingsScreen> {
                   title: const Text('AgentAtelierR'),
                   subtitle: Text(
                     language.text(
-                      '版本 1.0.0 DX RC2',
-                      'Version 1.0.0 DX RC2',
-                      'バージョン 1.0.0 DX RC2',
+                      '版本 1.0.0 DX RC3',
+                      'Version 1.0.0 DX RC3',
+                      'バージョン 1.0.0 DX RC3',
                     ),
                   ),
                 ),

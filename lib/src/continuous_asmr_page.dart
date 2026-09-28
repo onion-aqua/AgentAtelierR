@@ -14,6 +14,9 @@ import 'ai_services.dart';
 import 'chat_segments.dart';
 import 'mimo_tts_client.dart';
 import 'glass_ui.dart';
+import 'runtime_log.dart';
+import 'speech_envelope_loader.dart';
+import 'tts_duration_guard.dart';
 
 DateTime asmrDeadline(DateTime now, Duration duration, TimeOfDay? time) {
   if (time == null) return now.add(duration);
@@ -668,7 +671,7 @@ class _ContinuousAsmrPageState extends State<ContinuousAsmrPage> {
     final emotionIntensity = c.ttsEmotionIntensity;
     const voiceDirection =
         'Speak softly in an intimate whisper, slowly with gentle breaths.';
-    final path = await switch (c.ttsProvider) {
+    Future<String> synthesizeOnce() => switch (c.ttsProvider) {
       TtsProvider.fishAudio => FishAudioClient().synthesize(
         apiKey: apiKey,
         referenceId: c.activeFishAudioReferenceId,
@@ -723,8 +726,44 @@ class _ContinuousAsmrPageState extends State<ContinuousAsmrPage> {
         asmr: c.asmrModeEnabled,
       ),
     };
-
-    return path;
+    const maxAttempts = 2;
+    for (var attempt = 0; attempt < maxAttempts; attempt++) {
+      var path = await synthesizeOnce();
+      try {
+        final bytes = await File(path).readAsBytes();
+        final envelope = await loadSpeechEnvelope(path, bytes);
+        final actualDuration = ttsAudioDuration(envelope);
+        if (actualDuration != null &&
+            isTtsAudioOverlong(
+              plainText,
+              actualDuration,
+              asmr: c.asmrModeEnabled,
+            )) {
+          final maximum = maximumTtsAudioDuration(
+            plainText,
+            asmr: c.asmrModeEnabled,
+          );
+          await _deleteClipFile(path);
+          if (attempt + 1 >= maxAttempts) {
+            throw TtsAudioTooLongException(
+              actual: actualDuration,
+              maximum: maximum,
+            );
+          }
+          RuntimeLog.instance.warning(
+            'TTS',
+            'ASMR 音频时长超出文本预期，丢弃并重新请求：actualMs=${actualDuration.inMilliseconds}, '
+                'maximumMs=${maximum.inMilliseconds}, attempt=${attempt + 1}/$maxAttempts',
+          );
+          continue;
+        }
+        return path;
+      } on Object {
+        await _deleteClipFile(path);
+        rethrow;
+      }
+    }
+    throw const AiServiceException('ASMR TTS 音频生成失败');
   }
 
   @override

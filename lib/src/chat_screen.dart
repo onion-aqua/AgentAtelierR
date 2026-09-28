@@ -63,6 +63,7 @@ import 'runtime_log.dart';
 import 'ryza_loading_indicator.dart';
 import 'tap_reaction.dart';
 import 'tts_text_normalizer.dart';
+import 'tts_duration_guard.dart';
 import 'appearance_picker_page.dart';
 import 'character_spine_view.dart';
 
@@ -211,6 +212,8 @@ class _SuspendedMotionGroup {
 class _CachedSpeechSegment {
   const _CachedSpeechSegment({
     this.text = '',
+    this.speaker = ChatSpeaker.ryza,
+    this.speakerOrdinal,
     this.expressionIntensity = 'normal',
     required this.path,
     required this.envelope,
@@ -222,6 +225,8 @@ class _CachedSpeechSegment {
 
   final String path;
   final String text;
+  final ChatSpeaker speaker;
+  final int? speakerOrdinal;
   final String expressionIntensity;
   final AudioAmplitudeEnvelope? envelope;
   final CharacterExpression? expression;
@@ -232,6 +237,8 @@ class _CachedSpeechSegment {
   _CachedSpeechSegment withPerformance(RyzaPerformanceSegment segment) =>
       _CachedSpeechSegment(
         text: text,
+        speaker: speaker,
+        speakerOrdinal: speakerOrdinal,
         path: path,
         envelope: envelope,
         expression: segment.expression,
@@ -3800,16 +3807,26 @@ class _ChatScreenState extends State<ChatScreen> {
       _previousSpeechEmotion,
       widget.controller.characterMood,
     );
-    final segments = performanceSegmentsForAssistantResponse(
+    final candidateSegments = assistantSpeechSegmentsForResponse(
       text,
       fallbackMood: widget.controller.characterMood,
       fallbackEmotion: fallbackEmotion,
+      activeCharacterId: characterId,
     );
-    if (segments.isEmpty) {
+    if (candidateSegments.isEmpty) {
       _stopSpeakingAnimation();
       return;
     }
-    final apiKey = await _secretStore.readTtsKey(widget.controller.ttsProvider);
+    final hasPrimary = candidateSegments.any((segment) => segment.isPrimary);
+    final hasKlaudia = candidateSegments.any((segment) => !segment.isPrimary);
+    final apiKey = hasPrimary
+        ? await _secretStore.readTtsKey(widget.controller.ttsProvider)
+        : '';
+    final fishApiKey = hasKlaudia
+        ? widget.controller.ttsProvider == TtsProvider.fishAudio && hasPrimary
+              ? apiKey
+              : await _secretStore.readTtsKey(TtsProvider.fishAudio)
+        : '';
     final missingProviderSettings = switch (widget.controller.ttsProvider) {
       TtsProvider.fishAudio =>
         widget.controller.activeFishAudioReferenceId.isEmpty,
@@ -3821,10 +3838,18 @@ class _ChatScreenState extends State<ChatScreen> {
             widget.controller.activeGenericTtsVoice.isEmpty,
       TtsProvider.mimo => widget.controller.mimoTts.validationError != null,
     };
-    if (apiKey.isEmpty || missingProviderSettings) {
+    final primaryReady = apiKey.isNotEmpty && !missingProviderSettings;
+    final klaudiaReady =
+        fishApiKey.isNotEmpty &&
+        widget.controller.fishAudioBaseUrl.trim().isNotEmpty &&
+        widget.controller.fishAudioModel.trim().isNotEmpty;
+    final segments = candidateSegments
+        .where((segment) => segment.isPrimary ? primaryReady : klaudiaReady)
+        .toList(growable: false);
+    if (segments.isEmpty) {
       RuntimeLog.instance.warning(
         'TTS',
-        '跳过合成：${widget.controller.ttsProvider.label} 的密钥或必要配置缺失',
+        '跳过合成：主角 TTS 与科洛蒂娅 Fish Audio 的密钥或必要配置缺失',
       );
       final fallback = await fallbackPerformance();
       if (!mounted || replyGeneration != _replyGeneration) return;
@@ -3841,17 +3866,30 @@ class _ChatScreenState extends State<ChatScreen> {
     _speechCancellation = cancellation;
     final completedSegments = <_CachedSpeechSegment>[];
     List<RyzaPerformanceSegment>? plannedSegments = plannedPerformance == null
-        ? segments
+        ? performanceSegmentsForAssistantResponse(
+            text,
+            fallbackMood: widget.controller.characterMood,
+            fallbackEmotion: fallbackEmotion,
+          )
         : null;
     String? plannedText;
     var activeIndex = -1;
     var playbackFinished = false;
     final appliedPerformance = <int>{};
+    int primaryOrdinalAt(int index) =>
+        segments.take(index).where((segment) => segment.isPrimary).length;
     void applyPerformanceAt(int index) {
       final cues = plannedSegments;
-      if (cues == null || index < 0 || index >= cues.length) return;
+      if (cues == null ||
+          index < 0 ||
+          index >= segments.length ||
+          !segments[index].isPrimary) {
+        return;
+      }
+      final ordinal = primaryOrdinalAt(index);
+      if (ordinal >= cues.length) return;
       if (!appliedPerformance.add(index)) return;
-      _applySpeechSegmentPerformance(cues[index]);
+      _applySpeechSegmentPerformance(cues[ordinal]);
     }
 
     if (plannedPerformance != null) {
@@ -3874,14 +3912,19 @@ class _ChatScreenState extends State<ChatScreen> {
             }
             plannedText = planned;
             plannedSegments = aligned;
+            var completedPrimaryOrdinal = 0;
             for (var i = 0; i < completedSegments.length; i++) {
-              completedSegments[i] = completedSegments[i].withPerformance(
-                aligned[i],
-              );
+              if (completedSegments[i].speaker == ChatSpeaker.ryza) {
+                completedSegments[i] = completedSegments[i].withPerformance(
+                  aligned[completedPrimaryOrdinal++],
+                );
+              }
             }
             if (!playbackFinished) applyPerformanceAt(activeIndex);
             if (activeIndex < 0 &&
-                completedSegments.length == segments.length) {
+                completedSegments.length == segments.length &&
+                segments.last.isPrimary &&
+                aligned.isNotEmpty) {
               if (aligned.last.expression case final expression?) {
                 _applyExpression(
                   expression,
@@ -3918,13 +3961,32 @@ class _ChatScreenState extends State<ChatScreen> {
             'cueDensity=${widget.controller.ttsCueDensity.name}, '
             'fishTemperature=${widget.controller.ttsEmotionIntensity.fishTemperature.toStringAsFixed(2)}',
       );
-      Future<_PreparedSpeech> pending = _prepareSpeech(
-        segments.first,
-        apiKey,
-        generation,
-      );
+      Future<_PreparedSpeech?> prepareSegmentAt(int index) async {
+        final segment = segments[index];
+        try {
+          return await _prepareSpeech(
+            segment,
+            segment.isPrimary ? apiKey : fishApiKey,
+            generation,
+          );
+        } on Object catch (error) {
+          if (segment.isPrimary || generation != _speechPlaybackGeneration) {
+            rethrow;
+          }
+          RuntimeLog.instance.warning('TTS', '科洛蒂娅语音生成失败，跳过该片段：$error');
+          return null;
+        }
+      }
+
+      Future<_PreparedSpeech?> pending = prepareSegmentAt(0);
       for (var index = 0; index < segments.length; index++) {
         final prepared = await pending;
+        if (prepared == null) {
+          if (index + 1 < segments.length) {
+            pending = prepareSegmentAt(index + 1);
+          }
+          continue;
+        }
         if (!mounted ||
             !_mayPlayVoice ||
             generation != _speechPlaybackGeneration) {
@@ -3932,12 +3994,16 @@ class _ChatScreenState extends State<ChatScreen> {
           return;
         }
         final next = index + 1 < segments.length
-            ? _prepareSpeech(segments[index + 1], apiKey, generation)
+            ? prepareSegmentAt(index + 1)
             : null;
         final segment = segments[index];
-        final displayIndex = _displayIndexForRyzaSegment(
+        final displayIndex = _displayIndexForSpeechSegment(
           displaySource ?? text,
-          index,
+          segment.speaker,
+          segments
+              .take(index)
+              .where((s) => s.speaker == segment.speaker)
+              .length,
         );
         _showAssistantSegment(
           displayIndex,
@@ -3951,10 +4017,14 @@ class _ChatScreenState extends State<ChatScreen> {
           await _deleteTemporarySpeech(prepared.path);
           return;
         }
-        _startSpeakingAnimation(
-          envelope: prepared.envelope,
-          awaitingAudio: true,
-        );
+        if (segment.isPrimary) {
+          _startSpeakingAnimation(
+            envelope: prepared.envelope,
+            awaitingAudio: true,
+          );
+        } else {
+          _stopSpeakingAnimation();
+        }
         final completed = _audioPlayer.onPlayerComplete.first;
         await _audioPlayer.play(DeviceFileSource(prepared.path));
         await Future.any([completed, cancellation.future]);
@@ -3964,27 +4034,42 @@ class _ChatScreenState extends State<ChatScreen> {
           await _deleteTemporarySpeech(prepared.path);
           return;
         }
-        final performance = plannedSegments?[index] ?? segment;
+        final performance = segment.isPrimary
+            ? plannedSegments?.elementAtOrNull(primaryOrdinalAt(index)) ??
+                  segment.primaryPerformance
+            : null;
         completedSegments.add(
           _CachedSpeechSegment(
             text: displayTextForAssistantSegment(
-              ChatSegment(speaker: ChatSpeaker.ryza, text: segment.speechText),
+              ChatSegment(speaker: segment.speaker, text: segment.speechText),
             ),
+            speaker: segment.speaker,
+            speakerOrdinal: segments
+                .take(index)
+                .where((s) => s.speaker == segment.speaker)
+                .length,
             path: prepared.path,
             envelope: prepared.envelope,
-            expression: performance.expression,
-            expressionIntensity: performance.expressionIntensity,
-            action: performance.action,
-            posture: performance.posture,
-            motionGroupIds: performance.motionGroupIds,
+            expression: performance?.expression,
+            expressionIntensity: performance?.expressionIntensity ?? 'normal',
+            action: performance?.action,
+            posture: performance?.posture,
+            motionGroupIds: performance?.motionGroupIds ?? const [],
           ),
         );
         if (next != null) {
-          _pauseSpeakingBetweenSegments();
+          if (segment.isPrimary && segments[index + 1].isPrimary) {
+            _pauseSpeakingBetweenSegments();
+          } else {
+            _stopSpeakingAnimation();
+          }
           pending = next;
         } else {
           _stopSpeakingAnimation();
         }
+      }
+      if (completedSegments.isEmpty) {
+        throw const AiServiceException('没有语音片段生成成功');
       }
       if (collectionMessage != null &&
           generation == _speechPlaybackGeneration) {
@@ -3997,6 +4082,7 @@ class _ChatScreenState extends State<ChatScreen> {
               collectionMessage.collectionKey,
               completedSegments.map((s) => s.path).toList(),
               texts: completedSegments.map((s) => s.text).toList(),
+              speakers: completedSegments.map((s) => s.speaker).toList(),
             );
           }
         } catch (error) {
@@ -4042,31 +4128,33 @@ class _ChatScreenState extends State<ChatScreen> {
       _applyPerformanceFromResponse(fallback);
       _stopSpeakingAnimation();
       if (!mounted) return;
+      final failedProvider = segments.any((segment) => segment.isPrimary)
+          ? widget.controller.ttsProvider
+          : TtsProvider.fishAudio;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            '${widget.controller.ttsProvider.label} 语音生成失败，文本回复不受影响',
-          ),
-        ),
+        SnackBar(content: Text('${failedProvider.label} 语音生成失败，文本回复不受影响')),
       );
     }
   }
 
   Future<_PreparedSpeech> _prepareSpeech(
-    RyzaPerformanceSegment segment,
+    AssistantSpeechSegment segment,
     String apiKey,
     int generation,
   ) async {
     // Request the provider-compatible format, then locally decode and balance
     // it into standard PCM16 WAV before playback and lip-sync analysis.
-    final playbackFormat = widget.controller.ttsProvider == TtsProvider.mimo
+    final provider = segment.isPrimary
+        ? widget.controller.ttsProvider
+        : TtsProvider.fishAudio;
+    final playbackFormat = provider == TtsProvider.mimo
         ? 'wav'
         : Platform.isAndroid
         ? 'mp3'
         : 'wav';
     final ttsText = compressRepeatedTtsPunctuation(segment.speechText);
     final plainText = displayTextForAssistantSegment(
-      ChatSegment(speaker: ChatSpeaker.ryza, text: ttsText),
+      ChatSegment(speaker: segment.speaker, text: ttsText),
     );
     final emotionIntensity = widget.controller.ttsEmotionIntensity;
     final plannedEmotion = RegExp(r'^\[([^\]]+)\]')
@@ -4079,22 +4167,27 @@ class _ChatScreenState extends State<ChatScreen> {
       if (widget.controller.asmrModeEnabled)
         'Speak softly in a close, quiet voice.',
     ].join(' ');
-    var path = await switch (widget.controller.ttsProvider) {
+    Future<String> synthesizeOnce() => switch (provider) {
       TtsProvider.fishAudio => _fishAudioClient.synthesize(
         apiKey: apiKey,
-        referenceId: widget.controller.activeFishAudioReferenceId,
+        referenceId: fishReferenceIdForAssistantSpeech(
+          segment,
+          primaryReferenceId: widget.controller.activeFishAudioReferenceId,
+        ),
         model: widget.controller.fishAudioModel,
         format: playbackFormat,
         latency: widget.controller.fishAudioLatency,
         speed: widget.controller.fishAudioSpeed,
         baseUrl: widget.controller.fishAudioBaseUrl,
         temperature: emotionIntensity.fishTemperature,
-        text: applyFishEmotionIntensityPerSentence(
-          ttsText,
-          emotionIntensity,
-          density: widget.controller.ttsCueDensity,
-          asmr: widget.controller.asmrModeEnabled,
-        ),
+        text: segment.isPrimary
+            ? applyFishEmotionIntensityPerSentence(
+                ttsText,
+                emotionIntensity,
+                density: widget.controller.ttsCueDensity,
+                asmr: widget.controller.asmrModeEnabled,
+              )
+            : plainText,
       ),
       TtsProvider.dashScope => _dashScopeTtsClient.synthesize(
         apiKey: apiKey,
@@ -4140,34 +4233,69 @@ class _ChatScreenState extends State<ChatScreen> {
         asmr: widget.controller.asmrModeEnabled,
       ),
     };
-    _temporarySpeechPaths.add(path);
-    if (generation != _speechPlaybackGeneration) {
-      await _deleteTemporarySpeech(path);
-      throw const AiServiceException('语音播放已取消');
+    const maxAttempts = 2;
+    for (var attempt = 0; attempt < maxAttempts; attempt++) {
+      var path = await synthesizeOnce();
+      _temporarySpeechPaths.add(path);
+      try {
+        if (generation != _speechPlaybackGeneration) {
+          throw const AiServiceException('语音播放已取消');
+        }
+        final balanced = await balanceSpeechLoudness(
+          path,
+          asmr: widget.controller.asmrModeEnabled,
+        );
+        if (balanced != path) {
+          _temporarySpeechPaths.add(balanced);
+          await _deleteTemporarySpeech(path);
+          path = balanced;
+        }
+        if (generation != _speechPlaybackGeneration) {
+          throw const AiServiceException('语音播放已取消');
+        }
+        final bytes = await File(path).readAsBytes();
+        final envelope = await loadSpeechEnvelope(path, bytes);
+        final actualDuration = ttsAudioDuration(envelope);
+        if (actualDuration != null &&
+            isTtsAudioOverlong(
+              plainText,
+              actualDuration,
+              asmr: widget.controller.asmrModeEnabled,
+            )) {
+          throw TtsAudioTooLongException(
+            actual: actualDuration,
+            maximum: maximumTtsAudioDuration(
+              plainText,
+              asmr: widget.controller.asmrModeEnabled,
+            ),
+          );
+        }
+        RuntimeLog.instance.info(
+          'TTS',
+          '音频文件已准备 provider=${provider.label}, '
+              'format=${detectAudioContainerExtension(bytes)}, bytes=${bytes.length}, '
+              'durationMs=${actualDuration?.inMilliseconds ?? 'unknown'}, '
+              'file=${path.split(Platform.pathSeparator).last}',
+        );
+        return _PreparedSpeech(path: path, envelope: envelope);
+      } on TtsAudioTooLongException catch (error) {
+        await _deleteTemporarySpeech(path);
+        if (attempt + 1 >= maxAttempts) {
+          throw AiServiceException(
+            'TTS 音频时长异常（${error.actual.inSeconds} 秒，文本上限约 ${error.maximum.inSeconds} 秒），重新请求后仍未通过校验',
+          );
+        }
+        RuntimeLog.instance.warning(
+          'TTS',
+          '音频时长超出文本预期，丢弃并重新请求：actualMs=${error.actual.inMilliseconds}, '
+              'maximumMs=${error.maximum.inMilliseconds}, attempt=${attempt + 1}/$maxAttempts',
+        );
+      } on Object {
+        await _deleteTemporarySpeech(path);
+        rethrow;
+      }
     }
-    final balanced = await balanceSpeechLoudness(
-      path,
-      asmr: widget.controller.asmrModeEnabled,
-    );
-    if (balanced != path) {
-      _temporarySpeechPaths.add(balanced);
-      await _deleteTemporarySpeech(path);
-      path = balanced;
-    }
-    if (generation != _speechPlaybackGeneration) {
-      await _deleteTemporarySpeech(path);
-      throw const AiServiceException('语音播放已取消');
-    }
-    final bytes = await File(path).readAsBytes();
-    RuntimeLog.instance.info(
-      'TTS',
-      '音频文件已准备 provider=${widget.controller.ttsProvider.label}, '
-          'format=${detectAudioContainerExtension(bytes)}, bytes=${bytes.length}, file=${path.split(Platform.pathSeparator).last}',
-    );
-    return _PreparedSpeech(
-      path: path,
-      envelope: await loadSpeechEnvelope(path, bytes),
-    );
+    throw const AiServiceException('TTS 音频生成失败');
   }
 
   Future<void> _deleteTemporarySpeech(String path) async {
@@ -4255,7 +4383,11 @@ class _ChatScreenState extends State<ChatScreen> {
     await _playCachedSpeech(_lastSpeech);
   }
 
-  Future<void> _playMessageSpeech(ChatMessage message, String text) async {
+  Future<void> _playMessageSpeech(
+    ChatMessage message,
+    String text,
+    ChatSpeaker speaker,
+  ) async {
     if (_isReplying || !_mayPlayVoice) return;
     final characterId = widget.controller.activeCharacterId;
     final revision = widget.controller.dataRevision;
@@ -4267,7 +4399,9 @@ class _ChatScreenState extends State<ChatScreen> {
       if (!_conversationIsCurrent(characterId, revision)) return;
       final normalized = text.replaceAll(RegExp(r'\s+'), '');
       final index = entries.indexWhere(
-        (e) => e.text.replaceAll(RegExp(r'\s+'), '') == normalized,
+        (e) =>
+            e.speaker == speaker &&
+            e.text.replaceAll(RegExp(r'\s+'), '') == normalized,
       );
       if (index < 0) {
         if (mounted) {
@@ -4295,6 +4429,7 @@ class _ChatScreenState extends State<ChatScreen> {
         _CachedSpeechSegment(
           path: entry.path,
           text: entry.text,
+          speaker: entry.speaker,
           envelope: envelope,
           expression: null,
           action: null,
@@ -4335,11 +4470,19 @@ class _ChatScreenState extends State<ChatScreen> {
             ?.text;
         if (latestResponse != null && highlightLatest) {
           _showAssistantSegment(
-            _displayIndexForRyzaSegment(latestResponse, index),
+            _displayIndexForSpeechSegment(
+              latestResponse,
+              segment.speaker,
+              segment.speakerOrdinal ??
+                  segments
+                      .take(index)
+                      .where((s) => s.speaker == segment.speaker)
+                      .length,
+            ),
             const Duration(seconds: 6),
           );
         }
-        if (_usesProtectedSpine) {
+        if (_usesProtectedSpine && segment.speaker == ChatSpeaker.ryza) {
           if (segment.posture case final posture?) _selectPosture(posture);
           if (segment.expression case final expression?) {
             _applyExpression(
@@ -4353,11 +4496,15 @@ class _ChatScreenState extends State<ChatScreen> {
         }
         await _audioPlayer.stop();
         await _audioPlayer.setVolume(widget.controller.voiceVolume);
-        _startSpeakingAnimation(
-          envelope: segment.envelope,
-          awaitingAudio: true,
-        );
-        if (_usesProtectedSpine) {
+        if (segment.speaker == ChatSpeaker.ryza) {
+          _startSpeakingAnimation(
+            envelope: segment.envelope,
+            awaitingAudio: true,
+          );
+        } else {
+          _stopSpeakingAnimation();
+        }
+        if (_usesProtectedSpine && segment.speaker == ChatSpeaker.ryza) {
           for (final id in segment.motionGroupIds.take(2)) {
             _performMotionGroupIntent(id);
           }
@@ -4367,7 +4514,12 @@ class _ChatScreenState extends State<ChatScreen> {
         await Future.any([completed, cancellation.future]);
         if (generation != _speechPlaybackGeneration) return;
         if (index + 1 < segments.length) {
-          _pauseSpeakingBetweenSegments();
+          if (segment.speaker == ChatSpeaker.ryza &&
+              segments[index + 1].speaker == ChatSpeaker.ryza) {
+            _pauseSpeakingBetweenSegments();
+          } else {
+            _stopSpeakingAnimation();
+          }
         } else {
           _stopSpeakingAnimation();
         }
@@ -4431,21 +4583,31 @@ class _ChatScreenState extends State<ChatScreen> {
         .toInt(),
   );
 
-  int? _displayIndexForRyzaSegment(String response, int ryzaOrdinal) {
+  int? _displayIndexForSpeechSegment(
+    String response,
+    ChatSpeaker speaker,
+    int speakerOrdinal,
+  ) {
     for (final message in widget.controller.messages.reversed) {
       if (!message.isUser && message.text == response) {
         response = message.displayText;
         break;
       }
     }
-    var currentRyza = 0;
+    var currentSpeaker = 0;
     final segments = parseAssistantSegments(response)
         .where((segment) => displayTextForAssistantSegment(segment).isNotEmpty);
     var displayIndex = 0;
     for (final segment in segments) {
-      if (segment.speaker == ChatSpeaker.ryza) {
-        if (currentRyza == ryzaOrdinal) return displayIndex;
-        currentRyza += 1;
+      final matchesSpeaker = speaker == ChatSpeaker.ryza
+          ? segment.speaker == ChatSpeaker.ryza
+          : isKlaudiaSpeechSegment(
+              segment,
+              activeCharacterId: widget.controller.activeCharacterId,
+            );
+      if (matchesSpeaker) {
+        if (currentSpeaker == speakerOrdinal) return displayIndex;
+        currentSpeaker += 1;
       }
       displayIndex += 1;
     }
@@ -4500,13 +4662,34 @@ class _ChatScreenState extends State<ChatScreen> {
       final sourceSegments = parseAssistantSegments(message.text)
           .where((s) => displayTextForAssistantSegment(s).isNotEmpty)
           .toList();
-      final ordinal = active != null && active < sourceSegments.length
-          ? sourceSegments
-                    .take(active + 1)
-                    .where((s) => s.speaker == ChatSpeaker.ryza)
+      final activeSpeaker =
+          active != null && active >= 0 && active < sourceSegments.length
+          ? sourceSegments[active].speaker
+          : null;
+      final speechSpeaker = activeSpeaker == ChatSpeaker.ryza
+          ? ChatSpeaker.ryza
+          : activeSpeaker == ChatSpeaker.character &&
+                isKlaudiaSpeechSegment(
+                  sourceSegments[active!],
+                  activeCharacterId: widget.controller.activeCharacterId,
+                )
+          ? ChatSpeaker.character
+          : null;
+      final ordinal = speechSpeaker == null
+          ? -1
+          : sourceSegments
+                    .take(active! + 1)
+                    .where(
+                      (segment) => speechSpeaker == ChatSpeaker.ryza
+                          ? segment.speaker == ChatSpeaker.ryza
+                          : isKlaudiaSpeechSegment(
+                              segment,
+                              activeCharacterId:
+                                  widget.controller.activeCharacterId,
+                            ),
+                    )
                     .length -
-                1
-          : -1;
+                1;
       final attached = await widget.controller.attachTranslation(
         message,
         translated,
@@ -4515,10 +4698,12 @@ class _ChatScreenState extends State<ChatScreen> {
           mounted &&
           revision == widget.controller.dataRevision &&
           widget.controller.messages.lastOrNull?.id == message.id &&
-          ordinal >= 0) {
+          ordinal >= 0 &&
+          speechSpeaker != null) {
         setState(
-          () => _activeAssistantSegmentIndex = _displayIndexForRyzaSegment(
+          () => _activeAssistantSegmentIndex = _displayIndexForSpeechSegment(
             message.text,
+            speechSpeaker,
             ordinal,
           ),
         );
@@ -7310,7 +7495,7 @@ class _LiquidGlassConversation extends StatelessWidget {
   final VoidCallback onSuggestReply;
   final VoidCallback onUndo;
   final VoidCallback onReplay;
-  final void Function(ChatMessage, String) onPlaySpeech;
+  final void Function(ChatMessage, String, ChatSpeaker) onPlaySpeech;
   final Widget speechProgress;
   final VoidCallback onRegenerateSpeech;
   final bool regeneratingSpeech;
@@ -7646,7 +7831,7 @@ class _GlassMessageList extends StatelessWidget {
 
   final AppLanguage language;
   final CharacterRuntimeProfile characterProfile;
-  final void Function(ChatMessage, String) onPlaySpeech;
+  final void Function(ChatMessage, String, ChatSpeaker) onPlaySpeech;
   final List<ChatMessage> messages;
   final ScrollController controller;
   final int? activeAssistantSegmentIndex;
@@ -7682,7 +7867,7 @@ class _GlassMessageList extends StatelessWidget {
                 characterProfile: characterProfile,
                 onSpeechText: selecting
                     ? null
-                    : (text) => onPlaySpeech(message, text),
+                    : (text, speaker) => onPlaySpeech(message, text, speaker),
                 response: message.displayText,
                 translationOnly: translationOnly,
                 language: language,
@@ -7908,7 +8093,7 @@ class _SeparatedAssistantMessage extends StatelessWidget {
   });
 
   final String response;
-  final ValueChanged<String>? onSpeechText;
+  final void Function(String, ChatSpeaker)? onSpeechText;
   final bool translationOnly;
   final AppLanguage language;
   final CharacterRuntimeProfile? characterProfile;
@@ -7944,6 +8129,15 @@ class _SeparatedAssistantMessage extends StatelessWidget {
         children.add(
           _CharacterRun(
             segments: run,
+            onSpeechText:
+                onSpeechText != null &&
+                    isKlaudiaSpeechSegment(
+                      run.first,
+                      activeCharacterId:
+                          characterProfile?.id ?? CharacterRuntimeIds.ryza,
+                    )
+                ? (text) => onSpeechText!(text, ChatSpeaker.character)
+                : null,
             language: language,
             glass: glass,
             translationOnly: translationOnly,
@@ -7957,7 +8151,9 @@ class _SeparatedAssistantMessage extends StatelessWidget {
             characterProfile:
                 characterProfile ??
                 characterRuntimeProfileById(CharacterRuntimeIds.ryza),
-            onSpeechText: onSpeechText,
+            onSpeechText: onSpeechText == null
+                ? null
+                : (text) => onSpeechText!(text, ChatSpeaker.ryza),
             segments: run,
             language: language,
             glass: glass,
@@ -8129,6 +8325,7 @@ class _RyzaRun extends StatelessWidget {
 class _CharacterRun extends StatelessWidget {
   const _CharacterRun({
     required this.segments,
+    this.onSpeechText,
     required this.language,
     required this.glass,
     this.translationOnly = false,
@@ -8137,6 +8334,7 @@ class _CharacterRun extends StatelessWidget {
   });
 
   final List<ChatSegment> segments;
+  final ValueChanged<String>? onSpeechText;
   final AppLanguage language;
   final bool glass;
   final bool translationOnly;
@@ -8207,6 +8405,7 @@ class _CharacterRun extends StatelessWidget {
               const SizedBox(height: 2),
               _DialogueSegmentBody(
                 segments: segments,
+                onSpeechText: onSpeechText,
                 translationOnly: translationOnly,
                 glass: glass,
                 activeSegmentIndex: activeSegmentIndex,
@@ -8265,7 +8464,7 @@ class _DialogueSegmentBody extends StatelessWidget {
                   : () {
                       final original = segments
                           .take(index + 1)
-                          .where((s) => s.speaker == ChatSpeaker.ryza)
+                          .where((s) => s.speaker == segments.first.speaker)
                           .lastOrNull;
                       if (original != null) {
                         onSpeechText!(displayTextForAssistantSegment(original));

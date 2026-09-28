@@ -1,6 +1,13 @@
-# AgentAtelierR 1.0.0 DX RC2
+# AgentAtelierR 1.0.0 DX RC3
 
-Android 版本号：`1.0.0-dx.rc2+32`。沿用 GitHub Release 标签 `v1.0.0-dx`，覆盖更新同名 APK。
+Android 版本号：`1.0.0-dx.rc3+33`。沿用 GitHub Release 标签 `v1.0.0-dx`，覆盖更新同名 APK。
+
+## RC3 修复
+
+- 科洛蒂娅在莱莎剧情中复用已配置的 Fish Audio 服务，固定使用科洛蒂娅音色；对莱莎的中文称呼为“莱莎”，日语称呼为「ライザ」，不再使用“莱莎琳／ライザリン”。
+- TTS 在播放前按正文长度校验实际音频时长；明显超长的音频会被丢弃并重新请求一次，仍异常时不播放也不写入缓存。
+- 混合角色台词按说话者顺序播放和缓存，旁白、译文及其他 NPC 不会误用科洛蒂娅音色。
+- 移除本轮试验性的 AR 相机和空间深度功能；当前版本不包含 AR 相机能力。
 
 ## RC2 修复
 
@@ -23,9 +30,9 @@ Android 版本号：`1.0.0-dx.rc2+32`。沿用 GitHub Release 标签 `v1.0.0-dx`
 
 ## 验证
 
-- `flutter analyze --no-pub` 无问题；`flutter test --no-pub` 有 570 项通过、10 项按平台条件跳过。
-- 使用加密脚本完成 release APK 构建，包内 `versionName=1.0.0-dx.rc2`、`versionCode=32`，APK 签名校验通过。
-- 本次没有连接的 Android 设备，日语朗读的真机听感尚未复测。
+- `flutter analyze --no-pub` 无问题；RC3 相关 TTS、ASMR、音频包络及角色语音测试全部通过。
+- 使用加密脚本完成 release APK 构建，包内 `versionName=1.0.0-dx.rc3`、`versionCode=33`，APK 签名校验通过。
+- 已在设备 `a43d2d7a` 上覆盖安装 RC3，应用进程启动正常。
 
 ## 构建说明
 

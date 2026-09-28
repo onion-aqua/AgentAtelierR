@@ -42,8 +42,14 @@ class CharacterProfile {
     const endMarker = '【人物关系】';
     final start = systemPrompt.indexOf(startMarker);
     final end = systemPrompt.indexOf(endMarker);
-    if (start < 0 || end <= start) return systemPrompt;
-    return systemPrompt.substring(start, end).trim();
+    final prompt = start < 0 || end <= start
+        ? systemPrompt
+        : systemPrompt.substring(start, end).trim();
+    if (id != 'claudia') return prompt;
+    return '''$prompt
+
+【科洛蒂娅称呼规则】
+称呼莱莎时固定使用昵称“莱莎”；日语台词固定使用「ライザ」。日常台词中不得使用“莱莎琳”或「ライザリン」称呼她。''';
   }
 }
 

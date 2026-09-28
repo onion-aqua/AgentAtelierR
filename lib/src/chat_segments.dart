@@ -924,6 +924,98 @@ class RyzaPerformanceSegment {
   final List<String> motionGroupIds;
 }
 
+class AssistantSpeechSegment {
+  const AssistantSpeechSegment({
+    required this.speaker,
+    required this.speechText,
+    this.characterId,
+    this.primaryPerformance,
+  });
+
+  final ChatSpeaker speaker;
+  final String speechText;
+  final String? characterId;
+  final RyzaPerformanceSegment? primaryPerformance;
+
+  bool get isPrimary => primaryPerformance != null;
+}
+
+const _klaudiaCharacterIds = {
+  'claudia',
+  'klaudia',
+  '科洛蒂娅',
+  '科洛蒂娅·巴兰茨',
+  '科洛蒂亚',
+  '克劳迪娅',
+  'クラウディア',
+  'クラウディア・バレンツ',
+  'klaudia valentz',
+  'claudia valentz',
+};
+
+const klaudiaFishAudioReferenceId = '7b7667d545f94326a7089830d2b55261';
+
+bool isKlaudiaSpeechSegment(
+  ChatSegment segment, {
+  required String activeCharacterId,
+}) =>
+    activeCharacterId == 'ryza' &&
+    segment.speaker == ChatSpeaker.character &&
+    _klaudiaCharacterIds.contains(segment.characterId?.trim().toLowerCase()) &&
+    displayTextForAssistantSegment(segment).isNotEmpty;
+
+String fishReferenceIdForAssistantSpeech(
+  AssistantSpeechSegment segment, {
+  required String primaryReferenceId,
+}) => segment.isPrimary ? primaryReferenceId : klaudiaFishAudioReferenceId;
+
+List<AssistantSpeechSegment> assistantSpeechSegmentsForResponse(
+  String response, {
+  required CharacterMood fallbackMood,
+  String? fallbackEmotion,
+  required String activeCharacterId,
+}) {
+  final primary = performanceSegmentsForAssistantResponse(
+    response,
+    fallbackMood: fallbackMood,
+    fallbackEmotion: fallbackEmotion,
+  );
+  final speech = <AssistantSpeechSegment>[];
+  var primaryIndex = 0;
+  for (final segment in parseAssistantSegments(response)) {
+    if (segment.speaker == ChatSpeaker.ryza) {
+      if (displayTextForAssistantSegment(segment).isEmpty) continue;
+      final text = ensureFishEmotionCue(
+        segment.text,
+        fallbackMood,
+        fallbackEmotion: fallbackEmotion,
+      );
+      if (text.isEmpty) continue;
+      speech.add(
+        AssistantSpeechSegment(
+          speaker: ChatSpeaker.ryza,
+          speechText: text,
+          primaryPerformance: primary[primaryIndex++],
+        ),
+      );
+    } else if (isKlaudiaSpeechSegment(
+      segment,
+      activeCharacterId: activeCharacterId,
+    )) {
+      final text = displayTextForAssistantSegment(segment);
+      if (text.isEmpty) continue;
+      speech.add(
+        AssistantSpeechSegment(
+          speaker: ChatSpeaker.character,
+          speechText: text,
+          characterId: 'claudia',
+        ),
+      );
+    }
+  }
+  return speech;
+}
+
 List<RyzaPerformanceSegment> performanceSegmentsForAssistantResponse(
   String response, {
   required CharacterMood fallbackMood,
@@ -932,6 +1024,7 @@ List<RyzaPerformanceSegment> performanceSegmentsForAssistantResponse(
   final result = <RyzaPerformanceSegment>[];
   for (final segment in parseAssistantSegments(response)) {
     if (segment.speaker != ChatSpeaker.ryza) continue;
+    if (displayTextForAssistantSegment(segment).isEmpty) continue;
     CharacterExpression? expression;
     var expressionIntensity = 'normal';
     CharacterAction? action;
