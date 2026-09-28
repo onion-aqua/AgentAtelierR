@@ -17,6 +17,8 @@ import 'glass_ui.dart';
 import 'runtime_log.dart';
 import 'speech_envelope_loader.dart';
 import 'tts_duration_guard.dart';
+import 'local_tts_client.dart';
+import 'local_tts_models.dart';
 
 DateTime asmrDeadline(DateTime now, Duration duration, TimeOfDay? time) {
   if (time == null) return now.add(duration);
@@ -491,8 +493,24 @@ class _ContinuousAsmrPageState extends State<ContinuousAsmrPage> {
         openAiSlot: c.activeOpenAiSlot,
       );
       final voiceKey = await const SecretStore().readTtsKey(c.ttsProvider);
-      if (key.isEmpty || voiceKey.isEmpty) {
+      if (key.isEmpty || (c.ttsProvider.requiresApiKey && voiceKey.isEmpty)) {
         throw const FormatException('API Key 未配置');
+      }
+      if (c.ttsProvider == TtsProvider.local) {
+        final readinessText = switch (c.characterReplyLanguage) {
+          AppLanguage.chinese => '你好。',
+          AppLanguage.japanese => 'こんにちは。',
+          AppLanguage.english => '',
+        };
+        if (readinessText.isEmpty) {
+          throw const FormatException('CosyVoice 3 当前只支持中文和日文台词');
+        }
+        if (!await LocalTtsModelStore.instance.isReadyFor(
+          readinessText,
+          c.characterReplyLanguage,
+        )) {
+          throw const FormatException('请先安装 CosyVoice 3 模型并选择可用音色');
+        }
       }
 
       final now = DateTime.now();
@@ -724,6 +742,11 @@ class _ContinuousAsmrPageState extends State<ContinuousAsmrPage> {
         intensity: emotionIntensity,
         density: c.ttsCueDensity,
         asmr: c.asmrModeEnabled,
+      ),
+      TtsProvider.local => LocalTtsClient.instance.synthesize(
+        text: plainText,
+        preferredLanguage: c.characterReplyLanguage,
+        voiceProfileId: c.localTtsVoiceProfileId,
       ),
     };
     const maxAttempts = 2;

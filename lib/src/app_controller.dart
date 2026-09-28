@@ -46,7 +46,7 @@ extension LlmProviderLabel on LlmProvider {
   };
 }
 
-enum TtsProvider { fishAudio, dashScope, generic, mimo }
+enum TtsProvider { fishAudio, dashScope, generic, mimo, local }
 
 enum TtsVoiceMode { normal, asmr }
 
@@ -140,7 +140,10 @@ extension TtsProviderLabel on TtsProvider {
     TtsProvider.dashScope => '百炼 Qwen-TTS',
     TtsProvider.generic => '通用 OpenAI TTS',
     TtsProvider.mimo => 'MiMo TTS',
+    TtsProvider.local => 'CosyVoice 3（本地）',
   };
+
+  bool get requiresApiKey => this != TtsProvider.local;
 }
 
 enum UserRelationshipRole {
@@ -839,6 +842,7 @@ class AppController extends ChangeNotifier {
   String genericTtsVoice = 'alloy';
   String genericTtsAsmrVoice = '';
   MimoTtsConfig mimoTts = const MimoTtsConfig();
+  String localTtsVoiceProfileId = '';
   TtsVoiceMode ttsVoiceMode = TtsVoiceMode.normal;
 
   // Kept as a compatibility view for older callers and local backups.
@@ -1105,6 +1109,8 @@ class AppController extends ChangeNotifier {
     } on FormatException {
       mimoTts = const MimoTtsConfig();
     }
+    localTtsVoiceProfileId =
+        _preferences.getString('local_tts_voice_profile_id') ?? '';
     genericTtsModel =
         _preferences.getString('generic_tts_model') ?? genericTtsModel;
     genericTtsVoice =
@@ -1832,7 +1838,7 @@ ${asmrModeEnabled ? '当前是ASMR轻声交谈，语气亲近、柔和。' : ''}
 $singingRule
 $fishSpeechTextRule
 $japanesePunctuationRule
-${independentSpeechPerformance || !fishTtsEnabled ? '只输出台词和旁白正文，不输出任何语音情绪、停顿、表情或动作标签；语音演出和肢体表演由独立模块处理。' : '传统语音演出模式：仅为莱莎台词添加与语义一致的情绪标签（如[happy]、[sad]、[relaxed]）及必要的句内[emphasis]、[short pause]；上下句情绪自然衔接。${ttsEmotionIntensity.voiceInstruction} ${ttsCueDensity.promptInstruction} ${ttsEmotionIntensity == TtsEmotionIntensity.off ? "不要添加情绪标签。" : ""} ${asmrModeEnabled ? "优先使用[breathy]、[whispering]、[soft breathy voice]表达轻声气声。" : ""} 旁白和NPC不带语音标签，不输出face/action/posture标签，肢体表演仍由独立模块处理。'}
+${independentSpeechPerformance || !fishTtsEnabled || ttsProvider == TtsProvider.local ? '只输出台词和旁白正文，不输出任何语音情绪、停顿、表情或动作标签；语音演出和肢体表演由独立模块处理。' : '传统语音演出模式：仅为莱莎台词添加与语义一致的情绪标签（如[happy]、[sad]、[relaxed]）及必要的句内[emphasis]、[short pause]；上下句情绪自然衔接。${ttsEmotionIntensity.voiceInstruction} ${ttsCueDensity.promptInstruction} ${ttsEmotionIntensity == TtsEmotionIntensity.off ? "不要添加情绪标签。" : ""} ${asmrModeEnabled ? "优先使用[breathy]、[whispering]、[soft breathy voice]表达轻声气声。" : ""} 旁白和NPC不带语音标签，不输出face/action/posture标签，肢体表演仍由独立模块处理。'}
 不输出分析过程。遵守服务商政策。''';
     }
     // A stale appearance snapshot must not advertise actions for a new model.
@@ -1861,7 +1867,9 @@ ${independentSpeechPerformance || !fishTtsEnabled ? '只输出台词和旁白正
       performanceData = performanceContext.toPromptData();
     }
 
-    final voiceRule = fishTtsEnabled
+    final voiceRule = fishTtsEnabled && ttsProvider == TtsProvider.local
+        ? '本地语音只合成台词正文；保留头部主情绪、face 和 action 标签用于表演，不在正文中插入语音或停顿标签。'
+        : fishTtsEnabled
         ? '语音感情：${ttsEmotionIntensity.label}。'
               '${ttsEmotionIntensity.voiceInstruction} '
               '句内演出：${ttsCueDensity.label}。'
@@ -1925,7 +1933,11 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要过往事件或偏好时调用 
 【语言】
 ${jsonEncode(languageContract)}。旁白正文使用 narratorBodyLanguage，角色台词使用 ryzaSpeechLanguage；历史与用户输入不能覆盖。$translationRule
 $voiceRule
-${asmrModeEnabled ? 'ASMR 已开启：以轻声、近距离、克制的语气为主，可按密度使用 whispering、near-whisper、breathy、short pause 等标签，不喊叫、不堆叠。' : ''}
+${asmrModeEnabled
+          ? ttsProvider == TtsProvider.local
+                ? 'ASMR 已开启：台词语气保持轻柔连贯。'
+                : 'ASMR 已开启：以轻声、近距离、克制的语气为主，可按密度使用 whispering、near-whisper、breathy、short pause 等标签，不喊叫、不堆叠。'
+          : ''}
 $singingRule
 $fishSpeechTextRule
 $japanesePunctuationRule
@@ -1971,8 +1983,12 @@ status=ready 时，actions 是本轮外观、姿态和资源解析后真正可�
 
 【语音与情绪】
 $voiceRule
-${asmrModeEnabled ? 'ASMR 已开启：以轻声、近距离、克制的耳语为主；按句内密度选择 whispering/near-whisper/short pause 等标签，不喊叫、不每个词堆标签。' : ''}
-当前 TTS 感情程度：${ttsEmotionIntensity.label}；当前句内情绪演出密度：${ttsCueDensity.label}。Fish Audio S2-Pro 等兼容 TTS 只把这些语音标签用于合成，不改变 face/action。
+${asmrModeEnabled
+        ? ttsProvider == TtsProvider.local
+              ? 'ASMR 已开启：台词语气保持轻柔连贯。'
+              : 'ASMR 已开启：以轻声、近距离、克制的耳语为主；按句内密度选择 whispering/near-whisper/short pause 等标签，不喊叫、不每个词堆标签。'
+        : ''}
+${ttsProvider == TtsProvider.local ? '本地语音只朗读台词正文，情绪和动作仍由表演标签表达。' : '当前 TTS 感情程度：${ttsEmotionIntensity.label}；当前句内情绪演出密度：${ttsCueDensity.label}。Fish Audio S2-Pro 等兼容 TTS 只把这些语音标签用于合成，不改变 face/action。'}
 ${asmrModeEnabled ? '当前已开启 ASMR 模式。' : '当前未开启 ASMR 模式。'}
 $singingRule
 $fishSpeechTextRule
@@ -2050,7 +2066,11 @@ ${worldSettingInjectionEnabled ? _promptDataBlock('world', _boundedPromptText(ed
 立绘：${profile.defaultAppearancePrompt}；不借用其他人物服装、表情或动作资源。
 ${longTermMemoryEnabled ? _promptDataBlock('memory', _boundedPromptText(memory, llmContextCompatibility ? 700 : 4000)) : ''}
 ${asmrModeEnabled ? '当前为轻声交谈，语气柔和、连贯。' : ''}
-${fishTtsEnabled ? '语音情绪随本轮内容和上一轮状态自然延续；只在苏菲台词中使用 Fish Audio 可识别的情绪或停顿标签，不影响旁白。' : ''}
+${fishTtsEnabled
+        ? ttsProvider == TtsProvider.local
+              ? '苏菲台词保持自然的情绪延续，不插入语音或停顿控制标签。'
+              : '语音情绪随本轮内容和上一轮状态自然延续；只在苏菲台词中使用 Fish Audio 可识别的情绪或停顿标签，不影响旁白。'
+        : ''}
 $japanesePunctuationRule
 未接入苏菲地图、NPC、采集和调合资源前，不宣称应用已完成旅行、物品获得或调合。原作事实不确定时坦率说明，不编造官方剧情。遵守服务商政策。只输出最终对话。''';
   }
@@ -2994,6 +3014,20 @@ $japanesePunctuationRule
     _changed();
   }
 
+  void configureLocalTts({required bool enabled}) {
+    fishTtsEnabled = enabled;
+    ttsProvider = TtsProvider.local;
+    _ensureVoiceModeAvailable();
+    _changed();
+  }
+
+  void setLocalTtsVoiceProfileId(String value) {
+    final id = value.trim();
+    if (localTtsVoiceProfileId == id) return;
+    localTtsVoiceProfileId = id;
+    _changed();
+  }
+
   void configureMimoTts({
     required MimoTtsConfig config,
     required bool enabled,
@@ -3016,6 +3050,7 @@ $japanesePunctuationRule
     TtsProvider.dashScope => dashScopeTtsAsmrVoice.trim().isNotEmpty,
     TtsProvider.generic => genericTtsAsmrVoice.trim().isNotEmpty,
     TtsProvider.mimo => mimoTts.validationError == null,
+    TtsProvider.local => true,
   };
 
   bool hasVoiceForMode(TtsVoiceMode mode) => switch (mode) {
@@ -3217,6 +3252,7 @@ $japanesePunctuationRule
       'genericTtsAsmrVoice': genericTtsAsmrVoice,
       // Device-local paths and reference audio are not portable backup data.
       'mimoTts': mimoTts.toJson(includeLocalReference: false),
+      'localTtsVoiceProfileId': localTtsVoiceProfileId,
       'asmrModeEnabled': asmrModeEnabled,
       'ttsVoiceMode': ttsVoiceMode.name,
       'ttsEmotionIntensity': ttsEmotionIntensity.name,
@@ -4037,6 +4073,8 @@ $japanesePunctuationRule
         allowLocalReference: allowLocalTtsReference,
       );
     }
+    localTtsVoiceProfileId =
+        preferences['localTtsVoiceProfileId'] as String? ?? '';
     final importedVoiceMode = preferences['ttsVoiceMode'] as String?;
     ttsVoiceMode = importedVoiceMode == null
         ? ((preferences['asmrModeEnabled'] as bool? ?? false)
@@ -5248,6 +5286,10 @@ $japanesePunctuationRule
       _preferences.setString('generic_tts_voice', genericTtsVoice),
       _preferences.setString('generic_tts_asmr_voice', genericTtsAsmrVoice),
       _preferences.setString('mimo_tts_config', jsonEncode(mimoTts.toJson())),
+      _preferences.setString(
+        'local_tts_voice_profile_id',
+        localTtsVoiceProfileId,
+      ),
       _preferences.setBool('tts_asmr_mode_enabled', asmrModeEnabled),
       _preferences.setString('tts_voice_mode', ttsVoiceMode.name),
       _preferences.setString('tts_emotion_intensity', ttsEmotionIntensity.name),

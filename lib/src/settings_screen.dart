@@ -20,6 +20,7 @@ export 'runtime_log_screen.dart';
 import 'platform_slider.dart';
 import 'glass_ui.dart';
 import 'mimo_tts_settings.dart';
+import 'local_tts_settings.dart';
 import 'memory_timeline.dart';
 import 'manual_memory_consolidation.dart';
 import 'settings_slots.dart';
@@ -36,6 +37,7 @@ String _activeTtsModel(AppController controller) =>
       TtsProvider.dashScope => controller.dashScopeTtsModel,
       TtsProvider.generic => controller.genericTtsModel,
       TtsProvider.mimo => controller.mimoTts.model,
+      TtsProvider.local => 'MNN',
     };
 
 String _activeCharacterName(AppController controller, AppLanguage language) =>
@@ -119,7 +121,7 @@ extension on _SettingsCategory {
       'Memory, local import, export and chat history',
       '長期記憶、データの読み込み・書き出し、会話履歴',
     ),
-    _SettingsCategory.about => 'AgentAtelierR · 1.0.0 DX RC3',
+    _SettingsCategory.about => 'AgentAtelierR · 1.0.3 beta6',
   };
 
   IconData get icon => switch (this) {
@@ -1220,9 +1222,9 @@ class SettingsScreenState extends State<SettingsScreen> {
                   title: const Text('AgentAtelierR'),
                   subtitle: Text(
                     language.text(
-                      '版本 1.0.0 DX RC3',
-                      'Version 1.0.0 DX RC3',
-                      'バージョン 1.0.0 DX RC3',
+                      '版本 1.0.3 beta6',
+                      'Version 1.0.3 beta6',
+                      'バージョン 1.0.3 beta6',
                     ),
                   ),
                 ),
@@ -1695,6 +1697,11 @@ class SettingsScreenState extends State<SettingsScreen> {
         await _openDetailPage<void>(
           context: context,
           builder: (_) => MimoTtsSettingsDialog(controller: controller),
+        );
+      case TtsProvider.local:
+        await _openDetailPage<void>(
+          context: context,
+          builder: (_) => LocalTtsSettingsPage(controller: controller),
         );
     }
   }
@@ -3309,13 +3316,17 @@ class _LongTermMemoryDialogState extends State<_LongTermMemoryDialog> {
     final language = widget.language;
     if (_summary.text != controller.memorySummary ||
         _enabled != controller.longTermMemoryEnabled) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text(language.text(
-          '请先保存当前记忆编辑，再开始整理',
-          'Save your memory edits before organizing',
-          '先に記憶の編集を保存してください',
-        )),
-      ));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            language.text(
+              '请先保存当前记忆编辑，再开始整理',
+              'Save your memory edits before organizing',
+              '先に記憶の編集を保存してください',
+            ),
+          ),
+        ),
+      );
       return;
     }
     setState(() => _manualBusy = true);
@@ -3347,13 +3358,17 @@ class _LongTermMemoryDialogState extends State<_LongTermMemoryDialog> {
       );
       if (!mounted) return;
       if (proposal == null) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text(language.text(
-            '没有待整理的对话或最近记忆',
-            'There is no new dialogue or recent memory to organize',
-            '整理する新しい会話や最近の記憶はありません',
-          )),
-        ));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              language.text(
+                '没有待整理的对话或最近记忆',
+                'There is no new dialogue or recent memory to organize',
+                '整理する新しい会話や最近の記憶はありません',
+              ),
+            ),
+          ),
+        );
         return;
       }
       if (!proposal.isCurrent(controller)) {
@@ -3361,10 +3376,8 @@ class _LongTermMemoryDialogState extends State<_LongTermMemoryDialog> {
       }
       final confirmed = await showDialog<bool>(
         context: context,
-        builder: (context) => _ManualMemoryReviewDialog(
-          proposal: proposal,
-          language: language,
-        ),
+        builder: (context) =>
+            _ManualMemoryReviewDialog(proposal: proposal, language: language),
       );
       if (!mounted || confirmed != true) return;
       if (!proposal.commit(controller)) {
@@ -3374,19 +3387,22 @@ class _LongTermMemoryDialogState extends State<_LongTermMemoryDialog> {
         _summary.text = controller.memorySummary;
         _parseMemory();
       });
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text(language.text(
-          '记忆与译文已保存',
-          'Memory and translations saved',
-          '記憶と翻訳を保存しました',
-        )),
-      ));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            language.text(
+              '记忆与译文已保存',
+              'Memory and translations saved',
+              '記憶と翻訳を保存しました',
+            ),
+          ),
+        ),
+      );
     } on Object catch (error, stackTrace) {
       RuntimeLog.instance.error('Memory', error, stackTrace);
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text('$error'),
-      ));
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('$error')));
     } finally {
       if (mounted) setState(() => _manualBusy = false);
     }
@@ -3539,14 +3555,21 @@ class _LongTermMemoryDialogState extends State<_LongTermMemoryDialog> {
                           if (_entries![index]['translation'] is String) ...[
                             const SizedBox(height: 6),
                             TextFormField(
-                              key: ValueKey('memory-entry-translation-${_entries![index]['sequence']}'),
-                              initialValue: _entries![index]['translation'] as String,
+                              key: ValueKey(
+                                'memory-entry-translation-${_entries![index]['sequence']}',
+                              ),
+                              initialValue:
+                                  _entries![index]['translation'] as String,
                               minLines: 1,
                               maxLines: null,
                               decoration: InputDecoration(
                                 isDense: true,
                                 border: InputBorder.none,
-                                labelText: language.text('译文', 'Translation', '翻訳'),
+                                labelText: language.text(
+                                  '译文',
+                                  'Translation',
+                                  '翻訳',
+                                ),
                               ),
                               onChanged: (value) {
                                 _entries![index]['translation'] = value;
@@ -3727,21 +3750,31 @@ class _ManualMemoryReviewDialogState extends State<_ManualMemoryReviewDialog> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               if (proposal.recent.isNotEmpty) ...[
-                Text(language.text('最近记忆', 'Recent memories', '最近の記憶'),
-                    style: Theme.of(context).textTheme.titleSmall),
+                Text(
+                  language.text('最近记忆', 'Recent memories', '最近の記憶'),
+                  style: Theme.of(context).textTheme.titleSmall,
+                ),
                 const SizedBox(height: 8),
-                for (var index = 0; index < proposal.recent.length; index++) ...[
+                for (
+                  var index = 0;
+                  index < proposal.recent.length;
+                  index++
+                ) ...[
                   TextFormField(
                     key: ValueKey('manual-memory-recent-$index'),
                     initialValue: proposal.recent[index].summary,
                     maxLines: null,
                     maxLength: 500,
                     decoration: InputDecoration(
-                      labelText: language.text('记忆 ${index + 1}',
-                          'Memory ${index + 1}', '記憶 ${index + 1}'),
+                      labelText: language.text(
+                        '记忆 ${index + 1}',
+                        'Memory ${index + 1}',
+                        '記憶 ${index + 1}',
+                      ),
                       border: const OutlineInputBorder(),
                     ),
-                    onChanged: (value) => proposal.recent[index].summary = value,
+                    onChanged: (value) =>
+                        proposal.recent[index].summary = value,
                   ),
                   const SizedBox(height: 8),
                   TextFormField(
@@ -3750,9 +3783,11 @@ class _ManualMemoryReviewDialogState extends State<_ManualMemoryReviewDialog> {
                     maxLines: null,
                     maxLength: 500,
                     decoration: InputDecoration(
-                      labelText: language.text('译文 · ${proposal.translationLanguage}',
-                          'Translation · ${proposal.translationLanguage}',
-                          '翻訳 · ${proposal.translationLanguage}'),
+                      labelText: language.text(
+                        '译文 · ${proposal.translationLanguage}',
+                        'Translation · ${proposal.translationLanguage}',
+                        '翻訳 · ${proposal.translationLanguage}',
+                      ),
                       border: const OutlineInputBorder(),
                     ),
                     onChanged: (value) =>
@@ -3761,24 +3796,41 @@ class _ManualMemoryReviewDialogState extends State<_ManualMemoryReviewDialog> {
                   const SizedBox(height: 16),
                 ],
               ],
-              Text(language.text('长期记忆', 'Long-term memories', '長期記憶'),
-                  style: Theme.of(context).textTheme.titleSmall),
+              Text(
+                language.text('长期记忆', 'Long-term memories', '長期記憶'),
+                style: Theme.of(context).textTheme.titleSmall,
+              ),
               const SizedBox(height: 8),
               if (proposal.newEntries.isEmpty)
-                Text(language.text('没有提取到新的长期记忆',
-                    'No new long-term memories were found', '新しい長期記憶はありません')),
-              for (final entry in proposal.newEntries) ...[
-                Row(children: [
-                  Expanded(child: Text('${entry['date'] ?? ''} · ${entry['category'] ?? ''}')),
-                  IconButton(
-                    tooltip: language.text('删除这条记忆', 'Delete memory', 'この記憶を削除'),
-                    icon: const Icon(Icons.delete_outline),
-                    onPressed: () => setState(() {
-                      (proposal.document['entries'] as List).remove(entry);
-                      proposal.newEntrySequences.remove(entry['sequence']);
-                    }),
+                Text(
+                  language.text(
+                    '没有提取到新的长期记忆',
+                    'No new long-term memories were found',
+                    '新しい長期記憶はありません',
                   ),
-                ]),
+                ),
+              for (final entry in proposal.newEntries) ...[
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        '${entry['date'] ?? ''} · ${entry['category'] ?? ''}',
+                      ),
+                    ),
+                    IconButton(
+                      tooltip: language.text(
+                        '删除这条记忆',
+                        'Delete memory',
+                        'この記憶を削除',
+                      ),
+                      icon: const Icon(Icons.delete_outline),
+                      onPressed: () => setState(() {
+                        (proposal.document['entries'] as List).remove(entry);
+                        proposal.newEntrySequences.remove(entry['sequence']);
+                      }),
+                    ),
+                  ],
+                ),
                 TextFormField(
                   key: ValueKey('manual-memory-entry-${entry['sequence']}'),
                   initialValue: '${entry['summary'] ?? ''}',
@@ -3791,13 +3843,17 @@ class _ManualMemoryReviewDialogState extends State<_ManualMemoryReviewDialog> {
                 ),
                 const SizedBox(height: 8),
                 TextFormField(
-                  key: ValueKey('manual-memory-entry-translation-${entry['sequence']}'),
+                  key: ValueKey(
+                    'manual-memory-entry-translation-${entry['sequence']}',
+                  ),
                   initialValue: '${entry['translation'] ?? ''}',
                   maxLines: null,
                   decoration: InputDecoration(
-                    labelText: language.text('译文 · ${proposal.translationLanguage}',
-                        'Translation · ${proposal.translationLanguage}',
-                        '翻訳 · ${proposal.translationLanguage}'),
+                    labelText: language.text(
+                      '译文 · ${proposal.translationLanguage}',
+                      'Translation · ${proposal.translationLanguage}',
+                      '翻訳 · ${proposal.translationLanguage}',
+                    ),
                     border: const OutlineInputBorder(),
                   ),
                   onChanged: (value) => entry['translation'] = value,
@@ -3806,9 +3862,11 @@ class _ManualMemoryReviewDialogState extends State<_ManualMemoryReviewDialog> {
               ],
               if (_invalid)
                 Text(
-                  language.text('记忆和译文不能为空，最近记忆不超过 1200 字',
-                      'Memory and translation are required; recent memory must stay within 1200 characters',
-                      '記憶と翻訳を入力し、最近の記憶は1200文字以内にしてください'),
+                  language.text(
+                    '记忆和译文不能为空，最近记忆不超过 1200 字',
+                    'Memory and translation are required; recent memory must stay within 1200 characters',
+                    '記憶と翻訳を入力し、最近の記憶は1200文字以内にしてください',
+                  ),
                   style: TextStyle(color: Theme.of(context).colorScheme.error),
                 ),
             ],
@@ -3823,8 +3881,13 @@ class _ManualMemoryReviewDialogState extends State<_ManualMemoryReviewDialog> {
         FilledButton(
           key: const ValueKey('manual-memory-confirm'),
           onPressed: _confirm,
-          child: Text(language.text('保存记忆与译文', 'Save memories and translations',
-              '記憶と翻訳を保存')),
+          child: Text(
+            language.text(
+              '保存记忆与译文',
+              'Save memories and translations',
+              '記憶と翻訳を保存',
+            ),
+          ),
         ),
       ],
     );

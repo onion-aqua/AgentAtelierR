@@ -24,9 +24,14 @@ class MainActivity : FlutterActivity() {
     private var requestedFramesPerSecond = 24f
     private var preferMaximumFrameRate = false
     private var hasFrameRateRequest = false
+    private var cosyVoiceBridge: CosyVoiceFlutterBridge? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        cosyVoiceBridge = CosyVoiceFlutterBridge(
+            applicationContext,
+            flutterEngine.dartExecutor.binaryMessenger,
+        )
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "agent_atelier_r/speech_envelope")
             .setMethodCallHandler { call, result ->
                 if (call.method != "analyze" && call.method != "decodeWav") { result.notImplemented(); return@setMethodCallHandler }
@@ -71,6 +76,12 @@ class MainActivity : FlutterActivity() {
                     else -> result.notImplemented()
                 }
             }
+    }
+
+    override fun onDestroy() {
+        cosyVoiceBridge?.dispose()
+        cosyVoiceBridge = null
+        super.onDestroy()
     }
 
     override fun onResume() {

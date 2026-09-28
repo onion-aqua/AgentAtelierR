@@ -64,6 +64,8 @@ import 'ryza_loading_indicator.dart';
 import 'tap_reaction.dart';
 import 'tts_text_normalizer.dart';
 import 'tts_duration_guard.dart';
+import 'local_tts_client.dart';
+import 'local_tts_models.dart';
 import 'appearance_picker_page.dart';
 import 'character_spine_view.dart';
 
@@ -3689,7 +3691,8 @@ class _ChatScreenState extends State<ChatScreen> {
     Map<String, dynamic> sharedContext = const {},
   }) async {
     if (!widget.controller.fishTtsEnabled ||
-        !widget.controller.independentSpeechPerformance) {
+        !widget.controller.independentSpeechPerformance ||
+        widget.controller.ttsProvider == TtsProvider.local) {
       return null;
     }
     final intensity = widget.controller.ttsEmotionIntensity;
@@ -3819,7 +3822,7 @@ class _ChatScreenState extends State<ChatScreen> {
     }
     final hasPrimary = candidateSegments.any((segment) => segment.isPrimary);
     final hasKlaudia = candidateSegments.any((segment) => !segment.isPrimary);
-    final apiKey = hasPrimary
+    final apiKey = hasPrimary && widget.controller.ttsProvider.requiresApiKey
         ? await _secretStore.readTtsKey(widget.controller.ttsProvider)
         : '';
     final fishApiKey = hasKlaudia
@@ -3837,8 +3840,18 @@ class _ChatScreenState extends State<ChatScreen> {
         widget.controller.genericTtsBaseUrl.isEmpty ||
             widget.controller.activeGenericTtsVoice.isEmpty,
       TtsProvider.mimo => widget.controller.mimoTts.validationError != null,
+      TtsProvider.local => false,
     };
-    final primaryReady = apiKey.isNotEmpty && !missingProviderSettings;
+    final primaryReady = !hasPrimary
+        ? false
+        : widget.controller.ttsProvider == TtsProvider.local
+        ? await LocalTtsModelStore.instance.isReadyFor(
+            candidateSegments
+                .firstWhere((segment) => segment.isPrimary)
+                .speechText,
+            widget.controller.characterReplyLanguage,
+          )
+        : apiKey.isNotEmpty && !missingProviderSettings;
     final klaudiaReady =
         fishApiKey.isNotEmpty &&
         widget.controller.fishAudioBaseUrl.trim().isNotEmpty &&
@@ -3849,7 +3862,7 @@ class _ChatScreenState extends State<ChatScreen> {
     if (segments.isEmpty) {
       RuntimeLog.instance.warning(
         'TTS',
-        '跳过合成：主角 TTS 与科洛蒂娅 Fish Audio 的密钥或必要配置缺失',
+        '跳过合成：主角语音模型或服务配置、科洛蒂娅 Fish Audio 配置未就绪',
       );
       final fallback = await fallbackPerformance();
       if (!mounted || replyGeneration != _replyGeneration) return;
@@ -3952,6 +3965,7 @@ class _ChatScreenState extends State<ChatScreen> {
         TtsProvider.dashScope => widget.controller.dashScopeTtsModel,
         TtsProvider.generic => widget.controller.genericTtsModel,
         TtsProvider.mimo => widget.controller.mimoTts.model,
+        TtsProvider.local => 'CosyVoice 3 (MNN)',
       };
       RuntimeLog.instance.info(
         'TTS',
@@ -4231,6 +4245,11 @@ class _ChatScreenState extends State<ChatScreen> {
         intensity: emotionIntensity,
         density: widget.controller.ttsCueDensity,
         asmr: widget.controller.asmrModeEnabled,
+      ),
+      TtsProvider.local => LocalTtsClient.instance.synthesize(
+        text: plainText,
+        preferredLanguage: widget.controller.characterReplyLanguage,
+        voiceProfileId: widget.controller.localTtsVoiceProfileId,
       ),
     };
     const maxAttempts = 2;

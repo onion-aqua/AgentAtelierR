@@ -201,4 +201,33 @@ void main() {
     expect(restored.activeCharacterId, CharacterRuntimeIds.sophie);
     expect(restored.mimoTts.referencePath, 'C:/private/sophie.wav');
   });
+
+  test(
+    'CosyVoice profiles stay separate across characters and restart',
+    () async {
+      SharedPreferences.setMockInitialValues({});
+      final controller = await AppController.load();
+      controller.configureLocalTts(enabled: true);
+      controller.setLocalTtsVoiceProfileId('ryza-clone');
+
+      await controller.setActiveCharacter(CharacterRuntimeIds.sophie);
+      expect(controller.localTtsVoiceProfileId, isEmpty);
+      controller.configureLocalTts(enabled: true);
+      controller.setLocalTtsVoiceProfileId('sophie-clone');
+
+      await controller.setActiveCharacter(CharacterRuntimeIds.ryza);
+      expect(controller.localTtsVoiceProfileId, 'ryza-clone');
+      await controller.setActiveCharacter(CharacterRuntimeIds.sophie);
+      expect(controller.localTtsVoiceProfileId, 'sophie-clone');
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      controller.dispose();
+
+      final restored = await AppController.load();
+      addTearDown(restored.dispose);
+      expect(restored.activeCharacterId, CharacterRuntimeIds.sophie);
+      expect(restored.localTtsVoiceProfileId, 'sophie-clone');
+      await restored.setActiveCharacter(CharacterRuntimeIds.ryza);
+      expect(restored.localTtsVoiceProfileId, 'ryza-clone');
+    },
+  );
 }

@@ -105,6 +105,7 @@ class SecretStore {
     TtsProvider.dashScope => readDashScopeKey(),
     TtsProvider.generic => readGenericTtsKey(),
     TtsProvider.mimo => readMimoTtsKey(),
+    TtsProvider.local => Future.value(''),
   };
 
   Future<void> writeTtsKey(TtsProvider provider, String value) =>
@@ -113,6 +114,7 @@ class SecretStore {
         TtsProvider.dashScope => writeDashScopeKey(value),
         TtsProvider.generic => writeGenericTtsKey(value),
         TtsProvider.mimo => writeMimoTtsKey(value),
+        TtsProvider.local => Future.value(),
       };
 
   Future<void> _writeOrDelete(String key, String value) {

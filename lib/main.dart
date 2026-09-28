@@ -94,7 +94,7 @@ class _BootstrapAppState extends State<_BootstrapApp> {
   Future<void> _initialize() async {
     try {
       await RuntimeLog.instance.initialize();
-      RuntimeLog.instance.info('App', '应用启动，版本 1.0.0 DX RC3（构建 33）');
+      RuntimeLog.instance.info('App', '应用启动，版本 1.0.3 beta6（构建 34）');
       await initSpineFlutter(enableMemoryDebugging: false);
       await Alarm.init();
       await AudioPlayer.global.setAudioContext(
