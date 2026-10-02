@@ -95,7 +95,9 @@ void main() {
       ids: [0, 1, 2],
       currentFace: 'neutral',
       currentIntensity: 'normal',
-      intensities: const {'happy': ['normal', 'strong']},
+      intensities: const {
+        'happy': ['normal', 'strong'],
+      },
       complete: (_) async => jsonEncode({
         'segments': [
           {'id': 0, 'face': 'happy', 'intensity': 'strong'},
@@ -145,6 +147,28 @@ void main() {
     expect(calls, 1);
     expect(output, '旁白：夜色降临，莱莎点亮了灯。');
     expect(proposal?['time_advance'], {'kind': 'time_skip', 'minutes': 360});
+  });
+
+  test('narration-only sleep proposes recovery with clock disabled', () async {
+    Map<String, dynamic>? proposal;
+    var calls = 0;
+    await IndependentPerformanceTools().plan(
+      userInput: '旁白：莱莎睡了一觉。',
+      source: '旁白：莱莎一觉醒来。',
+      capabilities: capabilities,
+      currentFace: 'neutral',
+      recentActions: [],
+      onStateProposal: (value) => proposal = value,
+      complete: (messages) async {
+        calls++;
+        expect(jsonDecode(messages.last['content']!)['line_ids'], isEmpty);
+        expect(messages.first['content'], contains('剧情时钟虽关闭'));
+        expect(messages.first['content'], contains('否定、回忆往事'));
+        return '{"segments":[],"time_advance":{"kind":"sleep","minutes":480}}';
+      },
+    );
+    expect(calls, 1);
+    expect(proposal?['time_advance'], {'kind': 'sleep', 'minutes': 480});
   });
 
   test('spoken request can propose an immediate story time skip', () async {

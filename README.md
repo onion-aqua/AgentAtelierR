@@ -8,9 +8,9 @@ AgentAtelierR 是以 Android 为主要开发平台的 Flutter AI 角色互动项
 
 ## 当前版本与适用范围
 
-当前源码版本为 **AgentAtelierR 1.0.3 beta6 测试版**，Android 版本号 `1.0.3-beta6+34`，GitHub 版本标签为 `v1.0.3-beta6`。变更见[beta6 更新记录](docs/CHANGELOG_1.0.3-beta6.md)。以下功能以当前源码为准；具体效果会受到本地资源、设备、模型和服务能力影响。
+当前源码版本为 **AgentAtelierR 1.0.0 DX RC4**，Android 版本号 `1.0.0-dx.rc4+35`，GitHub 版本标签为 `v1.0.0-dx.rc4`。变更见[RC4 更新记录](docs/CHANGELOG_1.0.0-DX-RC4.md)。以下功能以当前源码为准；具体效果会受到本地资源、设备、模型和服务能力影响。
 
-> **beta6 测试包警告**：本次用于设备测试的是 Android debug 模式 APK。debug 构建会增加调试开销，可能造成动画掉帧、界面卡顿、耗电发热增加或运行不稳定；流畅度和稳定性结论应以 release 构建为准。
+> RC4 提供使用加密构建脚本生成的 **release APK**，启用 Dart 混淆。当前仍沿用 Android 调试签名以兼容已有安装，并非商店正式签名包。旧版 debug 测试包的卡顿与不稳定表现不能代表 release 包。
 
 - 莱莎已接入 Spine 动画、地图与场景、商店、背包、炼金、任务和语音闹钟。
 - 苏菲已开放独立的角色设定、对话、记忆、存档和语音配置，目前使用静态立绘；她的地图、炼金、任务、商店和语音闹钟仍待接入。

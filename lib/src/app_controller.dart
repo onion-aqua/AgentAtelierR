@@ -597,25 +597,43 @@ class AppController extends ChangeNotifier {
     Map<String, dynamic>? proposal,
     int expectedRevision,
   ) {
-    if (!storyClockEnabled || expectedRevision != dataRevision) return false;
+    if (expectedRevision != dataRevision) return false;
+    if (!storyClockEnabled) {
+      final raw = proposal?['time_advance'];
+      if (raw is! Map || raw['minutes'] is! int) return false;
+      final next = characterState.recoverAfterTime(
+        turn,
+        _storyTimeKind(proposal),
+        raw['minutes'] as int,
+      );
+      if (identical(next, characterState)) return false;
+      characterState = next;
+      _changed();
+      return true;
+    }
     final next = storyClock.advance(turn, proposal);
     if (next == null) return false;
-    _applyStoryClock(next, kind: _storyTimeKind(proposal));
+    _applyStoryClock(next, kind: _storyTimeKind(proposal), turn: turn);
     return true;
   }
 
   String _storyTimeKind(Map<String, dynamic>? proposal) {
     final raw = proposal?['time_advance'];
-    return raw is Map && raw['minutes'] is int
+    return raw is Map && raw['minutes'] is int && (raw['minutes'] as int) > 0
         ? raw['kind']?.toString() ?? 'conversation'
         : 'conversation';
   }
 
-  void _applyStoryClock(StoryClock next, {String kind = 'conversation'}) {
+  void _applyStoryClock(
+    StoryClock next, {
+    String kind = 'conversation',
+    String? turn,
+  }) {
     final previous = storyClock;
     storyClock = next;
     sceneTime = sceneTimeForStoryHour(next.hour);
     final hours = next.totalMinutes ~/ 60 - previous.totalMinutes ~/ 60;
+    final minutes = next.totalMinutes - previous.totalMinutes;
     var hungerLoss = 0;
     for (var hour = 1; hour <= hours; hour++) {
       final satiety = (previous.satiety - hour * 4).clamp(0, 100);
@@ -625,17 +643,14 @@ class AppController extends ChangeNotifier {
           ? 1
           : 0;
     }
-    final restGain = switch (kind) {
-      'sleep' => 30,
-      'rest' => 10,
-      _ => 0,
-    };
-    final energyChange = restGain - hungerLoss;
-    if (energyChange != 0) {
+    if (hungerLoss > 0) {
       characterState = characterState.applyItemEffect(
-        changes: {'energy': energyChange},
-        reason: kind == 'sleep' || kind == 'rest' ? '休息' : '饥饿',
+        changes: {'energy': -hungerLoss},
+        reason: '饥饿',
       );
+    }
+    if (turn != null) {
+      characterState = characterState.recoverAfterTime(turn, kind, minutes);
     }
     _changed();
   }
@@ -1482,6 +1497,7 @@ class AppController extends ChangeNotifier {
     List<ChatAttachment> attachments = const [],
     bool imageFoodInvitation = false,
   }) {
+    _inventoryAddResults.clear();
     final prefix = 'user_${DateTime.now().microsecondsSinceEpoch}';
     var id = prefix;
     var suffix = 1;
@@ -1727,6 +1743,7 @@ class AppController extends ChangeNotifier {
           '确定采集时，先根据当前地点和对话判断本次发现的 1 至 3 种合理素材，再随 gather_current_location 的 discoveries 提交；'
           '素材不受内置清单限制，但数量与品质由本地系统决定。准备调合时先调用 inspect_alchemy_inventory，'
           '再由莱莎从返回的真实实例 ID 中选材并调用 synthesize_custom_item。'
+          '用户明确要求放入背包的普通物品（苹果、书本、生活用品等）调用 add_inventory_item，无需旅行或采集；按用户设定或物品语义生成分类与描述标签，只有工具成功才叙述已入包。否定、假设、只提及或过去已入包的物品不要重复添加。'
           '合成成功率由本地按素材品质与调和剂计算（60%至95%），失败也消耗投入素材，仅得到残渣；必须根据工具的 success 字段叙述，失败不得自动重试。'
           '用户要求实际使用、吃掉或赠送物品时调用 consume_inventory_item 扣除；吃掉需传 purpose=eat，且物品确实标注可食用。合成材料由合成工具自动扣除，不要重复扣料。只拿起查看不消耗。'
           '${storyClockEnabled ? '饱食度由本地结算。只有本轮用户附带可读食物图片并明确邀请莱莎吃或品尝，且图片中确实可见可食用食物、莱莎实际品尝时，才调用 eat_food_from_image；同轮只调用一次，图片食品不进背包。' : ''}'
@@ -2096,6 +2113,9 @@ $japanesePunctuationRule
     }
     if (name == 'inspect_alchemy_inventory') {
       return _alchemyInventoryToolResult();
+    }
+    if (name == 'add_inventory_item') {
+      return _addInventoryItemToolResult(args);
     }
     if (name == 'gather_current_location') {
       return _gatherCurrentLocationToolResult(args);
@@ -3668,6 +3688,7 @@ $japanesePunctuationRule
 
   void _applyGameState(Map<String, dynamic> data) {
     _imageFoodInvitationMessageId = null;
+    _inventoryAddResults.clear();
     const supportedFormats = {
       'agent-atelier-r-game-save',
       'agent-atelier-r-local-backup',
@@ -3757,15 +3778,14 @@ $japanesePunctuationRule
       data['memorySummary'] as String? ?? memorySummary,
     );
     _applyMemoryData(data);
-    if (data.containsKey('characterState')) {
-      characterState = CharacterState.fromJson(data['characterState']);
-    }
+    characterState = data['characterState'] is Map
+        ? CharacterState.fromJson(data['characterState'])
+        : CharacterState.newSave();
     characterMood = CharacterMood.values.firstWhere(
       (mood) => mood.name == data['characterMood'],
-      orElse: () => characterMood,
+      orElse: () => CharacterMood.neutral,
     );
-    relationshipPoints =
-        data['relationshipPoints'] as int? ?? relationshipPoints;
+    relationshipPoints = data['relationshipPoints'] as int? ?? 0;
     preciousItems = _parsePreciousItems(data['preciousItems']);
     automaticSceneTime =
         data['automaticSceneTime'] as bool? ?? automaticSceneTime;
@@ -3833,6 +3853,7 @@ $japanesePunctuationRule
     bool allowLocalTtsReference = false,
   }) {
     _imageFoodInvitationMessageId = null;
+    _inventoryAddResults.clear();
     const supportedFormats = {
       'agent-atelier-r-local-backup',
       'ryza-chat-local-backup',
@@ -4499,11 +4520,98 @@ $japanesePunctuationRule
     'quantity': item.quantity,
     'quality': item.quality,
     'quality_rank': item.qualityRank,
+    'descriptive_tags': item.customTags,
     'tags': [
       for (final id in item.tagIds)
         {'id': id, 'name': AlchemyCatalog.tags[id]?.name ?? id},
     ],
   };
+
+  final Map<String, String> _inventoryAddResults = {};
+
+  String _addInventoryItemToolResult(Map<String, dynamic> args) {
+    try {
+      String textField(String key, int limit, {bool required = false}) {
+        final raw = args[key];
+        if (raw != null && raw is! String) {
+          throw FormatException('$key 必须是文字');
+        }
+        final value = (raw as String? ?? '')
+            .replaceAll(RegExp(r'[\r\n]+'), ' ')
+            .trim();
+        if ((required && value.isEmpty) || value.length > limit) {
+          throw FormatException('$key 为空或超过 $limit 字符');
+        }
+        return value;
+      }
+
+      List<String> labels(String key) {
+        final raw = args[key];
+        if (raw == null) return [];
+        if (raw is! List ||
+            raw.length > 6 ||
+            raw.any((v) => v is! String || v.trim().isEmpty || v.length > 30)) {
+          throw FormatException('$key 需要最多6个简短文字标签');
+        }
+        return raw
+            .cast<String>()
+            .map((v) => v.replaceAll(RegExp(r'[\r\n]+'), ' ').trim())
+            .toSet()
+            .toList();
+      }
+
+      final name = textField('name', 40, required: true);
+      final description = textField('description', 200);
+      final quantity = args['quantity'] ?? 1;
+      if (quantity is! int || quantity < 1 || quantity > 99) {
+        throw const FormatException('物品数量须为1至99的整数');
+      }
+      final categories = labels('categories');
+      final tags = labels('tags');
+      if (categories.isEmpty) categories.add('misc');
+      final userMessage = messages.where((m) => m.isUser).lastOrNull;
+      if (userMessage == null) {
+        throw const FormatException('需要本轮用户明确要求入包');
+      }
+      // Repeated tool calls in one reply must not duplicate the same item.
+      final operationId = '${userMessage.id}:${name.toLowerCase()}';
+      if (_inventoryAddResults[operationId] case final String previous) {
+        return previous;
+      }
+      final item = AlchemyItem(
+        instanceId: 'item_${DateTime.now().microsecondsSinceEpoch}',
+        templateId: 'custom_item',
+        quality: 50,
+        quantity: quantity,
+        tagIds: const [],
+        acquiredAt: DateTime.now(),
+        customName: name,
+        customDescription: description,
+        customCategories: categories,
+        customTags: tags.isEmpty ? categories : tags,
+        customType: AlchemyItemType.product,
+      );
+      alchemyState = AlchemyState(
+        inventory: [...alchemyState.inventory, item],
+        history: alchemyState.history,
+        gatherAvailableAtByStage: alchemyState.gatherAvailableAtByStage,
+      );
+      _changed();
+      final output = jsonEncode({
+        'ok': true,
+        'item': _alchemyItemToolJson(item),
+        'message': '物品和描述标签已写入真实背包。',
+      });
+      _inventoryAddResults[operationId] = output;
+      return output;
+    } on FormatException catch (error) {
+      return jsonEncode({
+        'ok': false,
+        'error': 'invalid_item',
+        'message': error.message,
+      });
+    }
+  }
 
   String _alchemyInventoryToolResult() => jsonEncode({
     'ok': true,
@@ -4584,7 +4692,8 @@ $japanesePunctuationRule
       left.customName == right.customName &&
       left.customDescription == right.customDescription &&
       left.customType == right.customType &&
-      listEquals(left.customCategories, right.customCategories);
+      listEquals(left.customCategories, right.customCategories) &&
+      listEquals(left.customTags, right.customTags);
 
   String _gatherCurrentLocationToolResult(Map<String, dynamic> args) {
     if (!_gatheringSceneReady) {
@@ -5036,7 +5145,11 @@ $japanesePunctuationRule
   }
 
   void clearChatHistory({bool clearLongTermMemory = false}) {
-    messages = [_initialMessage];
+    _inventoryAddResults.clear();
+    _imageFoodInvitationMessageId = null;
+    messages = [
+      ChatMessage(text: activeCharacterProfile.initialMessage, isUser: false),
+    ];
     recentMemories = <String>[];
     _recentMemoryCheckpoints = <Map<String, Object>>[];
     lastRecentMemoryMessageId = null;
@@ -5044,6 +5157,12 @@ $japanesePunctuationRule
     if (clearLongTermMemory) {
       memorySummary = '';
       memoryEditRevision += 1;
+      characterState = CharacterState.newSave();
+      characterMood = CharacterMood.neutral;
+      relationshipPoints = 0;
+      storyClock = StoryClock();
+      _lastAtelierFoodDay = 0;
+      if (storyClockEnabled) sceneTime = sceneTimeForStoryHour(storyClock.hour);
     }
     // Invalidate pending replies, speech and memory consolidation from the
     // deleted conversation using the same reset path as loading a save.

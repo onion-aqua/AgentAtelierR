@@ -206,9 +206,9 @@ class _AlchemyScreenState extends State<AlchemyScreen> {
           title: Text(language.text('当前库存', 'Inventory', 'コンテナ')),
           subtitle: Text(
             language.text(
-              '在聊天中告诉莱莎想制作什么，配方与选材由她根据真实库存决定。',
-              'Tell Ryza what to make in chat. She decides the recipe and ingredients from the real inventory.',
-              'チャットで作りたい物を伝えると、ライザが実際の在庫からレシピと素材を決めます。',
+              '开启Agent后，可在聊天中让莱莎把食物、书本或生活用品放入背包，也可根据库存调合。',
+              'With Agent enabled, ask Ryza to store food, books or everyday items in chat, or synthesize from real inventory.',
+              'Agentを有効にすると、チャットで食べ物や本、日用品を入れたり、実際の在庫から調合できます。',
             ),
           ),
           trailing: Text(
@@ -275,10 +275,12 @@ class _AlchemyScreenState extends State<AlchemyScreen> {
     );
   }
 
-  List<String> _tagNames(AlchemyItem item) => item.tagIds
-      .map((id) => AlchemyCatalog.tags[id]?.name)
-      .whereType<String>()
-      .toList(growable: false);
+  List<String> _tagNames(AlchemyItem item) => {
+    ...item.tagIds
+        .map((id) => AlchemyCatalog.tags[id]?.name)
+        .whereType<String>(),
+    ...item.customTags,
+  }.toList(growable: false);
 
   String _formatTime(DateTime value) =>
       '${value.year}-${value.month.toString().padLeft(2, '0')}-${value.day.toString().padLeft(2, '0')} '
@@ -306,9 +308,9 @@ class _EmptyInventoryNotice extends StatelessWidget {
           Expanded(
             child: Text(
               language.text(
-                '背包是空的。请先在世界地图进入具体场景，再回到对话中和莱莎一起采集；调合配方由莱莎根据实际素材决定。',
-                'The inventory is empty. Enter a location from the world map, then gather through conversation with Ryza. She will design recipes from the materials you actually collect.',
-                'コンテナは空です。ワールドマップから場所に入り、ライザとの会話で採取してください。調合レシピは集めた素材からライザが考えます。',
+                '背包是空的。开启Agent后，可说“把一个苹果放入背包”；也可进入地图场景采集素材，再让莱莎调合。',
+                'The inventory is empty. Enable Agent and ask to put an apple in the bag, or enter a map location to gather materials for synthesis.',
+                'コンテナは空です。Agentを有効にして「リンゴを入れて」と頼むか、マップで素材を採取してライザに調合してもらえます。',
               ),
             ),
           ),

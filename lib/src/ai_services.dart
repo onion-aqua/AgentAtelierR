@@ -193,6 +193,7 @@ class OpenAiCompatibleClient {
       _inspectQuestsTool,
       _createQuestTool,
       _inspectAlchemyInventoryTool,
+      _addInventoryItemTool,
       _gatherCurrentLocationTool,
       _synthesizeCustomItemTool,
       _consumeInventoryItemTool,
@@ -534,6 +535,7 @@ class OpenAiCompatibleClient {
         'inspect_quests' ||
         'create_quest' ||
         'inspect_alchemy_inventory' ||
+        'add_inventory_item' ||
         'gather_current_location' ||
         'synthesize_custom_item' ||
         'consume_inventory_item' ||
@@ -640,6 +642,40 @@ class OpenAiCompatibleClient {
       'parameters': {
         'type': 'object',
         'properties': <String, dynamic>{},
+        'additionalProperties': false,
+      },
+    },
+  };
+
+  static const Map<String, dynamic> _addInventoryItemTool = {
+    'type': 'function',
+    'function': {
+      'name': 'add_inventory_item',
+      'description': '用户本轮明确要求把物品放入莱莎背包时调用，支持苹果、书籍、生活用品等非素材物品，无需先旅行或采集。依据用户指定属性与实际物品语义生成categories和tags；苹果可标注food、水果、新鲜，模型玩具苹果不能标为可食用。只写入本轮明确要求的名称与数量，不因提及、假设、否定或历史入包叙述重复添加。同种物品本轮合并数量后调用一次。成功后才宣称入包。',
+      'parameters': {
+        'type': 'object',
+        'properties': {
+          'name': {'type': 'string', 'description': '物品名称，1 至 40 字符'},
+          'description': {
+            'type': 'string',
+            'description': '按用户设定描述物品外观或用途，最多 200 字符，使用界面语言',
+          },
+          'categories': {
+            'type': 'array',
+            'description': '语义分类，明确可食用时包含food或drink；其他分类按物品生成，每项不超过30字符',
+            'items': {'type': 'string'},
+            'maxItems': 6,
+          },
+          'tags': {
+            'type': 'array',
+            'description':
+                '用户已指定的标签优先；未指定时根据物品生成描述性标签，使用界面语言，每项不超过30字符。标签不直接更改人物数值或炼金效果。',
+            'items': {'type': 'string'},
+            'maxItems': 6,
+          },
+          'quantity': {'type': 'integer', 'minimum': 1, 'maximum': 99},
+        },
+        'required': ['name'],
         'additionalProperties': false,
       },
     },

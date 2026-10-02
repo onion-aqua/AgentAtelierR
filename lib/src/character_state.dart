@@ -23,6 +23,7 @@ class CharacterState {
   /// existing installations and state-delta tests retain their behavior.
   factory CharacterState.newSave() => CharacterState(
     values: const {'mood': 0, 'energy': 100, 'closeness': 0, 'curiosity': 20},
+    bands: const {'mood': 1, 'energy': 2, 'closeness': 0, 'curiosity': 0},
   );
 
   final Map<String, int> values;
@@ -32,6 +33,36 @@ class CharacterState {
   final String emotion;
   final String reason;
   final DateTime? updatedAt;
+
+  CharacterState recoverAfterTime(String turn, String kind, int minutes) {
+    final marker = '$turn:recovery';
+    if (settled.contains(marker)) return this;
+    final energy = values['energy'] ?? 0;
+    final target = switch (kind) {
+      'sleep' when minutes >= 180 => energy < 80 ? 80 : energy,
+      'time_skip' when minutes >= 1440 => energy < 70 ? 70 : energy,
+      'rest' when minutes >= 15 => (energy + 10).clamp(0, 100),
+      _ => null,
+    };
+    if (target == null) return this;
+    final next = applyItemEffect(
+      changes: {'energy': target - energy},
+      reason: kind == 'time_skip' ? '剧情跨日后的日常恢复' : '休息恢复精力',
+    );
+    return CharacterState(
+      values: next.values,
+      bands: next.bands,
+      delta: next.delta,
+      emotion: next.emotion,
+      reason: next.reason,
+      updatedAt: next.updatedAt,
+      settled: [
+        ...settled,
+        marker,
+      ].reversed.take(100).toList().reversed.toList(),
+    );
+  }
+
   static const emotions = {
     'neutral',
     'happy',

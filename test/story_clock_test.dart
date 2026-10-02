@@ -73,6 +73,38 @@ void main() {
     );
   });
 
+  test(
+    'new save resets character state independently from the previous save',
+    () async {
+      SharedPreferences.setMockInitialValues({});
+      final controller = await AppController.load();
+      addTearDown(controller.dispose);
+      await controller.createLocalSlot(0, name: '状态存档');
+      final revision = controller.dataRevision;
+      expect(
+        controller.settleCharacterState('state-turn', {
+          'state_delta': {
+            'energy': -5,
+            'mood': -5,
+            'closeness': 1,
+            'curiosity': 1,
+          },
+          'emotion': 'sad',
+          'reason': '测试状态变化',
+        }, revision),
+        isTrue,
+      );
+      expect(controller.characterState.values['energy'], 95);
+      await controller.saveToLocalSlot(0);
+      await controller.createLocalSlot(1, name: '全新状态');
+      expect(controller.characterState.values['energy'], 100);
+      expect(controller.characterState.emotion, 'neutral');
+      await controller.loadFromLocalSlot(0);
+      expect(controller.characterState.values['energy'], 95);
+      expect(controller.characterState.emotion, 'sad');
+    },
+  );
+
   test('manual scene switching advances the story clock', () async {
     SharedPreferences.setMockInitialValues({});
     final controller = await AppController.load();
@@ -99,6 +131,49 @@ void main() {
     );
     expect(controller.storyClock.satiety, 0);
     expect(controller.characterState.values['energy'], 63);
+  });
+
+  test('sleep and multi-day skips restore energy to a usable level', () async {
+    SharedPreferences.setMockInitialValues({});
+    final controller = await AppController.load();
+    addTearDown(controller.dispose);
+    controller.setStoryClockEnabled(true);
+    controller.characterState = controller.characterState.applyItemEffect(
+      changes: {'energy': -55},
+      reason: '测试疲劳',
+    );
+    expect(controller.characterState.values['energy'], 10);
+    expect(
+      controller.settleStoryTime('sleep-recovery', {
+        'time_advance': {'kind': 'sleep', 'minutes': 720},
+      }, controller.dataRevision),
+      isTrue,
+    );
+    expect(
+      controller.characterState.values['energy'],
+      greaterThanOrEqualTo(80),
+    );
+    controller.characterState = controller.characterState.applyItemEffect(
+      changes: {'energy': -70},
+      reason: '测试疲劳',
+    );
+    final beforeSkip = controller.storyClock.totalMinutes;
+    expect(
+      controller.settleStoryTime('skip-recovery', {
+        'time_advance': {'kind': 'time_skip', 'minutes': 2880},
+      }, controller.dataRevision),
+      isTrue,
+    );
+    expect(controller.characterState.values['energy'], 70);
+    expect(controller.storyClock.totalMinutes, beforeSkip + 2880);
+    expect(
+      controller.settleStoryTime(
+        'skip-recovery',
+        null,
+        controller.dataRevision,
+      ),
+      isFalse,
+    );
   });
 
   test('eating consumes only edible inventory and restores satiety', () async {

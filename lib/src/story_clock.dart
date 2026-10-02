@@ -24,20 +24,20 @@ class StoryClock {
       'meal': (10, 60),
       'rest': (15, 120),
       'sleep': (180, 720),
-      'time_skip': (1, 1440),
+      'time_skip': (1, 1440 * 30),
     };
     final raw = proposal?['time_advance'];
     final kind = raw is Map ? raw['kind'] : null;
     final minutes = raw is Map ? raw['minutes'] : null;
     final range = ranges[kind];
-    final duration = range != null && minutes is int
+    final duration = range != null && minutes is int && minutes > 0
         ? minutes.clamp(range.$1, range.$2)
         : 2;
     return advanceMinutes(duration, turn: turn);
   }
 
   StoryClock advanceMinutes(int minutes, {String? turn, int satietyGain = 0}) {
-    final duration = minutes.clamp(0, 1440);
+    final duration = minutes.clamp(0, 1440 * 30);
     final nextMinutes = totalMinutes + duration;
     final elapsedHours = nextMinutes ~/ 60 - totalMinutes ~/ 60;
     return StoryClock(

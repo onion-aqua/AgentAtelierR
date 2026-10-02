@@ -67,6 +67,7 @@ class AlchemyItem {
     this.customName,
     this.customDescription,
     this.customCategories = const [],
+    this.customTags = const [],
     this.customType,
   });
 
@@ -79,6 +80,9 @@ class AlchemyItem {
   final String? customName;
   final String? customDescription;
   final List<String> customCategories;
+
+  /// Descriptive labels, separate from traits that affect synthesis.
+  final List<String> customTags;
   final AlchemyItemType? customType;
 
   bool get isCustom => customName?.trim().isNotEmpty == true;
@@ -129,6 +133,7 @@ class AlchemyItem {
     customName: customName,
     customDescription: customDescription,
     customCategories: customCategories,
+    customTags: customTags,
     customType: customType,
   );
 
@@ -143,6 +148,7 @@ class AlchemyItem {
     if (customDescription?.trim().isNotEmpty == true)
       'customDescription': customDescription,
     if (customCategories.isNotEmpty) 'customCategories': customCategories,
+    if (customTags.isNotEmpty) 'customTags': customTags,
     if (customType != null) 'customType': customType!.name,
   };
 
@@ -175,6 +181,13 @@ class AlchemyItem {
       customType: AlchemyItemType.values
           .where((value) => value.name == json['customType'])
           .firstOrNull,
+      customTags: (json['customTags'] as List<dynamic>? ?? const [])
+          .whereType<String>()
+          .map((value) => value.trim())
+          .where((value) => value.isNotEmpty && value.length <= 30)
+          .toSet()
+          .take(6)
+          .toList(growable: false),
     );
   }
 }

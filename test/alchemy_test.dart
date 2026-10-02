@@ -21,6 +21,27 @@ void main() {
     controller.dispose();
   });
 
+  test('explicitly adding a non-material item stores generated categories and tags', () async {
+    SharedPreferences.setMockInitialValues({});
+    final controller = await AppController.load();
+    addTearDown(controller.dispose);
+    controller.setAgentEnabled(true);
+    controller.addUserMessage('把一个苹果装入背包');
+    final result = jsonDecode(
+      controller.queryContextTool('add_inventory_item', {
+        'name': '苹果',
+        'description': '清甜的红色水果',
+        'categories': ['food', '水果'],
+        'tags': ['新鲜', '可食用'],
+      }),
+    ) as Map<String, dynamic>;
+    expect(result['ok'], isTrue);
+    final item = controller.alchemyState.inventory.single;
+    expect(item.displayName, '苹果');
+    expect(item.categories, containsAll(['food', '水果']));
+    expect(item.customTags, containsAll(['新鲜', '可食用']));
+  });
+
   test(
     'map gathering fills inventory and LLM-defined synthesis consumes it',
     () async {
@@ -317,14 +338,19 @@ void main() {
 
       expect(synthesis['ok'], isTrue);
       expect(synthesis['kind'], 'llm_recipe');
-      expect((synthesis['result'] as Map<String, dynamic>)['name'], '旅行保温杯');
+      // Both outcomes are valid; this tool uses the real randomized synthesis.
+      final resultName = synthesis['success'] == true ? '旅行保温杯' : '调合残渣';
+      expect((synthesis['result'] as Map<String, dynamic>)['name'], resultName);
       expect(controller.alchemyState.history.first.result.isCustom, isTrue);
-      expect(controller.alchemyState.history.first.result.displayName, '旅行保温杯');
+      expect(
+        controller.alchemyState.history.first.result.displayName,
+        resultName,
+      );
 
       final restored = AlchemyState.fromJson(controller.alchemyState.toJson());
-      expect(restored.history.first.result.displayName, '旅行保温杯');
+      expect(restored.history.first.result.displayName, resultName);
       expect(
-        restored.inventory.any((item) => item.displayName == '旅行保温杯'),
+        restored.inventory.any((item) => item.displayName == resultName),
         isTrue,
       );
       controller.dispose();

@@ -121,7 +121,7 @@ extension on _SettingsCategory {
       'Memory, local import, export and chat history',
       '長期記憶、データの読み込み・書き出し、会話履歴',
     ),
-    _SettingsCategory.about => 'AgentAtelierR · 1.0.3 beta6',
+    _SettingsCategory.about => 'AgentAtelierR · 1.0.0 DX RC4',
   };
 
   IconData get icon => switch (this) {
@@ -1222,9 +1222,9 @@ class SettingsScreenState extends State<SettingsScreen> {
                   title: const Text('AgentAtelierR'),
                   subtitle: Text(
                     language.text(
-                      '版本 1.0.3 beta6',
-                      'Version 1.0.3 beta6',
-                      'バージョン 1.0.3 beta6',
+                      '版本 1.0.0 DX RC4',
+                      'Version 1.0.0 DX RC4',
+                      'バージョン 1.0.0 DX RC4',
                     ),
                   ),
                 ),
@@ -1316,9 +1316,9 @@ class SettingsScreenState extends State<SettingsScreen> {
         ),
         content: Text(
           language.text(
-            '是否同时删除长期记忆？保留记忆时，${_activeCharacterName(controller, AppLanguage.chinese)}仍会记得之前记录的事情。\n\n仅清除当前对话的数据，不影响已有存档、任务和地图进度。清除操作无法撤销。',
-            'Also delete long-term memory? If you keep it, ${_activeCharacterName(controller, AppLanguage.english)} can still recall previously recorded events.\n\nThis clears the current conversation only. Existing save slots, quests and map progress are unaffected. This cannot be undone.',
-            '長期記憶も削除しますか？記憶を残すと、${_activeCharacterName(controller, AppLanguage.japanese)}は記録された出来事を引き続き思い出せます。\n\n現在の会話のみが対象です。既存のセーブ、クエスト、マップの進行には影響しません。元に戻すことはできません。',
+            '是否同时删除长期记忆？保留记忆时，${_activeCharacterName(controller, AppLanguage.chinese)}仍会记得之前记录的事情。\n\n一并删除长期记忆时，当前人物状态、关系点数与剧情时钟也恢复初始值；保留记忆则保留状态。不影响已保存的存档、任务和地图进度。清除操作无法撤销。',
+            'Also delete long-term memory? If you keep it, ${_activeCharacterName(controller, AppLanguage.english)} can still recall previously recorded events.\n\nDeleting memory also resets current character stats, relationship points and story time. Keeping memory keeps these states. Saved slots, quests and map progress are unaffected. This cannot be undone.',
+            '長期記憶も削除しますか？記憶を残すと、${_activeCharacterName(controller, AppLanguage.japanese)}は記録された出来事を引き続き思い出せます。\n\n記憶も削除すると現在の状態・関係ポイント・物語時間が初期化されます。記憶を残すと状態も維持されます。保存済みのセーブ、クエスト、マップには影響しません。元に戻すことはできません。',
           ),
         ),
         actions: [
