@@ -16,24 +16,31 @@ Future<void> showLocalSaveDialog(
 ) async {
   await showDialog<void>(
     context: context,
+    useRootNavigator: false,
     barrierColor: Colors.black45,
     builder: (dialogContext) => Theme(
       data: atelierTheme(controller.accentTheme, Brightness.dark),
-      child: _LocalSaveDialog(controller: controller),
+      child: LocalSavePage(controller: controller, embedded: false),
     ),
   );
 }
 
-class _LocalSaveDialog extends StatefulWidget {
-  const _LocalSaveDialog({required this.controller});
+/// Complete save management, usable as a page inside the virtual phone.
+class LocalSavePage extends StatefulWidget {
+  const LocalSavePage({
+    super.key,
+    required this.controller,
+    this.embedded = true,
+  });
 
   final AppController controller;
+  final bool embedded;
 
   @override
-  State<_LocalSaveDialog> createState() => _LocalSaveDialogState();
+  State<LocalSavePage> createState() => _LocalSavePageState();
 }
 
-class _LocalSaveDialogState extends State<_LocalSaveDialog> {
+class _LocalSavePageState extends State<LocalSavePage> {
   bool _busy = false;
 
   Future<void> _manage(int index, String action) async {
@@ -46,7 +53,13 @@ class _LocalSaveDialogState extends State<_LocalSaveDialog> {
         );
         final name = await showDialog<String>(
           context: context,
+          useRootNavigator: false,
           builder: (context) => AlertDialog(
+            insetPadding: const EdgeInsets.symmetric(
+              horizontal: 14,
+              vertical: 16,
+            ),
+            scrollable: true,
             title: Text(_text('重命名存档', 'Rename save', 'セーブ名の変更')),
             content: TextField(
               controller: input,
@@ -72,7 +85,13 @@ class _LocalSaveDialogState extends State<_LocalSaveDialog> {
       } else if (action == 'export') {
         final includeHistory = await showDialog<bool>(
           context: context,
+          useRootNavigator: false,
           builder: (context) => AlertDialog(
+            insetPadding: const EdgeInsets.symmetric(
+              horizontal: 14,
+              vertical: 16,
+            ),
+            scrollable: true,
             title: Text(
               _text(
                 '是否包含历史对话？',
@@ -170,7 +189,13 @@ class _LocalSaveDialogState extends State<_LocalSaveDialog> {
   Future<bool> _confirm({required String title, required String body}) async {
     return await showDialog<bool>(
           context: context,
+          useRootNavigator: false,
           builder: (context) => AlertDialog(
+            insetPadding: const EdgeInsets.symmetric(
+              horizontal: 14,
+              vertical: 16,
+            ),
+            scrollable: true,
             title: Text(title),
             content: Text(body),
             actions: [
@@ -249,7 +274,10 @@ class _LocalSaveDialogState extends State<_LocalSaveDialog> {
     );
     final name = await showDialog<String>(
       context: context,
+      useRootNavigator: false,
       builder: (context) => AlertDialog(
+        insetPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 16),
+        scrollable: true,
         title: Text(_text('新建存档', 'New save', '新規セーブ')),
         content: TextField(
           controller: input,
@@ -317,7 +345,7 @@ class _LocalSaveDialogState extends State<_LocalSaveDialog> {
     try {
       await widget.controller.loadFromLocalSlot(index);
       if (!mounted) return;
-      Navigator.pop(context);
+      if (!widget.embedded) Navigator.pop(context);
       messenger.showSnackBar(
         SnackBar(content: Text(_text('读取完成', 'Save loaded', 'ロードしました'))),
       );
@@ -328,7 +356,8 @@ class _LocalSaveDialogState extends State<_LocalSaveDialog> {
           content: Text('${_text('读取失败', 'Load failed', 'ロード失敗')}: $error'),
         ),
       );
-      setState(() => _busy = false);
+    } finally {
+      if (mounted) setState(() => _busy = false);
     }
   }
 
@@ -359,13 +388,212 @@ class _LocalSaveDialogState extends State<_LocalSaveDialog> {
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => ListenableBuilder(
+    listenable: widget.controller,
+    builder: (context, _) => _buildContent(context),
+  );
+
+  Widget _buildContent(BuildContext context) {
     final slots = widget.controller.localSaveSlots;
     final theme = Theme.of(context);
     final dark = theme.brightness == Brightness.dark;
     final foreground = theme.colorScheme.onSurface;
     final secondary = foreground.withValues(alpha: 0.72);
     final tertiary = foreground.withValues(alpha: 0.60);
+    final content = Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(18, 12, 8, 8),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              if (!widget.embedded)
+                Row(
+                  children: [
+                    Icon(Icons.save_outlined, color: foreground),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        _text('本地存档', 'Local saves', 'ローカルセーブ'),
+                        style: TextStyle(
+                          color: foreground,
+                          fontSize: 19,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ),
+                    IconButton(
+                      onPressed: _busy ? null : () => Navigator.pop(context),
+                      tooltip: _text('关闭', 'Close', '閉じる'),
+                      color: foreground,
+                      icon: const Icon(Icons.close_rounded),
+                    ),
+                  ],
+                ),
+              Align(
+                alignment: AlignmentDirectional.centerStart,
+                child: TextButton.icon(
+                  key: const ValueKey('local-save-create'),
+                  onPressed: _busy ? null : _create,
+                  icon: const Icon(Icons.add_box_outlined),
+                  label: Text(_text('新建存档', 'New save', '新規セーブ')),
+                  style: TextButton.styleFrom(foregroundColor: foreground),
+                ),
+              ),
+            ],
+          ),
+        ),
+        Divider(height: 1, color: foreground.withValues(alpha: .18)),
+        Expanded(
+          child: ListView.separated(
+            padding: const EdgeInsets.all(12),
+            itemCount: slots.length,
+            separatorBuilder: (_, _) => const SizedBox(height: 8),
+            itemBuilder: (context, index) {
+              final slot = slots[index];
+              return GlassContentCard(
+                key: ValueKey('local-save-slot-$index'),
+                liquidGlass: widget.controller.liquidGlassChatUi,
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          CircleAvatar(
+                            radius: 16,
+                            backgroundColor: foreground.withValues(alpha: .12),
+                            foregroundColor: foreground,
+                            child: Text('${index + 1}'),
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Text(
+                              slot == null
+                                  ? _text('空存档位', 'Empty slot', '空きスロット')
+                                  : slot.name.isEmpty
+                                  ? slot.location
+                                  : slot.name,
+                              style: TextStyle(
+                                color: foreground,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                          if (widget.controller.activeLocalSaveSlot == index)
+                            Tooltip(
+                              message: _text('当前存档', 'Active save', '現在のセーブ'),
+                              child: Icon(
+                                Icons.check_circle_rounded,
+                                color: theme.colorScheme.primary,
+                                size: 20,
+                              ),
+                            ),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      if (slot != null) ...[
+                        Text(
+                          _formatTime(slot.savedAt),
+                          style: TextStyle(color: secondary),
+                        ),
+                        const SizedBox(height: 4),
+                      ],
+                      Text(
+                        slot == null
+                            ? _text(
+                                '点击保存当前进度',
+                                'Save current progress',
+                                '現在の進行状況を保存',
+                              )
+                            : '${slot.messageCount} ${_text('条消息', 'messages', '件のメッセージ')}\n${slot.preview}',
+                        maxLines: slot == null ? null : 3,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(color: tertiary),
+                      ),
+                      const SizedBox(height: 6),
+                      Wrap(
+                        alignment: WrapAlignment.end,
+                        crossAxisAlignment: WrapCrossAlignment.center,
+                        spacing: 8,
+                        children: [
+                          if (slot != null)
+                            TextButton.icon(
+                              key: ValueKey('local-save-load-$index'),
+                              onPressed:
+                                  _busy ||
+                                      widget.controller.activeLocalSaveSlot ==
+                                          index
+                                  ? null
+                                  : () => _load(index),
+                              label: Text(_text('读取', 'Load', 'ロード')),
+                              style: TextButton.styleFrom(
+                                foregroundColor: foreground,
+                              ),
+                              icon: Icon(
+                                widget.controller.activeLocalSaveSlot == index
+                                    ? Icons.check_rounded
+                                    : Icons.download_rounded,
+                              ),
+                            ),
+                          TextButton.icon(
+                            key: ValueKey('local-save-write-$index'),
+                            onPressed: _busy
+                                ? null
+                                : () => _save(index, slot != null),
+                            label: Text(_text('保存', 'Save', 'セーブ')),
+                            style: TextButton.styleFrom(
+                              foregroundColor: foreground,
+                            ),
+                            icon: const Icon(Icons.save_rounded),
+                          ),
+                          PopupMenuButton<String>(
+                            key: ValueKey('local-save-manage-$index'),
+                            useRootNavigator: false,
+                            enabled: !_busy,
+                            tooltip: _text('更多操作', 'More actions', 'その他の操作'),
+                            icon: Icon(Icons.more_vert, color: secondary),
+                            onSelected: (action) => action == 'delete'
+                                ? _delete(index)
+                                : _manage(index, action),
+                            itemBuilder: (_) => [
+                              if (slot != null)
+                                PopupMenuItem(
+                                  value: 'rename',
+                                  child: Text(_text('重命名', 'Rename', '名前変更')),
+                                ),
+                              if (slot != null)
+                                PopupMenuItem(
+                                  value: 'export',
+                                  child: Text(_text('导出', 'Export', 'エクスポート')),
+                                ),
+                              PopupMenuItem(
+                                value: 'import',
+                                child: Text(_text('导入', 'Import', 'インポート')),
+                              ),
+                              if (slot != null)
+                                PopupMenuItem(
+                                  value: 'delete',
+                                  child: Text(_text('删除', 'Delete', '削除')),
+                                ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            },
+          ),
+        ),
+      ],
+    );
+    if (widget.embedded) {
+      return ColoredBox(color: theme.colorScheme.surface, child: content);
+    }
     return Dialog(
       backgroundColor: Colors.transparent,
       surfaceTintColor: Colors.transparent,
@@ -385,204 +613,7 @@ class _LocalSaveDialogState extends State<_LocalSaveDialog> {
               offset: Offset(0, 14),
             ),
           ],
-          child: Column(
-            children: [
-              Padding(
-                padding: const EdgeInsets.fromLTRB(18, 12, 8, 8),
-                child: Row(
-                  children: [
-                    Icon(Icons.save_outlined, color: foreground),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: Text(
-                        _text('本地存档', 'Local saves', 'ローカルセーブ'),
-                        style: TextStyle(
-                          color: foreground,
-                          fontSize: 19,
-                          fontWeight: FontWeight.w700,
-                        ),
-                      ),
-                    ),
-                    TextButton.icon(
-                      onPressed: _busy ? null : _create,
-                      icon: const Icon(Icons.add_box_outlined),
-                      label: Text(_text('新建存档', 'New save', '新規セーブ')),
-                      style: TextButton.styleFrom(foregroundColor: foreground),
-                    ),
-                    IconButton(
-                      onPressed: _busy ? null : () => Navigator.pop(context),
-                      tooltip: _text('关闭', 'Close', '閉じる'),
-                      color: foreground,
-                      icon: const Icon(Icons.close_rounded),
-                    ),
-                  ],
-                ),
-              ),
-              Divider(height: 1, color: foreground.withValues(alpha: .18)),
-              Expanded(
-                child: ListView.separated(
-                  padding: const EdgeInsets.all(12),
-                  itemCount: slots.length,
-                  separatorBuilder: (_, _) => const SizedBox(height: 8),
-                  itemBuilder: (context, index) {
-                    final slot = slots[index];
-                    return GlassContentCard(
-                      liquidGlass: widget.controller.liquidGlassChatUi,
-                      child: Padding(
-                        padding: const EdgeInsets.all(12),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.stretch,
-                          children: [
-                            Row(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                CircleAvatar(
-                                  radius: 16,
-                                  backgroundColor: foreground.withValues(
-                                    alpha: .12,
-                                  ),
-                                  foregroundColor: foreground,
-                                  child: Text('${index + 1}'),
-                                ),
-                                const SizedBox(width: 10),
-                                Expanded(
-                                  child: Text(
-                                    slot == null
-                                        ? _text('空存档位', 'Empty slot', '空きスロット')
-                                        : slot.name.isEmpty
-                                        ? slot.location
-                                        : slot.name,
-                                    style: TextStyle(
-                                      color: foreground,
-                                      fontWeight: FontWeight.w600,
-                                    ),
-                                  ),
-                                ),
-                                if (widget.controller.activeLocalSaveSlot ==
-                                    index)
-                                  Tooltip(
-                                    message: _text(
-                                      '当前存档',
-                                      'Active save',
-                                      '現在のセーブ',
-                                    ),
-                                    child: Icon(
-                                      Icons.check_circle_rounded,
-                                      color: theme.colorScheme.primary,
-                                      size: 20,
-                                    ),
-                                  ),
-                              ],
-                            ),
-                            const SizedBox(height: 8),
-                            if (slot != null) ...[
-                              Text(
-                                _formatTime(slot.savedAt),
-                                style: TextStyle(color: secondary),
-                              ),
-                              const SizedBox(height: 4),
-                            ],
-                            Text(
-                              slot == null
-                                  ? _text(
-                                      '点击保存当前进度',
-                                      'Save current progress',
-                                      '現在の進行状況を保存',
-                                    )
-                                  : '${slot.messageCount} ${_text('条消息', 'messages', '件のメッセージ')}\n${slot.preview}',
-                              maxLines: slot == null ? null : 3,
-                              overflow: TextOverflow.ellipsis,
-                              style: TextStyle(color: tertiary),
-                            ),
-                            const SizedBox(height: 6),
-                            Wrap(
-                              alignment: WrapAlignment.end,
-                              crossAxisAlignment: WrapCrossAlignment.center,
-                              spacing: 8,
-                              children: [
-                                if (slot != null)
-                                  TextButton.icon(
-                                    onPressed:
-                                        _busy ||
-                                            widget
-                                                    .controller
-                                                    .activeLocalSaveSlot ==
-                                                index
-                                        ? null
-                                        : () => _load(index),
-                                    label: Text(_text('读取', 'Load', 'ロード')),
-                                    style: TextButton.styleFrom(
-                                      foregroundColor: foreground,
-                                    ),
-                                    icon: Icon(
-                                      widget.controller.activeLocalSaveSlot ==
-                                              index
-                                          ? Icons.check_rounded
-                                          : Icons.download_rounded,
-                                    ),
-                                  ),
-                                TextButton.icon(
-                                  onPressed: _busy
-                                      ? null
-                                      : () => _save(index, slot != null),
-                                  label: Text(_text('保存', 'Save', 'セーブ')),
-                                  style: TextButton.styleFrom(
-                                    foregroundColor: foreground,
-                                  ),
-                                  icon: const Icon(Icons.save_rounded),
-                                ),
-                                PopupMenuButton<String>(
-                                  enabled: !_busy,
-                                  tooltip: _text(
-                                    '更多操作',
-                                    'More actions',
-                                    'その他の操作',
-                                  ),
-                                  icon: Icon(Icons.more_vert, color: secondary),
-                                  onSelected: (action) => action == 'delete'
-                                      ? _delete(index)
-                                      : _manage(index, action),
-                                  itemBuilder: (_) => [
-                                    if (slot != null)
-                                      PopupMenuItem(
-                                        value: 'rename',
-                                        child: Text(
-                                          _text('重命名', 'Rename', '名前変更'),
-                                        ),
-                                      ),
-                                    if (slot != null)
-                                      PopupMenuItem(
-                                        value: 'export',
-                                        child: Text(
-                                          _text('导出', 'Export', 'エクスポート'),
-                                        ),
-                                      ),
-                                    PopupMenuItem(
-                                      value: 'import',
-                                      child: Text(
-                                        _text('导入', 'Import', 'インポート'),
-                                      ),
-                                    ),
-                                    if (slot != null)
-                                      PopupMenuItem(
-                                        value: 'delete',
-                                        child: Text(
-                                          _text('删除', 'Delete', '削除'),
-                                        ),
-                                      ),
-                                  ],
-                                ),
-                              ],
-                            ),
-                          ],
-                        ),
-                      ),
-                    );
-                  },
-                ),
-              ),
-            ],
-          ),
+          child: content,
         ),
       ),
     );

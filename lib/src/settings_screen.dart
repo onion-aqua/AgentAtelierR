@@ -6,6 +6,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'ai_services.dart';
+import 'relay/relay_service.dart';
+import 'relay/relay_chat_page.dart';
 import 'app_controller.dart';
 import 'app_localization.dart';
 import 'app_theme.dart';
@@ -24,6 +26,9 @@ import 'local_tts_settings.dart';
 import 'memory_timeline.dart';
 import 'manual_memory_consolidation.dart';
 import 'settings_slots.dart';
+import 'settings_section.dart';
+export 'settings_section.dart';
+export 'settings_shortcut_picker.dart';
 import 'settings_slot_selector.dart';
 import 'openai_settings_dialog.dart';
 import 'legacy_data_converter.dart';
@@ -61,91 +66,23 @@ List<Widget> _settingsTiles(
       entry,
 ];
 
-enum _SettingsCategory { appearance, audio, profile, ai, roleplay, data, about }
-
-extension on _SettingsCategory {
-  String title(AppLanguage language) => switch (this) {
-    _SettingsCategory.appearance => language.text(
-      '界面与场景',
-      'Appearance & scene',
-      '表示とシーン',
-    ),
-    _SettingsCategory.audio => language.text(
-      '声音与语音',
-      'Sound & speech',
-      'サウンドと音声',
-    ),
-    _SettingsCategory.profile => language.text(
-      '用户设定',
-      'Your profile',
-      'ユーザー設定',
-    ),
-    _SettingsCategory.ai => language.text('AI 接口', 'AI connections', 'AI接続'),
-    _SettingsCategory.roleplay => language.text(
-      '角色与世界',
-      'Character & world',
-      'キャラクターと世界',
-    ),
-    _SettingsCategory.data => language.text('数据管理', 'Local data', 'データ管理'),
-    _SettingsCategory.about => language.text('关于', 'About', 'このアプリについて'),
-  };
-
-  String description(AppLanguage language) => switch (this) {
-    _SettingsCategory.appearance => language.text(
-      '主题、语言、玻璃效果、视线与帧率',
-      'Theme, languages, glass, gaze and frame rate',
-      'テーマ、言語、ガラス、視線、フレームレート',
-    ),
-    _SettingsCategory.audio => language.text(
-      '点击语音、背景音乐、环境音与 TTS',
-      'Tap voice, music, ambience and TTS',
-      'タップ音声、BGM、環境音、TTS',
-    ),
-    _SettingsCategory.profile => language.text(
-      '称呼、自画像、关系与互动偏好',
-      'Name, self-description and interaction preferences',
-      '呼び方、プロフィール、関係、会話の好み',
-    ),
-    _SettingsCategory.ai => language.text(
-      '模型服务、推理、上下文与 Agent',
-      'Providers, reasoning, context and agent tools',
-      'モデル、推論、コンテキスト、エージェント',
-    ),
-    _SettingsCategory.roleplay => language.text(
-      '人物设定、世界书与 NPC',
-      'Persona, world book and NPCs',
-      '人物設定、ワールドブック、NPC',
-    ),
-    _SettingsCategory.data => language.text(
-      '长期记忆、本地导入导出与聊天记录',
-      'Memory, local import, export and chat history',
-      '長期記憶、データの読み込み・書き出し、会話履歴',
-    ),
-    _SettingsCategory.about => 'AgentAtelierR · 1.0.0 DX RC4',
-  };
-
-  IconData get icon => switch (this) {
-    _SettingsCategory.appearance => Icons.palette_outlined,
-    _SettingsCategory.audio => Icons.headphones_outlined,
-    _SettingsCategory.profile => Icons.badge_outlined,
-    _SettingsCategory.ai => Icons.hub_outlined,
-    _SettingsCategory.roleplay => Icons.auto_stories_outlined,
-    _SettingsCategory.data => Icons.inventory_2_outlined,
-    _SettingsCategory.about => Icons.info_outline,
-  };
-}
-
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({
     super.key,
     required this.controller,
     required this.onMenuPressed,
     this.backHandledByShell = false,
+    this.relayService,
+    this.embedded = false,
+    this.initialSection,
   });
 
   final AppController controller;
   final VoidCallback onMenuPressed;
   final bool backHandledByShell;
+  final RelayService? relayService;
+  final bool embedded;
+  final SettingsSection? initialSection;
 
   @override
   State<SettingsScreen> createState() => SettingsScreenState();
@@ -153,8 +90,54 @@ class SettingsScreen extends StatefulWidget {
 
 class SettingsScreenState extends State<SettingsScreen> {
   AppController get controller => widget.controller;
-  _SettingsCategory? _category;
+  SettingsSection? _category;
   int _detailPages = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _category = widget.initialSection;
+  }
+
+  @override
+  void didUpdateWidget(SettingsScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.initialSection != widget.initialSection) {
+      _category = widget.initialSection;
+    }
+  }
+
+  Future<void> _pinSection(SettingsSection section) async {
+    final language = controller.interfaceLanguage;
+    try {
+      await controller.setVirtualPhoneSettingsShortcut(section);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            language.text(
+              '已将${section.title(language)}设为手机快捷入口',
+              '${section.title(language)} is now your phone shortcut',
+              '${section.title(language)}をスマホのショートカットに設定しました',
+            ),
+          ),
+        ),
+      );
+    } on Object {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            language.text(
+              '快捷入口保存失败，请重试',
+              'Could not save the shortcut. Please try again.',
+              'ショートカットを保存できませんでした。もう一度お試しください。',
+            ),
+          ),
+        ),
+      );
+    }
+  }
 
   Future<void> _switchCharacter(String id) async {
     try {
@@ -194,8 +177,19 @@ class SettingsScreenState extends State<SettingsScreen> {
 
   void _backToCategories() => setState(() => _category = null);
 
+  bool get _isShortcutRoot =>
+      widget.initialSection != null && _category == widget.initialSection;
+
+  void _backFromSection() {
+    if (_isShortcutRoot) {
+      Navigator.of(context).maybePop();
+    } else {
+      _backToCategories();
+    }
+  }
+
   bool handleBack() {
-    if (_category == null) return false;
+    if (_category == null || _isShortcutRoot) return false;
     _backToCategories();
     return true;
   }
@@ -206,7 +200,7 @@ class SettingsScreenState extends State<SettingsScreen> {
     builder: (context, _) => widget.backHandledByShell
         ? _buildSettings(context)
         : PopScope(
-            canPop: _category == null,
+            canPop: _category == null || _isShortcutRoot,
             onPopInvokedWithResult: (didPop, _) {
               if (!didPop) handleBack();
             },
@@ -216,6 +210,9 @@ class SettingsScreenState extends State<SettingsScreen> {
 
   Widget _buildSettings(BuildContext context) {
     if (_detailPages > 0) return const SizedBox.expand();
+    if (_category == SettingsSection.pcAgent && widget.relayService != null) {
+      return RelayChatScreen(service: widget.relayService!);
+    }
     final language = controller.interfaceLanguage;
     final thinking = controller.modelThinking;
     return Scaffold(
@@ -223,14 +220,33 @@ class SettingsScreenState extends State<SettingsScreen> {
       appBar: AppBar(
         backgroundColor: glassPageHeaderColor(context),
         automaticallyImplyLeading: false,
+        actions: [
+          if (_category != null)
+            IconButton(
+              key: const ValueKey('settings-pin-phone-shortcut'),
+              tooltip: language.text(
+                '添加到手机快捷入口',
+                'Use as phone shortcut',
+                'スマホのショートカットに追加',
+              ),
+              onPressed: () => _pinSection(_category!),
+              icon: Icon(
+                controller.virtualPhoneSettingsShortcut == _category
+                    ? Icons.star_rounded
+                    : Icons.star_outline_rounded,
+              ),
+            ),
+        ],
         title: Padding(
-          padding: const EdgeInsets.only(left: 58),
+          padding: EdgeInsets.only(left: widget.embedded ? 40 : 58),
           child: Row(
             children: [
               if (_category != null)
                 IconButton(
-                  onPressed: _backToCategories,
-                  tooltip: language.text('返回设置', 'Back to settings', '設定へ戻る'),
+                  onPressed: _backFromSection,
+                  tooltip: _isShortcutRoot
+                      ? MaterialLocalizations.of(context).backButtonTooltip
+                      : language.text('返回设置', 'Back to settings', '設定へ戻る'),
                   icon: const Icon(Icons.arrow_back_rounded),
                 ),
               Expanded(
@@ -260,6 +276,17 @@ class SettingsScreenState extends State<SettingsScreen> {
             key: PageStorageKey('settings-${_category?.name ?? 'home'}'),
             padding: const EdgeInsets.only(bottom: 32),
             children: _settingsTiles(context, controller.liquidGlassChatUi, [
+              if (_category == SettingsSection.pcAgent)
+                Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Text(
+                    language.text(
+                      'PC Agent 联动暂不可用，请稍后重试',
+                      'PC Agent is unavailable. Please try again later.',
+                      'PC Agent 連携は現在利用できません。後でもう一度お試しください。',
+                    ),
+                  ),
+                ),
               if (_category == null) ...[
                 const SizedBox(height: 12),
                 Padding(
@@ -308,39 +335,54 @@ class SettingsScreenState extends State<SettingsScreen> {
                     ),
                   ),
                 ),
-                for (final category in _SettingsCategory.values)
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
-                    child: GlassSurface(
-                      liquidGlass: controller.liquidGlassChatUi,
-                      backdropBlur: false,
-                      tone: Theme.of(context).brightness == Brightness.dark
-                          ? GlassTone.dark
-                          : GlassTone.light,
-                      borderRadius: BorderRadius.circular(20),
-                      fallbackColor:
-                          Theme.of(context).brightness == Brightness.dark
-                          ? const Color(0xB8202428)
-                          : const Color(0xB8F1F3F4),
-                      child: ListTile(
-                        key: ValueKey('settings-category-${category.name}'),
-                        contentPadding: const EdgeInsets.symmetric(
-                          horizontal: 18,
-                          vertical: 10,
+                if (widget.relayService != null)
+                  ListTile(
+                    key: const ValueKey('settings-category-pcAgent'),
+                    leading: const Icon(Icons.computer),
+                    title: const Text('PC Agent 联动'),
+                    subtitle: const Text('扫码绑定、前台问答、任务与通知'),
+                    onTap: () => _openDetailPage<void>(
+                      context: context,
+                      builder: (_) =>
+                          RelayChatScreen(service: widget.relayService!),
+                    ),
+                    onLongPress: () => _pinSection(SettingsSection.pcAgent),
+                  ),
+                for (final category in SettingsSection.values)
+                  if (category != SettingsSection.pcAgent)
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
+                      child: GlassSurface(
+                        liquidGlass: controller.liquidGlassChatUi,
+                        backdropBlur: false,
+                        tone: Theme.of(context).brightness == Brightness.dark
+                            ? GlassTone.dark
+                            : GlassTone.light,
+                        borderRadius: BorderRadius.circular(20),
+                        fallbackColor:
+                            Theme.of(context).brightness == Brightness.dark
+                            ? const Color(0xB8202428)
+                            : const Color(0xB8F1F3F4),
+                        child: ListTile(
+                          key: ValueKey('settings-category-${category.name}'),
+                          contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 18,
+                            vertical: 10,
+                          ),
+                          leading: Icon(category.icon),
+                          title: Text(
+                            category.title(language),
+                            style: const TextStyle(fontWeight: FontWeight.w600),
+                          ),
+                          subtitle: Text(category.description(language)),
+                          trailing: const Icon(Icons.chevron_right_rounded),
+                          onTap: () => setState(() => _category = category),
+                          onLongPress: () => _pinSection(category),
                         ),
-                        leading: Icon(category.icon),
-                        title: Text(
-                          category.title(language),
-                          style: const TextStyle(fontWeight: FontWeight.w600),
-                        ),
-                        subtitle: Text(category.description(language)),
-                        trailing: const Icon(Icons.chevron_right_rounded),
-                        onTap: () => setState(() => _category = category),
                       ),
                     ),
-                  ),
               ],
-              if (_category == _SettingsCategory.appearance) ...[
+              if (_category == SettingsSection.appearance) ...[
                 _SectionLabel(language.text('界面', 'Appearance', '表示')),
                 ListTile(
                   leading: const Icon(Icons.contrast_rounded),
@@ -571,7 +613,7 @@ class SettingsScreenState extends State<SettingsScreen> {
                 ),
                 const Divider(indent: 16, endIndent: 16),
               ],
-              if (_category == _SettingsCategory.audio) ...[
+              if (_category == SettingsSection.audio) ...[
                 _SectionLabel(language.text('声音', 'Audio', 'サウンド')),
                 SwitchListTile(
                   value:
@@ -665,7 +707,7 @@ class SettingsScreenState extends State<SettingsScreen> {
                 ),
                 const Divider(indent: 16, endIndent: 16),
               ],
-              if (_category == _SettingsCategory.profile) ...[
+              if (_category == SettingsSection.profile) ...[
                 _SectionLabel(language.text('用户设定', 'User profile', 'ユーザー設定')),
                 Padding(
                   padding: const EdgeInsets.fromLTRB(12, 4, 12, 12),
@@ -689,7 +731,7 @@ class SettingsScreenState extends State<SettingsScreen> {
                 ),
                 const Divider(indent: 16, endIndent: 16),
               ],
-              if (_category == _SettingsCategory.ai) ...[
+              if (_category == SettingsSection.ai) ...[
                 _SectionLabel(language.text('AI 对话', 'AI chat', 'AI会話')),
                 ListTile(
                   leading: const Icon(Icons.auto_awesome_outlined),
@@ -756,7 +798,7 @@ class SettingsScreenState extends State<SettingsScreen> {
                   ),
                 ),
               ],
-              if (_category == _SettingsCategory.roleplay) ...[
+              if (_category == SettingsSection.roleplay) ...[
                 _SectionLabel(
                   language.text('设定与注入', 'Profiles & injection', '設定と注入'),
                 ),
@@ -855,7 +897,7 @@ class SettingsScreenState extends State<SettingsScreen> {
                   ),
                 ),
               ],
-              if (_category == _SettingsCategory.ai) ...[
+              if (_category == SettingsSection.ai) ...[
                 SwitchListTile(
                   value: controller.modelThinkingEnabled,
                   onChanged: controller.aiEnabled && thinking.canToggle
@@ -944,7 +986,7 @@ class SettingsScreenState extends State<SettingsScreen> {
                   ),
                 ),
               ],
-              if (_category == _SettingsCategory.roleplay) ...[
+              if (_category == SettingsSection.roleplay) ...[
                 const Divider(indent: 16, endIndent: 16),
                 _SectionLabel(
                   language.text('角色互动', 'Character interaction', 'キャラクター交流'),
@@ -1001,7 +1043,7 @@ class SettingsScreenState extends State<SettingsScreen> {
                   ),
                 ),
               ],
-              if (_category == _SettingsCategory.data) ...[
+              if (_category == SettingsSection.data) ...[
                 ListTile(
                   leading: const Icon(Icons.collections_bookmark_outlined),
                   title: Text(
@@ -1045,7 +1087,7 @@ class SettingsScreenState extends State<SettingsScreen> {
                   onTap: () => _showLongTermMemorySettings(context),
                 ),
               ],
-              if (_category == _SettingsCategory.roleplay) ...[
+              if (_category == SettingsSection.roleplay) ...[
                 ListTile(
                   leading: const Icon(Icons.favorite_border),
                   title: Text(
@@ -1057,7 +1099,7 @@ class SettingsScreenState extends State<SettingsScreen> {
                 ),
                 const Divider(indent: 16, endIndent: 16),
               ],
-              if (_category == _SettingsCategory.audio) ...[
+              if (_category == SettingsSection.audio) ...[
                 _SectionLabel(
                   language.text('语音合成', 'Speech synthesis', '音声合成'),
                 ),
@@ -1123,7 +1165,7 @@ class SettingsScreenState extends State<SettingsScreen> {
                   ),
                 const Divider(indent: 16, endIndent: 16),
               ],
-              if (_category == _SettingsCategory.data) ...[
+              if (_category == SettingsSection.data) ...[
                 _SectionLabel(language.text('数据', 'Data', 'データ')),
                 ListTile(
                   leading: const Icon(Icons.history_outlined),
@@ -1215,16 +1257,16 @@ class SettingsScreenState extends State<SettingsScreen> {
                 ),
                 const Divider(indent: 16, endIndent: 16),
               ],
-              if (_category == _SettingsCategory.about) ...[
+              if (_category == SettingsSection.about) ...[
                 _SectionLabel(language.text('关于', 'About', 'このアプリについて')),
                 ListTile(
                   leading: const Icon(Icons.info_outline),
                   title: const Text('AgentAtelierR'),
                   subtitle: Text(
                     language.text(
-                      '版本 1.0.0 DX RC4',
-                      'Version 1.0.0 DX RC4',
-                      'バージョン 1.0.0 DX RC4',
+                      '版本 1.0.4 beta1 26106',
+                      'Version 1.0.4 beta1 26106',
+                      'バージョン 1.0.4 beta1 26106',
                     ),
                   ),
                 ),
@@ -1309,6 +1351,7 @@ class SettingsScreenState extends State<SettingsScreen> {
     final language = controller.interfaceLanguage;
     // null cancels; false deletes only chat; true also deletes memory.
     final clearMemory = await showDialog<bool>(
+      useRootNavigator: false,
       context: context,
       builder: (context) => AlertDialog(
         title: Text(
@@ -2773,7 +2816,7 @@ class SettingsScreenState extends State<SettingsScreen> {
         ],
       );
       if (!context.mounted) return;
-      Navigator.of(context, rootNavigator: true).pop();
+      Navigator.of(context).pop();
       progressOpen = false;
       final converted = parseLegacyMigrationResponse(raw);
       final merged = mergeLegacyMigration(controller.exportData(), converted);
@@ -2811,8 +2854,8 @@ class SettingsScreenState extends State<SettingsScreen> {
       RuntimeLog.instance.error('Legacy data conversion', error, stackTrace);
       if (!context.mounted) return;
       // Close the progress dialog if the request failed before it returned.
-      if (progressOpen && Navigator.of(context, rootNavigator: true).canPop()) {
-        Navigator.of(context, rootNavigator: true).pop();
+      if (progressOpen && Navigator.of(context).canPop()) {
+        Navigator.of(context).pop();
       }
       ScaffoldMessenger.of(context)
           .showSnackBar(SnackBar(content: Text('旧数据转换失败：$error')));
@@ -2821,6 +2864,7 @@ class SettingsScreenState extends State<SettingsScreen> {
 
   void _showDataConverterProgress(BuildContext context, String fileName) {
     showDialog<void>(
+      useRootNavigator: false,
       context: context,
       barrierDismissible: false,
       builder: (context) => AlertDialog(
@@ -2842,6 +2886,7 @@ class SettingsScreenState extends State<SettingsScreen> {
   Future<void> _exportData(BuildContext context) async {
     final language = controller.interfaceLanguage;
     final includeKeys = await showDialog<bool>(
+      useRootNavigator: false,
       context: context,
       builder: (dialogContext) => SimpleDialog(
         title: Text(
@@ -3375,6 +3420,7 @@ class _LongTermMemoryDialogState extends State<_LongTermMemoryDialog> {
         throw StateError('对话或记忆已变化，请重新整理');
       }
       final confirmed = await showDialog<bool>(
+        useRootNavigator: false,
         context: context,
         builder: (context) =>
             _ManualMemoryReviewDialog(proposal: proposal, language: language),

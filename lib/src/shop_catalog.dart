@@ -44,7 +44,7 @@ class ShopCatalog {
   static const items = <ShopItem>[
     ShopItem(
       id: 'ryza_gift',
-      price: 200,
+      price: 50,
       imageAsset: 'assets/images/shop/gift-box.png',
       nameZh: '给莱莎的礼物',
       nameEn: 'A Gift for Ryza',
@@ -59,7 +59,7 @@ class ShopCatalog {
     ),
     ShopItem(
       id: 'advanced_energy_tonic',
-      price: 300,
+      price: 150,
       imageAsset: 'assets/images/shop/energy-potion.png',
       nameZh: '高级精力剂',
       nameEn: 'Advanced Energy Tonic',
@@ -74,7 +74,7 @@ class ShopCatalog {
     ),
     ShopItem(
       id: 'reconciliation_voucher',
-      price: 500,
+      price: 200,
       imageAsset: 'assets/images/shop/reconciliation-voucher.png',
       nameZh: '和好券',
       nameEn: 'Make-Up Voucher',
@@ -87,6 +87,21 @@ class ShopCatalog {
       effectJa: 'マイナスの数値をすべて 0 に戻す',
       statChanges: {},
       resetNegativeStats: true,
+    ),
+    ShopItem(
+      id: 'iphone_18_pro_max',
+      price: 499,
+      imageAsset: 'assets/images/shop/iphone-18-pro-max.png',
+      nameZh: 'IPhone 18 Pro Max',
+      nameEn: 'IPhone 18 Pro Max',
+      nameJa: 'IPhone 18 Pro Max',
+      descriptionZh: '异世界最新的强劲工具，似乎对知识的搜集以及各种状态有增幅的效果',
+      descriptionEn: 'The latest powerful tool from another world. It seems to aid gathering knowledge and enhance various states.',
+      descriptionJa: '異世界の最新の強力な道具。知識の収集やさまざまな状態を高める効果があるようだ。',
+      effectZh: '心情 +100',
+      effectEn: 'Mood +100',
+      effectJa: '気分 +100',
+      statChanges: {'mood': 100},
     ),
   ];
 

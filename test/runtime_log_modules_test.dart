@@ -42,6 +42,31 @@ void main() {
       'playback failed',
     ]);
   });
+  test(
+    'diagnostics logged by listeners do not recursively refresh listeners',
+    () async {
+      final log = RuntimeLog.instance;
+      var notifications = 0;
+      void listener() {
+        notifications++;
+        if (notifications < 10) log.error('Flutter', 'listener diagnostic');
+      }
+
+      log.addListener(listener);
+      try {
+        log.info('LLM', 'initial diagnostic');
+        await Future<void>.delayed(const Duration(milliseconds: 30));
+        expect(notifications, 1);
+        expect(log.entries.map((entry) => entry.message), [
+          'initial diagnostic',
+          'listener diagnostic',
+        ]);
+      } finally {
+        log.removeListener(listener);
+      }
+      await log.clear();
+    },
+  );
   test('nested JSON is formatted and sensitive values are redacted', () {
     final value = RuntimeLog.prettyMessage(
       jsonEncode({
@@ -59,9 +84,54 @@ void main() {
       'line one\nline two',
     );
   });
+  test(
+    'legacy logs get distinct short identities without storing message in keys',
+    () {
+      final json = <String, dynamic>{
+        'timestamp': '2026-10-06T01:00:00',
+        'level': 'error',
+        'source': 'Flutter',
+        'message': List.filled(1000, 'large stack').join('\n'),
+      };
+      final first = RuntimeLogEntry.fromJson(json);
+      final second = RuntimeLogEntry.fromJson(json);
+      expect(first.identity.length, lessThan(100));
+      expect(second.identity, isNot(first.identity));
+      expect(first.repeatCount, 1);
+      expect(first.lastTimestamp, isNull);
+    },
+  );
+  test(
+    'consecutive identical errors retain first context and repeat count',
+    () async {
+      final log = RuntimeLog.instance;
+      log.error('Flutter', 'first failure');
+      final first = log.entries.last;
+      for (var index = 0; index < 300; index++) {
+        log.error('Flutter', 'first failure');
+      }
+      expect(log.entries.length, 1);
+      expect(log.entries.single.identity, first.identity);
+      expect(log.entries.single.timestamp, first.timestamp);
+      expect(log.entries.single.repeatCount, 301);
+      expect(log.entries.single.lastTimestamp, isNotNull);
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+      await log.initialize();
+      expect(log.entries.single.repeatCount, 301);
+      expect(log.entries.single.lastTimestamp, isNotNull);
+      log.error('Flutter', 'different failure');
+      log.error('Flutter', 'first failure');
+      expect(log.entries.length, 3);
+      expect(log.entries.last.repeatCount, 1);
+      await log.clear();
+    },
+  );
   testWidgets('module filters isolate visible messages', (tester) async {
-    RuntimeLog.instance.info('LLM', 'llm marker');
-    RuntimeLog.instance.info('TTS', 'tts marker');
+    await tester.runAsync(() async {
+      RuntimeLog.instance.info('LLM', 'llm marker');
+      RuntimeLog.instance.info('TTS', 'tts marker');
+      await Future<void>.delayed(Duration.zero);
+    });
     await tester.pumpWidget(
       MaterialApp(
         home: RuntimeLogScreen(
@@ -77,5 +147,52 @@ void main() {
     expect(find.text('llm marker'), findsNothing);
     expect(find.text('tts marker'), findsOneWidget);
     expect(tester.takeException(), isNull);
+    await tester.runAsync(() => RuntimeLog.instance.clear());
+  });
+  testWidgets('new logs preserve expanded rows with semantics enabled', (
+    tester,
+  ) async {
+    final semantics = tester.ensureSemantics();
+    final message = List.generate(
+      10,
+      (index) => 'existing line $index',
+    ).join('\n');
+    await tester.runAsync(() async {
+      RuntimeLog.instance.error('Flutter', message);
+      await Future<void>.delayed(Duration.zero);
+    });
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RuntimeLogScreen(
+          language: AppLanguage.chinese,
+          onMenuPressed: () {},
+          embedded: true,
+        ),
+      ),
+    );
+    await tester.tap(find.byType(ExpansionTile));
+    await tester.pumpAndSettle();
+    expect(find.text(message), findsOneWidget);
+    final originalState = tester.state(find.byType(ExpansionTile));
+    await tester.runAsync(() async {
+      RuntimeLog.instance.error('Flutter', message);
+      await Future<void>.delayed(Duration.zero);
+    });
+    await tester.pumpAndSettle();
+    expect(find.text('重复 2 次'), findsOneWidget);
+    expect(tester.state(find.byType(ExpansionTile)), same(originalState));
+    await tester.runAsync(() async {
+      RuntimeLog.instance.info('TTS', 'new item');
+      await Future<void>.delayed(Duration.zero);
+    });
+    await tester.pumpAndSettle();
+    expect(find.text('new item'), findsOneWidget);
+    expect(find.text(message), findsOneWidget);
+    expect(tester.state(find.byType(ExpansionTile)), same(originalState));
+    await tester.drag(find.byType(ListView), const Offset(0, -120));
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+    await tester.runAsync(() => RuntimeLog.instance.clear());
+    semantics.dispose();
   });
 }

@@ -18,6 +18,7 @@ import 'src/local_skin_store.dart';
 import 'src/character_appearance.dart';
 import 'src/character_runtime_profile.dart';
 import 'src/ryza_loading_indicator.dart';
+import 'src/glass_ui.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -35,7 +36,12 @@ void main() {
   FlutterError.onError = (details) {
     RuntimeLog.instance.error(
       'Flutter',
-      details.exception,
+      [
+        if (details.library != null) 'library: ${details.library}',
+        if (details.context != null)
+          'context: ${details.context!.toDescription()}',
+        '${details.exception}',
+      ].join('\n'),
       details.stack ?? StackTrace.current,
     );
     FlutterError.presentError(details);
@@ -94,7 +100,7 @@ class _BootstrapAppState extends State<_BootstrapApp> {
   Future<void> _initialize() async {
     try {
       await RuntimeLog.instance.initialize();
-      RuntimeLog.instance.info('App', '应用启动，版本 1.0.0 DX RC4（构建 35）');
+      RuntimeLog.instance.info('App', '应用启动，版本 1.0.4 beta1 26106（构建 36）');
       await initSpineFlutter(enableMemoryDebugging: false);
       await Alarm.init();
       await AudioPlayer.global.setAudioContext(
@@ -141,6 +147,10 @@ class _BootstrapAppState extends State<_BootstrapApp> {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
       title: 'AgentAtelierR',
+      builder: (context, child) => GlassStyleScope(
+        enabled: controller?.liquidGlassChatUi ?? false,
+        child: child!,
+      ),
       theme: controller == null
           ? ThemeData.light()
           : withDialogueAppearance(

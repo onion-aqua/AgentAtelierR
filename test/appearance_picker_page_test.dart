@@ -51,7 +51,28 @@ class _FakeFilePicker extends FilePickerPlatform {
   }) async => [_PickedPng()];
 }
 
+class _RecordingNavigatorObserver extends NavigatorObserver {
+  final List<Route<dynamic>> pushedRoutes = [];
+
+  @override
+  void didPush(Route<dynamic> route, Route<dynamic>? previousRoute) {
+    pushedRoutes.add(route);
+  }
+}
+
 void main() {
+  late Directory textureTestDirectory;
+  setUpAll(() async {
+    SharedPreferences.setMockInitialValues({});
+    textureTestDirectory = await Directory.systemTemp.createTemp(
+      'outfit_texture_tests_',
+    );
+    await LocalSkinStore.instance.initialize(
+      storageDirectory: textureTestDirectory,
+    );
+  });
+  tearDownAll(() => textureTestDirectory.delete(recursive: true));
+
   Future<void> showPicker(
     WidgetTester tester, {
     required Size size,
@@ -80,6 +101,200 @@ void main() {
     );
     await tester.pumpAndSettle();
   }
+
+  Future<void> showEmbeddedPicker(
+    WidgetTester tester, {
+    required ValueChanged<CharacterAppearance> onSelected,
+    required _RecordingNavigatorObserver rootObserver,
+    required _RecordingNavigatorObserver phoneObserver,
+    Size phoneSize = const Size(280, 440),
+  }) async {
+    final items = characterAppearances.take(3).toList();
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(420, 800);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    addTearDown(tester.view.resetPhysicalSize);
+    await tester.pumpWidget(
+      MaterialApp(
+        navigatorObservers: [rootObserver],
+        builder: (context, child) => MediaQuery(
+          data: MediaQuery.of(context)
+              .copyWith(padding: const EdgeInsets.only(top: 40, bottom: 30)),
+          child: child!,
+        ),
+        home: Scaffold(
+          body: Center(
+            child: SizedBox(
+              key: const ValueKey('phone-appearance-viewport'),
+              width: phoneSize.width,
+              height: phoneSize.height,
+              child: ClipRect(
+                child: Navigator(
+                  observers: [phoneObserver],
+                  onGenerateRoute: (_) => MaterialPageRoute<void>(
+                    builder: (_) => AppearancePickerPage(
+                      appearances: items,
+                      selectedId: items.first.id,
+                      language: AppLanguage.chinese,
+                      liquidGlass: false,
+                      embedded: true,
+                      previewBuilder: (_) =>
+                          const ColoredBox(color: Colors.white24),
+                      onSelected: onSelected,
+                      onTextureChanged: () {},
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+  }
+
+  testWidgets('embedded picker uses phone height and keeps selection open', (
+    tester,
+  ) async {
+    CharacterAppearance? selected;
+    final rootObserver = _RecordingNavigatorObserver();
+    final phoneObserver = _RecordingNavigatorObserver();
+    await showEmbeddedPicker(
+      tester,
+      rootObserver: rootObserver,
+      phoneObserver: phoneObserver,
+      onSelected: (appearance) => selected = appearance,
+    );
+
+    expect(find.byTooltip('关闭'), findsNothing);
+    final viewport = tester.getRect(
+      find.byKey(const ValueKey('phone-appearance-viewport')),
+    );
+    final titleFinder = find.text('服装切换');
+    final title = tester.getRect(titleFinder);
+    final header = tester.getRect(
+      find.ancestor(of: titleFinder, matching: find.byType(Row)).first,
+    );
+    expect(header.height, 56);
+    expect(header.center.dy - viewport.top, closeTo(28, .5));
+    expect(title.center.dy - viewport.top, closeTo(28, .5));
+    final card = tester.getRect(
+      find.byKey(ValueKey('outfit-surface-${characterAppearances.first.id}')),
+    );
+    expect(card.width, closeTo(viewport.width * .78, 1));
+    // The preview remains large while making room for the shared 56dp header.
+    expect(card.height, greaterThanOrEqualTo(viewport.height * .65));
+    await tester.drag(find.byType(AppearancePickerPage), const Offset(-160, 0));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('outfit-equip-button')));
+    await tester.pumpAndSettle();
+    expect(selected?.id, characterAppearances[1].id);
+    expect(find.byType(AppearancePickerPage), findsOneWidget);
+    expect(find.text('2 / 4'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('embedded import chooser stays in the phone navigator', (
+    tester,
+  ) async {
+    final originalPicker = FilePickerPlatform.instance;
+    FilePickerPlatform.instance = _FakeFilePicker();
+    addTearDown(() => FilePickerPlatform.instance = originalPicker);
+    final rootObserver = _RecordingNavigatorObserver();
+    final phoneObserver = _RecordingNavigatorObserver();
+    await showEmbeddedPicker(
+      tester,
+      rootObserver: rootObserver,
+      phoneObserver: phoneObserver,
+      phoneSize: const Size(260, 350),
+      onSelected: (_) {},
+    );
+    for (var step = 0; step < 3; step++) {
+      await tester.drag(
+        find.byType(AppearancePickerPage),
+        const Offset(-160, 0),
+      );
+      await tester.pumpAndSettle();
+    }
+    expect(find.text('4 / 4'), findsOneWidget);
+    expect(find.text('导入 ZIP'), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('import-outfit-texture')));
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(find.text('选择贴图对应的服装'), findsOneWidget);
+    expect(
+      rootObserver.pushedRoutes.whereType<DialogRoute<dynamic>>(),
+      isEmpty,
+    );
+    expect(
+      phoneObserver.pushedRoutes.whereType<DialogRoute<dynamic>>(),
+      hasLength(1),
+    );
+    final viewport = tester.getRect(
+      find.byKey(const ValueKey('phone-appearance-viewport')),
+    );
+    final dialog = tester.getRect(find.byType(AlertDialog));
+    expect(dialog.left, greaterThanOrEqualTo(viewport.left));
+    expect(dialog.right, lessThanOrEqualTo(viewport.right));
+    expect(dialog.top, greaterThanOrEqualTo(viewport.top));
+    expect(dialog.bottom, lessThanOrEqualTo(viewport.bottom));
+    await tester.tap(find.text('取消'));
+    await tester.pumpAndSettle();
+    expect(find.byType(AppearancePickerPage), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('embedded texture menu and delete confirmation stay in phone', (
+    tester,
+  ) async {
+    final store = LocalSkinStore.instance;
+    final png = Uint8List(33)
+      ..setAll(0, [137, 80, 78, 71, 13, 10, 26, 10])
+      ..setAll(12, 'IHDR'.codeUnits);
+    ByteData.sublistView(png)
+      ..setUint32(16, 2)
+      ..setUint32(20, 2);
+    final appearance = characterAppearances.first;
+    await tester.runAsync(() async {
+      await store.importTexture(appearance.assetName, png, png);
+    });
+    final rootObserver = _RecordingNavigatorObserver();
+    final phoneObserver = _RecordingNavigatorObserver();
+    await showEmbeddedPicker(
+      tester,
+      rootObserver: rootObserver,
+      phoneObserver: phoneObserver,
+      onSelected: (_) {},
+    );
+    await tester.tap(
+      find.byKey(ValueKey('outfit-texture-menu-${appearance.id}')),
+    );
+    await tester.pumpAndSettle();
+    expect(rootObserver.pushedRoutes.whereType<PopupRoute<dynamic>>(), isEmpty);
+    expect(
+      phoneObserver.pushedRoutes.whereType<PopupRoute<dynamic>>(),
+      hasLength(1),
+    );
+    await tester.tap(
+      find.byKey(ValueKey('outfit-delete-texture-${appearance.id}')),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('删除导入贴图？'), findsOneWidget);
+    expect(
+      rootObserver.pushedRoutes.whereType<DialogRoute<dynamic>>(),
+      isEmpty,
+    );
+    expect(
+      phoneObserver.pushedRoutes.whereType<DialogRoute<dynamic>>(),
+      hasLength(1),
+    );
+    await tester.tap(find.text('取消'));
+    await tester.pumpAndSettle();
+    expect(store.hasTexture(appearance.assetName), isTrue);
+    expect(find.byType(AppearancePickerPage), findsOneWidget);
+    await tester.runAsync(() => store.deleteTexture(appearance.assetName));
+    expect(tester.takeException(), isNull);
+  });
 
   testWidgets('swiping browses cards and only the equip button selects', (
     tester,
@@ -365,7 +580,6 @@ void main() {
   testWidgets('imported texture can be deleted from its card menu', (
     tester,
   ) async {
-    SharedPreferences.setMockInitialValues({});
     final store = LocalSkinStore.instance;
     final png = Uint8List(33)
       ..setAll(0, [137, 80, 78, 71, 13, 10, 26, 10])
@@ -374,14 +588,10 @@ void main() {
       ..setUint32(16, 2)
       ..setUint32(20, 2);
     final appearance = characterAppearances.first;
-    final directory = await tester.runAsync(() async {
-      final directory = await Directory.systemTemp.createTemp('outfit_delete_');
-      await store.initialize(storageDirectory: directory);
+    await tester.runAsync(() async {
       await store.importTexture(appearance.assetName, png, png);
-      return directory;
     });
-    addTearDown(() => directory?.delete(recursive: true));
-    final textureFile = Directory('${directory!.path}/imported_skins')
+    final textureFile = Directory('${textureTestDirectory.path}/imported_skins')
         .listSync()
         .whereType<File>()
         .single;

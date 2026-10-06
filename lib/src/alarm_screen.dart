@@ -18,10 +18,12 @@ class AlarmScreen extends StatefulWidget {
     super.key,
     required this.controller,
     required this.onMenuPressed,
+    this.embedded = false,
   });
 
   final AppController controller;
   final VoidCallback onMenuPressed;
+  final bool embedded;
 
   @override
   State<AlarmScreen> createState() => _AlarmScreenState();
@@ -161,6 +163,7 @@ class _AlarmScreenState extends State<AlarmScreen> {
     );
     final dark = Theme.of(context).brightness == Brightness.dark;
     return showDialog<Duration>(
+      useRootNavigator: false,
       context: context,
       barrierColor: Colors.black54,
       builder: (dialogContext) => Dialog(
@@ -239,6 +242,7 @@ class _AlarmScreenState extends State<AlarmScreen> {
   Future<AlarmReminderType?> _selectReminderType(AppLanguage language) {
     final whisper = widget.controller.asmrModeEnabled;
     return showDialog<AlarmReminderType>(
+      useRootNavigator: false,
       context: context,
       builder: (context) => SimpleDialog(
         title: Text(language.text('选择提醒类型', 'Reminder type', 'リマインダー種類')),
@@ -313,7 +317,7 @@ class _AlarmScreenState extends State<AlarmScreen> {
           backgroundColor: glassPageHeaderColor(context),
           automaticallyImplyLeading: false,
           title: Padding(
-            padding: const EdgeInsets.only(left: 58),
+            padding: EdgeInsets.only(left: widget.embedded ? 40 : 58),
             child: Text(language.text('语音闹钟', 'Voice alarms', 'ボイスアラーム')),
           ),
         ),
@@ -341,7 +345,7 @@ class _AlarmScreenState extends State<AlarmScreen> {
         backgroundColor: glassPageHeaderColor(context),
         automaticallyImplyLeading: false,
         title: Padding(
-          padding: const EdgeInsets.only(left: 58),
+          padding: EdgeInsets.only(left: widget.embedded ? 40 : 58),
           child: Text(language.text('语音闹钟', 'Voice alarms', 'ボイスアラーム')),
         ),
       ),

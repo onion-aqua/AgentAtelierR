@@ -1,8 +1,10 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:ryza_chat_mvp/src/app_controller.dart';
+import 'package:ryza_chat_mvp/src/app_localization.dart';
 import 'package:ryza_chat_mvp/src/auxiliary_llm_tasks.dart';
 import 'package:ryza_chat_mvp/src/chat_segments.dart';
 
@@ -10,6 +12,70 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   const source =
       '旁白：她抬起头。\n莱莎：[happy][face:happy][action:none]おはよう！\n角色[klaudia]：こんにちは。';
+  testWidgets('hanging translation times out once without a second request', (
+    tester,
+  ) async {
+    final pending = Completer<String>();
+    Object? failure;
+    var calls = 0;
+    DialogueTranslator()
+        .translate(
+          source: '苏菲：一緒に出発しよう！',
+          language: 'Chinese',
+          complete: (_) {
+            calls++;
+            return pending.future;
+          },
+        )
+        .then<void>(
+          (_) => fail('A hanging translation must fail'),
+          onError: (Object error) {
+            failure = error;
+          },
+        );
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 89));
+    expect(failure, isNull);
+    await tester.pump(const Duration(seconds: 1));
+    expect(failure, isA<TimeoutException>());
+    expect(calls, 1);
+    pending.complete('{"translations":[]}');
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 90));
+    expect(calls, 1);
+  });
+
+  testWidgets('translation repair shares the original overall time budget', (
+    tester,
+  ) async {
+    final initial = Completer<String>();
+    final retry = Completer<String>();
+    Object? failure;
+    var calls = 0;
+    DialogueTranslator()
+        .translate(
+          source: '苏菲：一緒に出発しよう！',
+          language: 'Chinese',
+          complete: (_) => ++calls == 1 ? initial.future : retry.future,
+        )
+        .then<void>(
+          (_) => fail('The repair must share the time budget'),
+          onError: (Object error) {
+            failure = error;
+          },
+        );
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 80));
+    initial.complete('{"translations":[]}');
+    await tester.pump();
+    expect(calls, 2);
+    await tester.pump(const Duration(seconds: 9));
+    expect(failure, isNull);
+    await tester.pump(const Duration(seconds: 1));
+    expect(failure, isA<TimeoutException>());
+    expect(calls, 2);
+  });
+
   test('batch translation binds ids, preserves narration and original performance', () async {
     final output = await DialogueTranslator().translate(
       source: source,
@@ -43,6 +109,44 @@ void main() {
       );
     }
   });
+
+  test(
+    'wrong-language translation is retried once before it can be saved',
+    () async {
+      var calls = 0;
+      final result = await DialogueTranslator().translate(
+        source: '莱莎：一緒に出発しよう！',
+        language: 'Chinese',
+        targetLanguage: AppLanguage.chinese,
+        complete: (_) async => jsonEncode({
+          'translations': [
+            {'id': 0, 'text': ++calls == 1 ? '一緒に出発しよう！' : '现在我们一起出发吧。'},
+          ],
+        }),
+      );
+      expect(calls, 2);
+      expect(result, '莱莎：一緒に出発しよう！\n译文：现在我们一起出发吧。');
+    },
+  );
+
+  test(
+    'unrecoverable translation language mismatch has a bounded retry',
+    () async {
+      var calls = 0;
+      await expectLater(
+        DialogueTranslator().translate(
+          source: '莱莎：一緒に出発しよう！',
+          language: 'Chinese',
+          complete: (_) async {
+            calls++;
+            return '{"translations":[{"id":0,"text":"一緒に出発しよう！"}]}';
+          },
+        ),
+        throwsFormatException,
+      );
+      expect(calls, 2);
+    },
+  );
 
   test('translation preserves raw text through storage and cannot attach to withdrawn reply', () async {
     SharedPreferences.setMockInitialValues({});

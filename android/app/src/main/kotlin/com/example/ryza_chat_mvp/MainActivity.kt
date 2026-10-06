@@ -28,6 +28,7 @@ class MainActivity : FlutterActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        RelayPushBridge(applicationContext, flutterEngine.dartExecutor.binaryMessenger)
         cosyVoiceBridge = CosyVoiceFlutterBridge(
             applicationContext,
             flutterEngine.dartExecutor.binaryMessenger,

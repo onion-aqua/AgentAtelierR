@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ryza_chat_mvp/src/app_controller.dart';
+import 'package:ryza_chat_mvp/src/app_localization.dart';
 import 'package:ryza_chat_mvp/src/conversation_history_page.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -57,7 +58,9 @@ void main() {
     expect(entries.last.translation, isNull);
   });
 
-  testWidgets('history shows and searches translated dialogue', (tester) async {
+  testWidgets('history shows, searches and updates translated dialogue', (
+    tester,
+  ) async {
     SharedPreferences.setMockInitialValues({});
     final controller = (await tester.runAsync(() => AppController.load()))!;
     addTearDown(controller.dispose);
@@ -77,6 +80,22 @@ void main() {
     await tester.enterText(find.byType(TextField), '早上好');
     await tester.pump();
     expect(find.text('译文：早上好！'), findsOneWidget);
+    expect(find.text('没有译文的旧对话'), findsNothing);
+
+    controller.configureLanguages(
+      interface: AppLanguage.english,
+      narrator: controller.narratorLanguage,
+      characterReply: controller.characterReplyLanguage,
+      translation: controller.translationLanguage,
+    );
+    await tester.pump();
+    expect(find.text('Conversation history'), findsOneWidget);
+    expect(find.text('历史对话'), findsNothing);
+    expect(find.text('Translation：早上好！'), findsOneWidget);
+    expect(
+      tester.widget<TextField>(find.byType(TextField)).decoration?.hintText,
+      'Search save names or dialogue',
+    );
     expect(find.text('没有译文的旧对话'), findsNothing);
   });
 

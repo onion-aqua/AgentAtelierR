@@ -11,10 +11,12 @@ class RuntimeLogScreen extends StatefulWidget {
     required this.language,
     this.liquidGlass = false,
     required this.onMenuPressed,
+    this.embedded = false,
   });
   final AppLanguage language;
   final bool liquidGlass;
   final VoidCallback onMenuPressed;
+  final bool embedded;
   @override
   State<RuntimeLogScreen> createState() => _RuntimeLogScreenState();
 }
@@ -91,35 +93,41 @@ class _RuntimeLogScreenState extends State<RuntimeLogScreen> {
       final language = widget.language;
       return Scaffold(
         backgroundColor: Colors.transparent,
-      appBar: AppBar(
-        backgroundColor: glassPageHeaderColor(context),
+        appBar: AppBar(
+          backgroundColor: glassPageHeaderColor(context),
           automaticallyImplyLeading: false,
           title: Padding(
-            padding: const EdgeInsets.only(left: 58),
+            padding: EdgeInsets.only(left: widget.embedded ? 40 : 58),
             child: Text(language.text('运行日志', 'Runtime logs', '実行ログ')),
           ),
           actions: [
-            IconButton(
-              onPressed: RuntimeLog.instance.entries.isEmpty
-                  ? null
-                  : () => RuntimeLog.instance.clear(),
-              tooltip: language.text('清空全部日志', 'Clear all logs', '全ログを消去'),
-              icon: const Icon(Icons.delete_outline),
-            ),
-            IconButton(
-              onPressed: entries.isEmpty
-                  ? null
-                  : () => Clipboard.setData(
-                      ClipboardData(
-                        text: entries.map((e) => e.formatted).join('\n\n'),
-                      ),
-                    ),
-              tooltip: language.text(
-                '复制筛选结果',
-                'Copy filtered logs',
-                '絞り込み結果をコピー',
+            Semantics(
+              container: true,
+              child: IconButton(
+                onPressed: RuntimeLog.instance.entries.isEmpty
+                    ? null
+                    : () => RuntimeLog.instance.clear(),
+                tooltip: language.text('清空全部日志', 'Clear all logs', '全ログを消去'),
+                icon: const Icon(Icons.delete_outline),
               ),
-              icon: const Icon(Icons.copy_outlined),
+            ),
+            Semantics(
+              container: true,
+              child: IconButton(
+                onPressed: entries.isEmpty
+                    ? null
+                    : () => Clipboard.setData(
+                        ClipboardData(
+                          text: entries.map((e) => e.formatted).join('\n\n'),
+                        ),
+                      ),
+                tooltip: language.text(
+                  '复制筛选结果',
+                  'Copy filtered logs',
+                  '絞り込み結果をコピー',
+                ),
+                icon: const Icon(Icons.copy_outlined),
+              ),
             ),
           ],
         ),
@@ -200,6 +208,13 @@ class _RuntimeLogScreenState extends State<RuntimeLogScreen> {
                         key: ValueKey('${_module?.name}:${_level?.name}'),
                         padding: const EdgeInsets.all(12),
                         itemCount: entries.length,
+                        findChildIndexCallback: (key) {
+                          if (key is! ValueKey<String>) return null;
+                          final index = entries.indexWhere(
+                            (entry) => entry.identity == key.value,
+                          );
+                          return index < 0 ? null : index;
+                        },
                         itemBuilder: (context, index) {
                           final entry = entries[index];
                           final text = entry.displayMessage;
@@ -217,9 +232,10 @@ class _RuntimeLogScreenState extends State<RuntimeLogScreen> {
                             ).colorScheme.error,
                           };
                           return GlassContentCard(
-                            key: ValueKey(
-                              '${entry.timestamp.toIso8601String()}:${entry.source}:$index',
-                            ),
+                            // Appending a log moves existing rows by one.
+                            // Keep expansion, selection and semantics attached
+                            // to the entry rather than its current list index.
+                            key: ValueKey(entry.identity),
                             liquidGlass: widget.liquidGlass,
                             child: Padding(
                               padding: const EdgeInsets.all(12),
@@ -244,6 +260,17 @@ class _RuntimeLogScreenState extends State<RuntimeLogScreen> {
                                           fontWeight: FontWeight.bold,
                                         ),
                                       ),
+                                      if (entry.repeatCount > 1)
+                                        Text(
+                                          language.text(
+                                            '重复 ${entry.repeatCount} 次',
+                                            'Repeated ${entry.repeatCount} times',
+                                            '${entry.repeatCount} 回発生',
+                                          ),
+                                          style: Theme.of(context)
+                                              .textTheme
+                                              .bodySmall,
+                                        ),
                                       Text(
                                         entry.timestamp
                                             .toLocal()

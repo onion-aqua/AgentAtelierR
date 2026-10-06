@@ -6,6 +6,7 @@
 .pub-cache/
 .pub/
 build/
+/dist/
 coverage/
 *.iml
 .idea/
@@ -38,6 +39,9 @@ Thumbs.db
 *.aarpack
 *.aarpreview
 .asset_protection/
+# Private PC Agent endpoints and generated encrypted build definitions stay local.
+**/relay_server.local.json
+**/relay_server.defines.json
 *.key
 *.symbols
 *.map.json
@@ -83,8 +87,14 @@ assets/**/*
 !assets/images/shop/gift-box.png
 !assets/images/shop/energy-potion.png
 !assets/images/shop/reconciliation-voucher.png
+!assets/images/shop/iphone-18-pro-max.png
 !assets/images/character_switch/ryza.png
 !assets/images/character_switch/sophie.png
+!assets/images/virtual_phone/
+!assets/images/virtual_phone/signal_[0-4].png
+!assets/images/virtual_phone/battery_[0-5].png
+!assets/images/virtual_phone/dynamic_island.png
+!assets/images/virtual_phone/bg[1-3].png
 !android/app/src/main/res/drawable-*/launch_logo.png
 !android/app/src/main/res/drawable-*/ic_launcher_foreground.png
 !android/app/src/main/res/drawable-nodpi/launch_logo_android12.png

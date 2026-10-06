@@ -6,12 +6,18 @@ import 'glass_ui.dart';
 import 'shop_catalog.dart';
 
 class ShopScreen extends StatelessWidget {
-  const ShopScreen({super.key, required this.controller});
+  const ShopScreen({
+    super.key,
+    required this.controller,
+    this.embedded = false,
+  });
 
   final AppController controller;
+  final bool embedded;
 
   void _showDetails(BuildContext context, ShopItem item, AppLanguage language) {
     showDialog<void>(
+      useRootNavigator: false,
       context: context,
       builder: (context) => Dialog(
         backgroundColor: Colors.transparent,
@@ -101,7 +107,7 @@ class ShopScreen extends StatelessWidget {
         backgroundColor: glassPageHeaderColor(context),
         automaticallyImplyLeading: false,
         title: Padding(
-          padding: const EdgeInsets.only(left: 58),
+          padding: EdgeInsets.only(left: embedded ? 40 : 58),
           child: Text(language.text('商店', 'Shop', 'ショップ')),
         ),
       ),

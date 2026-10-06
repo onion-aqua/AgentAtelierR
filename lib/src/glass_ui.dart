@@ -4,6 +4,27 @@ import 'package:flutter/material.dart';
 
 enum GlassTone { dark, light }
 
+/// Keeps surfaces in open routes and dialogs in sync with the global switch.
+/// Placing the scope above the Navigator avoids capturing a stale preference
+/// when a page is opened or a confirmation dialog is constructed.
+class GlassStyleScope extends InheritedWidget {
+  const GlassStyleScope({
+    super.key,
+    required this.enabled,
+    required super.child,
+  });
+
+  final bool enabled;
+
+  static bool resolve(BuildContext context, {bool fallback = false}) =>
+      context.dependOnInheritedWidgetOfExactType<GlassStyleScope>()?.enabled ??
+      fallback;
+
+  @override
+  bool updateShouldNotify(GlassStyleScope oldWidget) =>
+      enabled != oldWidget.enabled;
+}
+
 /// Match the page fallback glass at the title bar while keeping labels clear.
 Color glassPageHeaderColor(BuildContext context) =>
     Theme.of(context).brightness == Brightness.dark
@@ -89,6 +110,10 @@ class GlassSurface extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final liquidGlass = GlassStyleScope.resolve(
+      context,
+      fallback: this.liquidGlass,
+    );
     final accent = Theme.of(context).colorScheme.primary;
     final darkMode = Theme.of(context).brightness == Brightness.dark;
     final surfaceTint = Color.lerp(
@@ -232,20 +257,26 @@ class GlassIconButton extends StatelessWidget {
       blurSigma: 10,
       borderRadius: BorderRadius.circular(size / 2),
       fallbackColor: Colors.black.withValues(alpha: 0.38),
-      child: Tooltip(
-        message: tooltip,
-        triggerMode: onLongPress == null
-            ? TooltipTriggerMode.longPress
-            : TooltipTriggerMode.manual,
-        child: SizedBox.square(
-          dimension: size,
-          child: GestureDetector(
-            onLongPress: onLongPress,
-            child: IconButton(
-              onPressed: onPressed,
-              color: Colors.white,
-              disabledColor: Colors.white38,
-              icon: iconWidget ?? Icon(icon, size: size * 0.5),
+      // Give each tooltip anchor its own accessible group. Flutter 3.47's
+      // OverlayPortal semantics cache can otherwise retain a sibling node
+      // after a tooltip is hidden (upstream flutter/flutter#190431).
+      child: Semantics(
+        container: true,
+        child: Tooltip(
+          message: tooltip,
+          triggerMode: onLongPress == null
+              ? TooltipTriggerMode.longPress
+              : TooltipTriggerMode.manual,
+          child: SizedBox.square(
+            dimension: size,
+            child: GestureDetector(
+              onLongPress: onLongPress,
+              child: IconButton(
+                onPressed: onPressed,
+                color: Colors.white,
+                disabledColor: Colors.white38,
+                icon: iconWidget ?? Icon(icon, size: size * 0.5),
+              ),
             ),
           ),
         ),

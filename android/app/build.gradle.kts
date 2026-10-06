@@ -1,8 +1,20 @@
+import java.util.Base64
+
 plugins {
     id("com.android.application")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id("dev.flutter.flutter-gradle-plugin")
 }
+
+// Firebase's native initializer also needs public project identifiers so a
+// notification can be delivered after process death. Read the same build-time
+// config as Flutter; never include a server credential or device token here.
+val relayPushDefines = (project.findProperty("dart-defines") as? String)
+    ?.split(",")?.mapNotNull { encoded ->
+        val decoded = runCatching { String(Base64.getDecoder().decode(encoded), Charsets.UTF_8) }.getOrNull()
+        val parts = decoded?.split("=", limit = 2)
+        if (parts?.size == 2 && parts[0].startsWith("RELAY_")) parts[0] to parts[1] else null
+    }?.toMap() ?: emptyMap()
 
 android {
     namespace = "com.example.ryza_chat_mvp"
@@ -29,6 +41,18 @@ android {
         // flag during build.
         versionCode = flutter.versionCode
         versionName = flutter.versionName
+        if (relayPushDefines["RELAY_PUSH_PROVIDER"] == "fcm") {
+            mapOf(
+                "google_api_key" to "RELAY_FCM_API_KEY",
+                "google_app_id" to "RELAY_FCM_APP_ID",
+                "gcm_defaultSenderId" to "RELAY_FCM_SENDER_ID",
+                "project_id" to "RELAY_FCM_PROJECT_ID",
+            ).forEach { (resource, field) ->
+                val value = relayPushDefines[field]
+                require(!value.isNullOrBlank()) { "Missing public FCM configuration: $field" }
+                resValue("string", resource, value)
+            }
+        }
     }
 
     buildTypes {

@@ -19,12 +19,14 @@ class SkinImportControls extends StatefulWidget {
     required this.language,
     required this.onImported,
     required this.onTextureChanged,
+    this.embedded = false,
   });
 
   final List<CharacterAppearance> appearances;
   final AppLanguage language;
   final ValueChanged<CharacterAppearance> onImported;
   final ValueChanged<CharacterAppearance> onTextureChanged;
+  final bool embedded;
 
   @override
   State<SkinImportControls> createState() => _SkinImportControlsState();
@@ -108,7 +110,10 @@ class _SkinImportControlsState extends State<SkinImportControls> {
   Future<CharacterAppearance?> _chooseTextureTarget() async {
     return showDialog<CharacterAppearance>(
       context: context,
+      useRootNavigator: false,
+      useSafeArea: !widget.embedded,
       builder: (dialogContext) => AlertDialog(
+        insetPadding: EdgeInsets.all(widget.embedded ? 12 : 24),
         title: Text(t('选择贴图对应的服装', 'Choose outfit for texture', 'テクスチャの衣装を選択')),
         contentPadding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
         content: SizedBox(
@@ -187,23 +192,33 @@ class _SkinImportControlsState extends State<SkinImportControls> {
       child: InkWell(
         key: key,
         onTap: _busy ? null : onTap,
-        child: Center(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(Icons.add_rounded, size: 64, color: color),
-              const SizedBox(height: 4),
-              Text(
-                label,
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  color: color,
-                  fontSize: 16,
-                  fontWeight: FontWeight.w600,
-                ),
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final compact =
+                constraints.maxHeight < 105 || constraints.maxWidth < 200;
+            return Center(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    Icons.add_rounded,
+                    size: compact ? 40 : 64,
+                    color: color,
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    label,
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      color: color,
+                      fontSize: compact ? 13 : 16,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ],
               ),
-            ],
-          ),
+            );
+          },
         ),
       ),
     );

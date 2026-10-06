@@ -28,12 +28,14 @@ class CharacterProfile {
     required this.names,
     required this.avatarFile,
     required this.systemPrompt,
+    this.aliases = const [],
   });
 
   final String id;
   final CharacterNames names;
   final String avatarFile;
   final String systemPrompt;
+  final List<String> aliases;
 
   String get avatarAsset => 'assets/images/chara_icons/$avatarFile';
 
@@ -97,6 +99,12 @@ class CharacterCatalog {
   final Map<String, CharacterProfile> _profiles;
   final List<_NpcPlacement> _placements;
 
+  /// A detached, read-only view for contact lists and other character tools.
+  List<CharacterProfile> get allProfiles =>
+      List<CharacterProfile>.unmodifiable(_profiles.values);
+
+  List<CharacterProfile> get profiles => allProfiles;
+
   static const _placementAliases = {
     'klaudia': 'claudia',
     'empel': 'ampel',
@@ -127,6 +135,7 @@ class CharacterCatalog {
         ),
         avatarFile: data['avatar_file'] as String? ?? '${entry.key}.png',
         systemPrompt: data['system_prompt'] as String? ?? '',
+        aliases: List<String>.unmodifiable(aliases),
       );
     }
     final placements = (placement['npcs'] as List<dynamic>? ?? const [])

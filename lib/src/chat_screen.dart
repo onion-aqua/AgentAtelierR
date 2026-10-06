@@ -24,8 +24,12 @@ import 'conversation_collection_store.dart';
 import 'swipe_collection_selection.dart';
 import 'voice_playback_progress.dart';
 import 'narration_composer_fields.dart';
+import 'npc_messages_page.dart';
+import 'npc_chat_contacts.dart';
+import 'npc_contact_requests.dart';
 import 'app_theme.dart';
 import 'app_localization.dart';
+import 'dialogue_language_guard.dart';
 import 'attachment_thumbnail_store.dart';
 import 'image_food_invitation.dart';
 import 'audio_envelope.dart';
@@ -46,6 +50,7 @@ import 'device_agent_tools.dart';
 import 'character_appearance.dart';
 import 'character_runtime_profile.dart';
 import 'local_skin_store.dart';
+import 'llm_dialogue_signal.dart';
 import 'character_catalog.dart';
 import 'character_camera.dart';
 import 'character_expression.dart';
@@ -56,8 +61,15 @@ import 'character_performance_queue.dart';
 import 'chat_segments.dart';
 import 'frame_rate_controller.dart';
 import 'glass_ui.dart';
-import 'folding_button_group.dart';
 import 'local_save_dialog.dart';
+import 'relay/relay_chat_page.dart';
+import 'relay/relay_service.dart';
+import 'shop_screen.dart';
+import 'world_map_screen.dart';
+import 'alchemy_screen.dart';
+import 'mission_screen.dart';
+import 'alarm_screen.dart';
+import 'settings_screen.dart';
 import 'stage_environment_catalog.dart';
 import 'runtime_log.dart';
 import 'ryza_loading_indicator.dart';
@@ -68,6 +80,8 @@ import 'local_tts_client.dart';
 import 'local_tts_models.dart';
 import 'appearance_picker_page.dart';
 import 'character_spine_view.dart';
+import 'virtual_phone.dart';
+import 'virtual_phone_wallpaper_page.dart';
 
 extension SceneTimeIcon on SceneTime {
   IconData get icon => switch (this) {
@@ -170,6 +184,7 @@ class ChatScreen extends StatefulWidget {
     required this.controller,
     required this.onMenuPressed,
     required this.onShopPressed,
+    this.relayService,
     required this.hideUi,
     this.onFullscreenChanged,
     this.onCharacterReady,
@@ -179,6 +194,7 @@ class ChatScreen extends StatefulWidget {
   final AppController controller;
   final VoidCallback onMenuPressed;
   final VoidCallback onShopPressed;
+  final RelayService? relayService;
   final bool hideUi;
   final ValueChanged<bool>? onFullscreenChanged;
   final VoidCallback? onCharacterReady;
@@ -567,7 +583,6 @@ class _ChatScreenState extends State<ChatScreen> {
   double? _lockedPanelFraction;
   Size? _lastChatViewport;
   final List<ChatAttachment> _pendingAttachments = [];
-  bool _characterToolsExpanded = false;
   bool _showScrollToBottomIndicator = false;
   bool _conversationFullscreen = false;
 
@@ -843,7 +858,6 @@ class _ChatScreenState extends State<ChatScreen> {
       _isSuggestingReply = false;
       _pendingAttachments.clear();
       _manualPanelFraction = null;
-      _characterToolsExpanded = false;
     });
   }
 
@@ -3011,6 +3025,31 @@ class _ChatScreenState extends State<ChatScreen> {
     });
   }
 
+  Iterable<String> _recentNpcIdsFromMainDialogue() {
+    final latest = widget.controller.messages
+        .where(
+          (message) =>
+              !message.isUser &&
+              !message.isFailure &&
+              message.text.trim().isNotEmpty,
+        )
+        .lastOrNull;
+    if (latest == null) return const [];
+    final ids = <String>[];
+    for (final segment in parseAssistantSegments(
+      latest.text,
+      defaultPrimaryCharacterId: widget.controller.activeCharacterId,
+    )) {
+      if (segment.speaker != ChatSpeaker.character ||
+          segment.characterId == null ||
+          ids.contains(segment.characterId)) {
+        continue;
+      }
+      ids.add(segment.characterId!);
+    }
+    return ids;
+  }
+
   Future<void> _sendMessage({String? automaticPrompt}) async {
     final rawText = _inputController.text.trim();
     final narration = _narrationInputController.text.trim();
@@ -3036,6 +3075,17 @@ class _ChatScreenState extends State<ChatScreen> {
             '请分析我发送的附件。',
         ].join('\n');
     final isAutomatic = automaticPrompt != null;
+    // Keep contact intent with this generation. Cancelled or failed replies
+    // must not leave an invitation for a later reply or a different save.
+    final contactRequest = isAutomatic
+        ? null
+        : NpcContactRequestDetector.detect(
+            rawText,
+            contacts: widget.controller.npcChatContacts,
+            fallbackContactIds: _recentNpcIdsFromMainDialogue(),
+          );
+    final contactRequestRevision = widget.controller.dataRevision;
+    final contactRequestCharacter = widget.controller.activeCharacterId;
     if (!isAutomatic) _recordUserActivity();
     widget.controller.removeFailedReplies();
 
@@ -3077,6 +3127,15 @@ class _ChatScreenState extends State<ChatScreen> {
       widget.controller.addAssistantMessage(reply);
       _showLatestAssistantFromStartIfOverflow();
       await _playTtsIfConfigured(reply);
+      if (!mounted || generation != _replyGeneration) return;
+      if (contactRequest != null) {
+        await _offerNpcContactAddition(
+          contactRequest,
+          reply,
+          expectedRevision: contactRequestRevision,
+          primaryCharacterId: contactRequestCharacter,
+        );
+      }
       if (mounted && generation == _replyGeneration) {
         setState(() {
           _isReplying = false;
@@ -3095,6 +3154,10 @@ class _ChatScreenState extends State<ChatScreen> {
     final requestModel = widget.controller.activeLlmModel;
     final requestIndependentTranslation =
         widget.controller.independentTranslation;
+    final requestReplyLanguage = widget.controller.characterReplyLanguage;
+    final requestNarratorLanguage = widget.controller.narratorLanguage;
+    final requestTranslationLanguage = widget.controller.translationLanguage;
+    final requestCharacterId = widget.controller.activeCharacterId;
     final apiKey = await _secretStore.readLlmKey(
       requestProvider,
       openAiSlot: widget.controller.activeOpenAiSlot,
@@ -3120,6 +3183,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
     widget.controller.beginAssistantStream();
     StreamIterator<String>? iterator;
+    LlmDialogueSignalTurn? signalTurn;
     try {
       RuntimeLog.instance.info(
         'AI',
@@ -3127,6 +3191,9 @@ class _ChatScreenState extends State<ChatScreen> {
             'model=${widget.controller.activeLlmModel}, '
             'agent=${widget.controller.agentEnabled}, attachments=${attachments.length}',
       );
+      // Count one primary dialogue (including automatic story replies), not
+      // individual tool rounds, translation, planning, demo replies or TTS.
+      signalTurn = widget.controller.beginLlmDialogueTurn();
       iterator = StreamIterator<String>(
         _aiClient.streamChat(
           provider: requestProvider,
@@ -3153,6 +3220,7 @@ class _ChatScreenState extends State<ChatScreen> {
       while (await iterator.moveNext()) {
         if (generation != _replyGeneration) return;
         final delta = iterator.current;
+        widget.controller.receiveLlmDialogueContent(signalTurn, delta);
         if (!widget.controller.fishTtsEnabled &&
             !_isCharacterSpeaking &&
             delta.trim().isNotEmpty) {
@@ -3162,8 +3230,50 @@ class _ChatScreenState extends State<ChatScreen> {
         _showLatestAssistantFromStartIfOverflow();
       }
       if (generation != _replyGeneration) return;
-      final reply = widget.controller.messages.last.text;
+      var reply = widget.controller.messages.last.text;
+      reply = await ensureAssistantReplyLanguages(
+        source: reply,
+        replyLanguage: requestReplyLanguage,
+        narratorLanguage: requestNarratorLanguage,
+        inlineTranslationLanguage: requestIndependentTranslation
+            ? TranslationLanguage.none
+            : requestTranslationLanguage,
+        primaryCharacterId: requestCharacterId,
+        complete: (messages) => _aiClient.complete(
+          provider: requestProvider,
+          baseUrl: requestBaseUrl,
+          apiKey: apiKey,
+          model: requestModel,
+          lightweight: true,
+          messages: messages,
+        ),
+      );
+      if (!mounted || generation != _replyGeneration) return;
+      if (!requestIndependentTranslation &&
+          requestTranslationLanguage != TranslationLanguage.none &&
+          !hasCompleteInlineTranslations(reply)) {
+        reply = await DialogueTranslator().translate(
+          source: reply,
+          language: requestTranslationLanguage.promptLabel!,
+          targetLanguage: translationLanguageToAppLanguage(
+            requestTranslationLanguage,
+          ),
+          complete: (messages) => _aiClient.complete(
+            provider: requestProvider,
+            baseUrl: requestBaseUrl,
+            apiKey: apiKey,
+            model: requestModel,
+            lightweight: true,
+            messages: messages,
+          ),
+        );
+        if (!mounted || generation != _replyGeneration) return;
+      }
+      widget.controller.replaceAssistantStreamText(reply);
       widget.controller.finishAssistantStream();
+      // Commit before any translation, performance planning or audio work.
+      widget.controller.completeLlmDialogueTurn(signalTurn);
+      signalTurn = null;
       if (requestIndependentTranslation &&
           widget.controller.messages.isNotEmpty &&
           widget.controller.messages.last.text == reply &&
@@ -3175,6 +3285,7 @@ class _ChatScreenState extends State<ChatScreen> {
             provider: requestProvider,
             baseUrl: requestBaseUrl,
             model: requestModel,
+            expectedLanguage: requestTranslationLanguage,
           ),
         );
       }
@@ -3400,13 +3511,24 @@ class _ChatScreenState extends State<ChatScreen> {
         displaySource: reply,
         plannedPerformance: plannedPerformance,
       );
-      if (generation != _replyGeneration) return;
+      if (!mounted || generation != _replyGeneration) return;
+      if (contactRequest != null) {
+        await _offerNpcContactAddition(
+          contactRequest,
+          reply,
+          expectedRevision: contactRequestRevision,
+          primaryCharacterId: contactRequestCharacter,
+        );
+      }
     } on Object catch (error, stackTrace) {
       if (generation != _replyGeneration) return;
       RuntimeLog.instance.error('AI', error, stackTrace);
       _stopSpeakingAnimation();
       widget.controller.failAssistantStream(error.toString());
     } finally {
+      if (signalTurn != null) {
+        widget.controller.cancelLlmDialogueTurn(signalTurn);
+      }
       if (identical(_replyIterator, iterator)) _replyIterator = null;
       if (iterator != null) unawaited(iterator.cancel());
       if (mounted && generation == _replyGeneration) {
@@ -3419,6 +3541,92 @@ class _ChatScreenState extends State<ChatScreen> {
           false,
         );
       }
+    }
+  }
+
+  Future<void> _offerNpcContactAddition(
+    NpcContactRequest request,
+    String reply, {
+    required int expectedRevision,
+    required String primaryCharacterId,
+  }) async {
+    if (!mounted || widget.controller.dataRevision != expectedRevision) {
+      return;
+    }
+    final acceptedIds = NpcContactRequestDetector.acceptedContactIds(
+      reply,
+      request,
+      primaryCharacterId: primaryCharacterId,
+    );
+    final contacts = acceptedIds
+        .map(
+          (id) => widget.controller.npcChatContacts
+              .where((contact) => contact.id == id)
+              .firstOrNull,
+        )
+        .whereType<NpcChatContact>()
+        .where((contact) => !widget.controller.isNpcContactAdded(contact.id))
+        .toList();
+    if (contacts.isEmpty) return;
+    final language = widget.controller.interfaceLanguage;
+    final channel = request.channel.label;
+    String? selectedId;
+    if (contacts.length == 1) {
+      final contact = contacts.single;
+      final add = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: Text(language.text('添加联系人', 'Add contact', '連絡先を追加')),
+          content: Text(
+            language.text(
+              '${contact.names.chinese}同意通过$channel联系。要将其加入虚拟手机的信息联系人吗？',
+              '${contact.names.english} agreed to exchange contacts through $channel. Add this NPC to the virtual phone messages?',
+              '${contact.names.japanese}が$channelでの連絡に同意しました。仮想スマホの連絡先に追加しますか？',
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: Text(language.text('暂不添加', 'Not now', '今は追加しない')),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              child: Text(language.text('加入信息', 'Add to messages', 'メッセージに追加')),
+            ),
+          ],
+        ),
+      );
+      if (add == true) selectedId = contact.id;
+    } else {
+      selectedId = await showDialog<String>(
+        context: context,
+        builder: (context) => SimpleDialog(
+          title: Text(
+            language.text('选择要添加的联系人', 'Choose a contact', '追加する連絡先を選択'),
+          ),
+          children: [
+            for (final contact in contacts)
+              SimpleDialogOption(
+                onPressed: () => Navigator.of(context).pop(contact.id),
+                child: Text(contact.names.forLanguage(language)),
+              ),
+          ],
+        ),
+      );
+    }
+    if (!mounted ||
+        selectedId == null ||
+        widget.controller.dataRevision != expectedRevision) {
+      return;
+    }
+    if (widget.controller.addNpcContact(selectedId)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            language.text('已加入信息联系人', 'Added to messages', 'メッセージの連絡先に追加しました'),
+          ),
+        ),
+      );
     }
   }
 
@@ -3816,6 +4024,18 @@ class _ChatScreenState extends State<ChatScreen> {
       fallbackEmotion: fallbackEmotion,
       activeCharacterId: characterId,
     );
+    if (candidateSegments.any(
+      (segment) =>
+          assessDialogueLanguage(
+            segment.speechText,
+            widget.controller.characterReplyLanguage,
+          ) ==
+          DialogueLanguageVerdict.mismatch,
+    )) {
+      RuntimeLog.instance.warning('TTS', '台词与所选回复语言不符，跳过合成');
+      _stopSpeakingAnimation();
+      return;
+    }
     if (candidateSegments.isEmpty) {
       _stopSpeakingAnimation();
       return;
@@ -4651,10 +4871,12 @@ class _ChatScreenState extends State<ChatScreen> {
     required LlmProvider provider,
     required String baseUrl,
     required String model,
+    TranslationLanguage? expectedLanguage,
   }) async {
-    final language = widget.controller.translationLanguage;
+    final language = expectedLanguage ?? widget.controller.translationLanguage;
+    final capturedLanguage = expectedLanguage != null;
     if (language == TranslationLanguage.none ||
-        !widget.controller.independentTranslation) {
+        (!capturedLanguage && !widget.controller.independentTranslation)) {
       return;
     }
     final revision = widget.controller.dataRevision;
@@ -4662,6 +4884,7 @@ class _ChatScreenState extends State<ChatScreen> {
       final translated = await DialogueTranslator().translate(
         source: message.text,
         language: language.promptLabel!,
+        targetLanguage: translationLanguageToAppLanguage(language),
         complete: (messages) => _aiClient.complete(
           lightweight: true,
           provider: provider,
@@ -4673,8 +4896,9 @@ class _ChatScreenState extends State<ChatScreen> {
       );
       if (!mounted ||
           revision != widget.controller.dataRevision ||
-          !widget.controller.independentTranslation ||
-          language != widget.controller.translationLanguage) {
+          (!capturedLanguage &&
+              (!widget.controller.independentTranslation ||
+                  language != widget.controller.translationLanguage))) {
         return;
       }
       final active = _activeAssistantSegmentIndex;
@@ -4755,6 +4979,7 @@ class _ChatScreenState extends State<ChatScreen> {
                     provider: provider,
                     baseUrl: baseUrl,
                     model: model,
+                    expectedLanguage: language,
                   ),
                 );
               }
@@ -4986,152 +5211,177 @@ class _ChatScreenState extends State<ChatScreen> {
     });
   }
 
-  void _showCharacterStatus() {
-    final language = widget.controller.interfaceLanguage;
-    showDialog<void>(
-      context: context,
-      barrierColor: Colors.black38,
-      builder: (dialogContext) => AnimatedBuilder(
-        animation: widget.controller,
-        builder: (context, _) => Dialog(
-          backgroundColor: Colors.transparent,
-          surfaceTintColor: Colors.transparent,
-          insetPadding: const EdgeInsets.symmetric(horizontal: 24),
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 380),
-            child: GlassSurface(
-              liquidGlass: widget.controller.liquidGlassChatUi,
-              boxShadow: const [
-                BoxShadow(
-                  color: Color(0x66000000),
-                  blurRadius: 30,
-                  offset: Offset(0, 14),
-                ),
-              ],
-              child: SingleChildScrollView(
-                padding: const EdgeInsets.fromLTRB(20, 18, 12, 18),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Row(
-                      children: [
-                        const Icon(
-                          Icons.favorite_border_rounded,
-                          color: Colors.white,
-                        ),
-                        const SizedBox(width: 10),
-                        Expanded(
-                          child: Text(
-                            language.text(
-                              '角色状态',
-                              'Character status',
-                              'キャラクター状態',
-                            ),
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 18,
-                              fontWeight: FontWeight.w700,
-                            ),
-                          ),
-                        ),
-                        if (_usesProtectedSpine &&
-                            widget.controller.storyClockEnabled)
-                          Text(
-                            language.text(
-                              '第${widget.controller.storyClock.day}天 · ${widget.controller.storyClock.timeLabel}',
-                              'Day ${widget.controller.storyClock.day} · ${widget.controller.storyClock.timeLabel}',
-                              '${widget.controller.storyClock.day}日目 · ${widget.controller.storyClock.timeLabel}',
-                            ),
-                            style: const TextStyle(
-                              color: Colors.white70,
-                              fontSize: 12,
-                            ),
-                          ),
-                        IconButton(
-                          onPressed: () => Navigator.pop(dialogContext),
-                          tooltip: language.text('关闭', 'Close', '閉じる'),
-                          color: Colors.white,
-                          icon: const Icon(Icons.close_rounded),
-                        ),
-                      ],
-                    ),
-                    const Divider(color: Colors.white24),
-                    Align(
-                      alignment: Alignment.centerLeft,
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          _CharacterStatusRow(
-                            icon: Icons.mood_outlined,
-                            label: language.text('心情', 'Mood', '気分'),
-                            value: widget.controller.characterState.summary(
-                              language,
-                            ),
-                          ),
-                          if (_usesProtectedSpine &&
-                              widget.controller.storyClockEnabled)
-                            _CharacterStatusRow(
-                              icon: Icons.restaurant_rounded,
-                              label: language.text('饱食度', 'Satiety', '満腹度'),
-                              value:
-                                  '${widget.controller.storyClock.satiety}/100',
-                            ),
-                          if (widget
-                              .controller
-                              .characterState
-                              .reason
-                              .isNotEmpty)
-                            _CharacterStatusRow(
-                              icon: Icons.history,
-                              label: language.text(
-                                '最近变化',
-                                'Last change',
-                                '最近の変化',
-                              ),
-                              value:
-                                  '${widget.controller.characterState.reason}\n${widget.controller.characterState.updatedAt?.toLocal().toString().split('.').first ?? ''}',
-                            ),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    Wrap(
-                      spacing: 8,
-                      runSpacing: 4,
-                      children: [
-                        _CharacterStatusRow(
-                          icon: Icons.favorite_rounded,
-                          label: language.text('关系点数', 'Bond', '親密度'),
-                          value: '${widget.controller.relationshipPoints}',
-                        ),
-                        if (_usesProtectedSpine) ...[
-                          _CharacterStatusRow(
-                            icon: Icons.checkroom_outlined,
-                            label: language.text('服装姿态', 'Outfit', '衣装と姿勢'),
-                            value: _appearance.label,
-                          ),
-                          _CharacterStatusRow(
-                            icon: widget.controller.sceneTime.icon,
-                            label: language.text('场景时间', 'Scene time', 'シーン時間'),
-                            value: widget.controller.sceneTime.label,
-                          ),
-                        ],
-                        _CharacterStatusRow(
-                          icon: Icons.psychology_alt_outlined,
-                          label: language.text('长期记忆', 'Memory', '長期記憶'),
-                          value: widget.controller.longTermMemoryEnabled
-                              ? language.text('启用', 'Enabled', '有効')
-                              : language.text('关闭', 'Disabled', '無効'),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ),
+  Widget _virtualPhoneDetailPage(
+    BuildContext context, {
+    required String title,
+    required Widget body,
+  }) {
+    final glass = GlassStyleScope.resolve(
+      context,
+      fallback: widget.controller.liquidGlassChatUi,
+    );
+    return Scaffold(
+      backgroundColor: Colors.transparent,
+      appBar: AppBar(
+        automaticallyImplyLeading: false,
+        backgroundColor: glass
+            ? Colors.transparent
+            : glassPageHeaderColor(context),
+        title: Padding(
+          padding: const EdgeInsets.only(left: 40),
+          child: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis),
         ),
       ),
+      body: GlassPageSurface(liquidGlass: glass, child: body),
+    );
+  }
+
+  Widget _buildVirtualPhoneStatusPage(BuildContext context) {
+    return AnimatedBuilder(
+      animation: widget.controller,
+      builder: (context, _) {
+        final controller = widget.controller;
+        final language = controller.interfaceLanguage;
+        final state = controller.characterState;
+        return _virtualPhoneDetailPage(
+          context,
+          title: language.text('角色状态', 'Character status', 'キャラクター状態'),
+          body: ListView(
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+            children: [
+              _PhoneStatusCard(
+                icon: Icons.mood_outlined,
+                title: language.text('当前状态', 'Current state', '現在の状態'),
+                body: state.summary(language),
+              ),
+              if (controller.storyClockEnabled) ...[
+                _PhoneStatusCard(
+                  icon: Icons.schedule_rounded,
+                  title: language.text('剧情时间', 'Story time', '物語の時刻'),
+                  body: language.text(
+                    '第${controller.storyClock.day}天 · ${controller.storyClock.timeLabel}',
+                    'Day ${controller.storyClock.day} · ${controller.storyClock.timeLabel}',
+                    '${controller.storyClock.day}日目 · ${controller.storyClock.timeLabel}',
+                  ),
+                ),
+                _PhoneStatusCard(
+                  icon: Icons.restaurant_rounded,
+                  title: language.text('饱食度', 'Satiety', '満腹度'),
+                  body: '${controller.storyClock.satiety}/100',
+                ),
+              ],
+              _PhoneStatusCard(
+                icon: Icons.favorite_rounded,
+                title: language.text('关系点数', 'Bond', '親密度'),
+                body: '${controller.relationshipPoints}',
+              ),
+              if (state.reason.isNotEmpty)
+                _PhoneStatusCard(
+                  icon: Icons.history_rounded,
+                  title: language.text('最近变化', 'Recent change', '最近の変化'),
+                  body:
+                      '${state.reason}\n${state.updatedAt?.toLocal().toString().split('.').first ?? ''}',
+                ),
+              if (_usesProtectedSpine) ...[
+                _PhoneStatusCard(
+                  icon: Icons.checkroom_outlined,
+                  title: language.text('服装姿态', 'Outfit', '衣装と姿勢'),
+                  body: _appearance.label,
+                ),
+                _PhoneStatusCard(
+                  icon: controller.sceneTime.icon,
+                  title: language.text('场景时间', 'Scene time', 'シーン時間'),
+                  body: controller.sceneTime.label,
+                ),
+              ],
+              _PhoneStatusCard(
+                icon: Icons.location_on_outlined,
+                title: language.text('当前位置', 'Location', '現在地'),
+                body:
+                    '${controller.selectedAreaName}\n${controller.selectedStageName}',
+              ),
+              _PhoneStatusCard(
+                icon: Icons.psychology_alt_outlined,
+                title: language.text('长期记忆', 'Memory', '長期記憶'),
+                body: controller.longTermMemoryEnabled
+                    ? language.text('启用', 'Enabled', '有効')
+                    : language.text('关闭', 'Disabled', '無効'),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  VirtualPhoneStatusInfo _virtualPhoneStatusInfo() {
+    final controller = widget.controller;
+    return VirtualPhoneStatusInfo(
+      llmLatency: controller.llmDialogueLatency,
+      signalBars: controller.llmDialogueSignalBars,
+      satietyEnabled: controller.storyClockEnabled,
+      satiety: controller.storyClock.satiety,
+    );
+  }
+
+  VirtualPhoneHomeInfo _virtualPhoneHomeInfo() {
+    final controller = widget.controller;
+    final language = controller.interfaceLanguage;
+    final now = DateTime.now();
+    final timeLabel = controller.storyClockEnabled
+        ? controller.storyClock.timeLabel
+        : '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}';
+    final dayLabel = controller.storyClockEnabled
+        ? language.text(
+            '第${controller.storyClock.day}天',
+            'Day ${controller.storyClock.day}',
+            '${controller.storyClock.day}日目',
+          )
+        : language.text('第${now.day}天', 'Day ${now.day}', '${now.day}日目');
+    final weather = VirtualPhoneWeather.estimate(
+      areaId: controller.selectedAreaId,
+      stageId: controller.selectedStageId,
+      sceneTime: controller.sceneTime.name,
+    );
+    return VirtualPhoneHomeInfo(
+      dayLabel: dayLabel,
+      timeLabel: timeLabel,
+      carrierLabel: controller.virtualPhoneCarrierName,
+      locationLabel: controller.selectedAreaName,
+      locationDetail: controller.selectedStageName,
+      temperatureLabel: '${weather.temperatureCelsius}°C',
+      weatherLabel: weather.label(language),
+      weatherIcon: weather.icon,
+    );
+  }
+
+  Widget _buildVirtualPhoneSavesPage(BuildContext context) =>
+      _virtualPhoneDetailPage(
+        context,
+        title: widget.controller.interfaceLanguage.text(
+          '本地存档',
+          'Local saves',
+          'ローカルセーブ',
+        ),
+        body: LocalSavePage(controller: widget.controller),
+      );
+
+  Widget _buildVirtualPhoneShortcutPicker(BuildContext context) =>
+      SettingsShortcutPicker(
+        controller: widget.controller,
+        includePcAgent: widget.relayService != null,
+        onSelected: (_) => VirtualPhoneScope.of(context).goHome(),
+      );
+
+  Widget _buildVirtualPhoneShortcutPage(BuildContext context) {
+    final section = widget.controller.virtualPhoneSettingsShortcut;
+    if (section == null) return _buildVirtualPhoneShortcutPicker(context);
+    return SettingsScreen(
+      controller: widget.controller,
+      relayService: widget.relayService,
+      onMenuPressed: () {},
+      embedded: true,
+      initialSection: section,
     );
   }
 
@@ -5424,97 +5674,107 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
-  void _showMotionPicker() {
-    if (!_usesProtectedSpine) return;
-    if (!_appearance.animated) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('${_appearance.label}只有原包静态预览，没有可播放的 Spine 动作资源'),
-        ),
-      );
-      return;
-    }
-    showModalBottomSheet<void>(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      barrierColor: Colors.black38,
-      constraints: BoxConstraints(
-        maxHeight: MediaQuery.sizeOf(context).height * 0.72,
-      ),
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
-      ),
-      builder: (context) => _MotionPickerSheet(
-        liquidGlass: widget.controller.liquidGlassChatUi,
-        language: widget.controller.interfaceLanguage,
-        recipes: _motionRecipes.where(_canPlayRecipe).toList(),
-        postureControls: Wrap(
-          spacing: 8,
-          children: [
-            TextButton(
-              onPressed: () {
-                _postureState.manual = false;
-                _lastPostureCue = null;
-                Navigator.pop(context);
-              },
-              child: Text(
-                widget.controller.interfaceLanguage.text(
-                  '自动姿态',
-                  'Auto posture',
-                  '姿勢を自動選択',
+  Widget _buildVirtualPhoneMotionPage(BuildContext context) {
+    return AnimatedBuilder(
+      animation: widget.controller,
+      builder: (context, _) => StatefulBuilder(
+        builder: (context, refresh) {
+          final language = widget.controller.interfaceLanguage;
+          if (!_usesProtectedSpine || !_appearance.animated) {
+            return _virtualPhoneDetailPage(
+              context,
+              title: language.text('组合动作', 'Motions', '組み合わせ動作'),
+              body: Center(
+                child: Padding(
+                  padding: const EdgeInsets.all(24),
+                  child: Text(
+                    language.text(
+                      '当前角色或服装暂未提供可播放的动作资源。',
+                      'No animation resources are available for this character or outfit yet.',
+                      '現在のキャラクター・衣装には再生できる動作リソースがありません。',
+                    ),
+                  ),
                 ),
               ),
+            );
+          }
+          return _MotionPickerPage(
+            liquidGlass: widget.controller.liquidGlassChatUi,
+            language: language,
+            recipes: _motionRecipes.where(_canPlayRecipe).toList(),
+            postureControls: Wrap(
+              spacing: 8,
+              children: [
+                TextButton(
+                  onPressed: () => refresh(() {
+                    _postureState.manual = false;
+                    _lastPostureCue = null;
+                  }),
+                  child: Text(language.text('自动姿态', 'Auto posture', '姿勢を自動選択')),
+                ),
+                if (!_appearance.isStanding)
+                  TextButton(
+                    onPressed: () => refresh(
+                      () => _selectPosture('sitting_normal', byUser: true),
+                    ),
+                    child: Text(language.text('自然坐姿', 'Sit normally', '通常座り')),
+                  ),
+                if (_crossLeggedGroup != null)
+                  TextButton(
+                    onPressed: () => refresh(
+                      () => _selectPosture('sitting_agura', byUser: true),
+                    ),
+                    child: Text(
+                      language.text('盘腿坐', 'Sit cross-legged', 'あぐら'),
+                    ),
+                  ),
+              ],
             ),
-            if (!_appearance.isStanding)
-              TextButton(
-                onPressed: () {
-                  _selectPosture('sitting_normal', byUser: true);
-                  Navigator.pop(context);
-                },
-                child: Text(
-                  widget.controller.interfaceLanguage.text(
-                    '自然坐姿',
-                    'Sit normally',
-                    '通常座り',
+            onSelected: (recipe) {
+              _clearPerformanceQueue();
+              _playRecipeStage(recipe, 0);
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text(
+                    language.text(
+                      '正在播放：${recipe.name}',
+                      'Playing: ${recipe.name}',
+                      '再生中：${recipe.name}',
+                    ),
                   ),
                 ),
-              ),
-            if (_crossLeggedGroup != null)
-              TextButton(
-                onPressed: () {
-                  _selectPosture('sitting_agura', byUser: true);
-                  Navigator.pop(context);
-                },
-                child: Text(
-                  widget.controller.interfaceLanguage.text(
-                    '盘腿坐',
-                    'Sit cross-legged',
-                    'あぐら',
-                  ),
-                ),
-              ),
-          ],
-        ),
-        onSelected: (recipe) {
-          _clearPerformanceQueue();
-          _playRecipeStage(recipe, 0);
+              );
+            },
+          );
         },
       ),
     );
   }
 
-  void _showAppearancePicker() {
-    if (!_usesProtectedSpine) return;
-    showGeneralDialog<void>(
-      context: context,
-      barrierDismissible: true,
-      barrierLabel: MaterialLocalizations.of(context).modalBarrierDismissLabel,
-      barrierColor: Colors.transparent,
-      transitionDuration: const Duration(milliseconds: 240),
-      transitionBuilder: (context, animation, _, child) =>
-          FadeTransition(opacity: animation, child: child),
-      pageBuilder: (pickerContext, _, _) => AppearancePickerPage(
+  Widget _buildVirtualPhoneAppearancePage(BuildContext context) {
+    if (!_usesProtectedSpine) {
+      return _virtualPhoneDetailPage(
+        context,
+        title: widget.controller.interfaceLanguage.text(
+          '服装切换',
+          'Outfits',
+          '衣装切り替え',
+        ),
+        body: Center(
+          child: Text(
+            widget.controller.interfaceLanguage.text(
+              '当前角色的服装资源尚未提供',
+              'Outfits are not available for this character yet',
+              '現在のキャラクターの衣装はまだ利用できません',
+            ),
+          ),
+        ),
+      );
+    }
+    return AnimatedBuilder(
+      animation: widget.controller,
+      builder: (context, _) => AppearancePickerPage(
+        embedded: true,
         appearances: characterAppearances,
         selectedId: _appearance.id,
         language: widget.controller.interfaceLanguage,
@@ -5530,7 +5790,6 @@ class _ChatScreenState extends State<ChatScreen> {
         onSelected: (appearance) {
           final previous = _appearance;
           widget.controller.setCharacterAppearance(appearance.id);
-          Navigator.of(pickerContext).pop();
           if (previous.id != appearance.id && widget.controller.aiEnabled) {
             _pendingOutfitReaction =
                 '应用事件：莱莎刚从“${previous.label}”切换为“${appearance.label}”。当前样式：${appearance.promptDescription}。请先用简短旁白描写换装后的神态，再以莱莎口吻回应一两句，遵守当前语言、译文及演出格式。不描述换衣过程，不代写用户评价，不编造未提供的服装细节。';
@@ -5668,7 +5927,97 @@ class _ChatScreenState extends State<ChatScreen> {
               showSceneTime: _usesProtectedSpine,
               onSceneChanged: widget.controller.setSceneTime,
               onMenuPressed: widget.onMenuPressed,
-              onStatusPressed: _showCharacterStatus,
+              phoneButton: VirtualPhoneLauncher(
+                language: widget.controller.interfaceLanguage,
+                liquidGlass: liquidGlass,
+                wallpapers: widget.controller.virtualPhoneWallpapers,
+                liquidGlassBuilder: () => widget.controller.liquidGlassChatUi,
+                homeInfo: _virtualPhoneHomeInfo(),
+                updates: widget.controller,
+                homeInfoBuilder: _virtualPhoneHomeInfo,
+                statusInfo: _virtualPhoneStatusInfo(),
+                statusInfoBuilder: _virtualPhoneStatusInfo,
+                shortcutLabel: () =>
+                    widget.controller.virtualPhoneSettingsShortcut?.title(
+                      widget.controller.interfaceLanguage,
+                    ) ??
+                    widget.controller.interfaceLanguage.text(
+                      '自定义',
+                      'Shortcut',
+                      'カスタム',
+                    ),
+                shortcutIcon: () =>
+                    widget.controller.virtualPhoneSettingsShortcut?.icon ??
+                    Icons.dashboard_customize_outlined,
+                shortcutPicker: _buildVirtualPhoneShortcutPicker,
+                pageManagedBackApps: const {VirtualPhoneApp.pcAgent},
+                fullBleedApps: <VirtualPhoneApp>{
+                  VirtualPhoneApp.shop,
+                  VirtualPhoneApp.pcAgent,
+                  VirtualPhoneApp.messages,
+                  VirtualPhoneApp.worldMap,
+                  VirtualPhoneApp.alchemy,
+                  VirtualPhoneApp.missions,
+                  VirtualPhoneApp.alarms,
+                  VirtualPhoneApp.settings,
+                  VirtualPhoneApp.runtimeLogs,
+                  VirtualPhoneApp.wallpaper,
+                },
+                pages: <VirtualPhoneApp, VirtualPhonePageBuilder>{
+                  VirtualPhoneApp.status: _buildVirtualPhoneStatusPage,
+                  VirtualPhoneApp.messages: (_) =>
+                      NpcMessagesPage(controller: widget.controller),
+                  VirtualPhoneApp.outfit: _buildVirtualPhoneAppearancePage,
+                  VirtualPhoneApp.motion: _buildVirtualPhoneMotionPage,
+                  VirtualPhoneApp.shortcut: _buildVirtualPhoneShortcutPage,
+                  VirtualPhoneApp.wallpaper: (_) => VirtualPhoneWallpaperPage(
+                    store: widget.controller.virtualPhoneWallpapers,
+                    language: widget.controller.interfaceLanguage,
+                  ),
+                  VirtualPhoneApp.shop: (_) =>
+                      ShopScreen(controller: widget.controller, embedded: true),
+                  if (widget.relayService != null)
+                    VirtualPhoneApp.pcAgent: (_) => RelayChatScreen(
+                      service: widget.relayService!,
+                      embedded: true,
+                    ),
+                  VirtualPhoneApp.worldMap: (phoneContext) => WorldMapScreen(
+                    controller: widget.controller,
+                    onMenuPressed: () {},
+                    onClose: () => VirtualPhoneScope.of(phoneContext).goHome(),
+                  ),
+                  VirtualPhoneApp.alchemy: (_) => AlchemyScreen(
+                    controller: widget.controller,
+                    embedded: true,
+                  ),
+                  VirtualPhoneApp.missions: (_) => MissionScreen(
+                    controller: widget.controller,
+                    embedded: true,
+                  ),
+                  VirtualPhoneApp.alarms: (_) => AlarmScreen(
+                    controller: widget.controller,
+                    onMenuPressed: () {},
+                    embedded: true,
+                  ),
+                  VirtualPhoneApp.settings: (_) => SettingsScreen(
+                    controller: widget.controller,
+                    relayService: widget.relayService,
+                    backHandledByShell: false,
+                    onMenuPressed: () {},
+                    embedded: true,
+                  ),
+                  VirtualPhoneApp.runtimeLogs: (_) => RuntimeLogScreen(
+                    language: widget.controller.interfaceLanguage,
+                    liquidGlass: liquidGlass,
+                    onMenuPressed: () {},
+                    embedded: true,
+                  ),
+                  VirtualPhoneApp.saves: _buildVirtualPhoneSavesPage,
+                },
+                onShopPressed: widget.onShopPressed,
+                onSavesPressed: () =>
+                    showLocalSaveDialog(context, widget.controller),
+              ),
             ),
           ),
         if (!widget.hideUi)
@@ -5974,37 +6323,6 @@ class _ChatScreenState extends State<ChatScreen> {
               onContinuousAsmr: _openContinuousAsmr,
             ),
           ),
-        if (!widget.hideUi)
-          Positioned(
-            right: 12,
-            top: 68,
-            child: _RoundIcon(
-              liquidGlass: widget.controller.liquidGlassChatUi,
-              icon: Icons.save_outlined,
-              tooltip: widget.controller.interfaceLanguage.text(
-                '本地存档',
-                'Local saves',
-                'ローカルセーブ',
-              ),
-              onPressed: () => showLocalSaveDialog(context, widget.controller),
-            ),
-          ),
-        if (!widget.hideUi && _usesProtectedSpine)
-          Positioned(
-            right: 12,
-            top: 126,
-            child: _CharacterToolCluster(
-              liquidGlass: widget.controller.liquidGlassChatUi,
-              language: widget.controller.interfaceLanguage,
-              expanded: _characterToolsExpanded,
-              onToggle: () => setState(
-                () => _characterToolsExpanded = !_characterToolsExpanded,
-              ),
-              onMotionPressed: _showMotionPicker,
-              onAppearancePressed: _showAppearancePicker,
-              onShopPressed: widget.onShopPressed,
-            ),
-          ),
         if (!widget.hideUi && _usesProtectedSpine && !_appearance.animated)
           Positioned(
             right: 16,
@@ -6223,7 +6541,7 @@ class _TopBar extends StatelessWidget {
     required this.showSceneTime,
     required this.onSceneChanged,
     required this.onMenuPressed,
-    required this.onStatusPressed,
+    required this.phoneButton,
   });
 
   final AppLanguage language;
@@ -6232,7 +6550,7 @@ class _TopBar extends StatelessWidget {
   final bool showSceneTime;
   final ValueChanged<SceneTime> onSceneChanged;
   final VoidCallback onMenuPressed;
-  final VoidCallback onStatusPressed;
+  final Widget phoneButton;
 
   @override
   Widget build(BuildContext context) {
@@ -6243,7 +6561,7 @@ class _TopBar extends StatelessWidget {
         padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
         child: Row(
           children: [
-            const SizedBox(width: 58),
+            const SizedBox(width: 8),
             const Spacer(),
             if (showSceneTime) ...[
               _SceneTimeMenu(
@@ -6254,12 +6572,7 @@ class _TopBar extends StatelessWidget {
               ),
               const SizedBox(width: 8),
             ],
-            _RoundIcon(
-              liquidGlass: liquidGlass,
-              icon: Icons.favorite_border_rounded,
-              tooltip: language.text('角色状态', 'Character status', 'キャラクター状態'),
-              onPressed: onStatusPressed,
-            ),
+            phoneButton,
           ],
         ),
       ),
@@ -6765,120 +7078,6 @@ class _VoiceModeOptionPill extends StatelessWidget {
   }
 }
 
-class _RoundIcon extends StatelessWidget {
-  const _RoundIcon({
-    required this.liquidGlass,
-    required this.icon,
-    required this.tooltip,
-    this.onPressed,
-  });
-
-  final bool liquidGlass;
-  final IconData icon;
-  final String tooltip;
-  final VoidCallback? onPressed;
-
-  @override
-  Widget build(BuildContext context) {
-    return GlassIconButton(
-      liquidGlass: liquidGlass,
-      size: 48,
-      icon: icon,
-      tooltip: tooltip,
-      onPressed: onPressed,
-    );
-  }
-}
-
-class _CharacterToolCluster extends StatelessWidget {
-  const _CharacterToolCluster({
-    required this.liquidGlass,
-    required this.language,
-    required this.expanded,
-    required this.onToggle,
-    required this.onMotionPressed,
-    required this.onAppearancePressed,
-    required this.onShopPressed,
-  });
-
-  final bool liquidGlass;
-  final AppLanguage language;
-  final bool expanded;
-  final VoidCallback onToggle;
-  final VoidCallback onMotionPressed;
-  final VoidCallback onAppearancePressed;
-  final VoidCallback onShopPressed;
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      children: [
-        _CharacterToolButton(
-          liquidGlass: liquidGlass,
-          tooltip: expanded
-              ? language.text(
-                  '收起角色工具',
-                  'Close character tools',
-                  'キャラクターツールを閉じる',
-                )
-              : language.text('展开角色工具', 'Open character tools', 'キャラクターツールを開く'),
-          icon: expanded ? Icons.close_rounded : Icons.auto_fix_high_outlined,
-          onPressed: onToggle,
-        ),
-        FoldingButtonGroup(
-          fromRight: true,
-          expanded: expanded,
-          children: [
-            _CharacterToolButton(
-              liquidGlass: liquidGlass,
-              tooltip: language.text('动作', 'Motion', '動作'),
-              icon: Icons.animation_outlined,
-              onPressed: onMotionPressed,
-            ),
-            _CharacterToolButton(
-              liquidGlass: liquidGlass,
-              tooltip: language.text('服装与姿态', 'Outfit and posture', '衣装と姿勢'),
-              icon: Icons.checkroom_outlined,
-              onPressed: onAppearancePressed,
-            ),
-            _CharacterToolButton(
-              liquidGlass: liquidGlass,
-              tooltip: language.text('商店', 'Shop', 'ショップ'),
-              icon: Icons.storefront_outlined,
-              onPressed: onShopPressed,
-            ),
-          ],
-        ),
-      ],
-    );
-  }
-}
-
-class _CharacterToolButton extends StatelessWidget {
-  const _CharacterToolButton({
-    required this.liquidGlass,
-    required this.tooltip,
-    required this.icon,
-    required this.onPressed,
-  });
-
-  final bool liquidGlass;
-  final String tooltip;
-  final IconData icon;
-  final VoidCallback onPressed;
-
-  @override
-  Widget build(BuildContext context) {
-    return GlassIconButton(
-      liquidGlass: liquidGlass,
-      size: 48,
-      icon: icon,
-      tooltip: tooltip,
-      onPressed: onPressed,
-    );
-  }
-}
-
 class _GlassPickerTile extends StatelessWidget {
   const _GlassPickerTile({
     required this.liquidGlass,
@@ -6916,8 +7115,8 @@ class _GlassPickerTile extends StatelessWidget {
   }
 }
 
-class _MotionPickerSheet extends StatelessWidget {
-  const _MotionPickerSheet({
+class _MotionPickerPage extends StatelessWidget {
+  const _MotionPickerPage({
     required this.liquidGlass,
     required this.language,
     required this.recipes,
@@ -6933,38 +7132,24 @@ class _MotionPickerSheet extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return SafeArea(
-      top: false,
-      child: GlassSurface(
+    return Scaffold(
+      backgroundColor: Colors.transparent,
+      appBar: AppBar(
+        automaticallyImplyLeading: false,
+        title: Padding(
+          padding: const EdgeInsets.only(left: 40),
+          child: Text(
+            '${language.text('组合动作', 'Motion combinations', '組み合わせ動作')} · ${recipes.length}',
+          ),
+        ),
+      ),
+      body: GlassSurface(
         liquidGlass: liquidGlass,
-        borderRadius: const BorderRadius.vertical(top: Radius.circular(18)),
+        borderRadius: BorderRadius.zero,
         fallbackColor: const Color(0xE8201D1B),
         child: Column(
           children: [
             postureControls,
-            Padding(
-              padding: const EdgeInsets.fromLTRB(20, 18, 12, 10),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      '${language.text('组合动作', 'Motion combinations', '組み合わせ動作')} · ${recipes.length}',
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 19,
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
-                  ),
-                  IconButton(
-                    onPressed: () => Navigator.pop(context),
-                    tooltip: language.text('关闭', 'Close', '閉じる'),
-                    color: Colors.white,
-                    icon: const Icon(Icons.close),
-                  ),
-                ],
-              ),
-            ),
             Expanded(
               child: recipes.isEmpty
                   ? Center(
@@ -7001,10 +7186,7 @@ class _MotionPickerSheet extends StatelessWidget {
                             Icons.play_arrow,
                             color: Colors.white70,
                           ),
-                          onTap: () {
-                            Navigator.pop(context);
-                            onSelected(recipe);
-                          },
+                          onTap: () => onSelected(recipe),
                         );
                       },
                     ),
@@ -7182,52 +7364,53 @@ class _TextureAppearancePreviewState extends State<_TextureAppearancePreview> {
   }
 }
 
-class _CharacterStatusRow extends StatelessWidget {
-  const _CharacterStatusRow({
+class _PhoneStatusCard extends StatelessWidget {
+  const _PhoneStatusCard({
     required this.icon,
-    required this.label,
-    required this.value,
+    required this.title,
+    required this.body,
   });
 
   final IconData icon;
-  final String label;
-  final String value;
+  final String title;
+  final String body;
 
   @override
   Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 8),
-      child: SizedBox(
-        width: icon == Icons.mood_outlined || icon == Icons.history
-            ? double.infinity
-            : max(
-                80.0,
-                (min(380.0, MediaQuery.sizeOf(context).width - 48) - 40) / 2,
-              ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Icon(icon, color: Colors.white70, size: 18),
-                const SizedBox(width: 6),
-                Expanded(
-                  child: Text(
-                    label,
-                    style: const TextStyle(color: Colors.white70),
-                  ),
+      padding: const EdgeInsets.only(bottom: 8),
+      child: GlassContentCard(
+        liquidGlass: GlassStyleScope.resolve(context),
+        borderRadius: BorderRadius.circular(12),
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(icon, color: colors.onSurfaceVariant, size: 20),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title,
+                      style: TextStyle(
+                        color: colors.onSurfaceVariant,
+                        fontSize: 12,
+                      ),
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      body,
+                      style: TextStyle(color: colors.onSurface, height: 1.35),
+                    ),
+                  ],
                 ),
-              ],
-            ),
-            const SizedBox(height: 6),
-            Text(
-              value,
-              style: const TextStyle(
-                color: Colors.white,
-                fontWeight: FontWeight.w600,
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );
@@ -8365,7 +8548,17 @@ class _CharacterRun extends StatelessWidget {
     final id = segments.first.characterId ?? 'unknown';
     final catalog = CharacterCatalog.current;
     final profile = catalog?.profile(id);
-    final name = catalog?.displayName(id, language) ?? id;
+    final contact = id.startsWith('sophie_')
+        ? npcChatContactsFor(
+            CharacterRuntimeIds.sophie,
+            catalog ?? CharacterCatalog.empty(),
+          ).where((contact) => contact.id == id).firstOrNull
+        : null;
+    final name =
+        contact?.names.forLanguage(language) ??
+        catalog?.displayName(id, language) ??
+        id;
+    final avatarAsset = contact?.avatarAsset ?? profile?.avatarAsset;
     final fallbackColor = glass
         ? Colors.white.withValues(alpha: 0.16)
         : Theme.of(context).colorScheme.surfaceContainerHighest;
@@ -8382,7 +8575,7 @@ class _CharacterRun extends StatelessWidget {
               : Theme.of(context).colorScheme.outlineVariant,
         ),
       ),
-      child: profile == null
+      child: avatarAsset == null
           ? Icon(
               Icons.person_outline_rounded,
               size: 16,
@@ -8391,7 +8584,7 @@ class _CharacterRun extends StatelessWidget {
                   : Theme.of(context).colorScheme.primary,
             )
           : Image.asset(
-              profile.avatarAsset,
+              avatarAsset,
               fit: BoxFit.cover,
               errorBuilder: (_, _, _) => Icon(
                 Icons.person_outline_rounded,
@@ -8877,20 +9070,6 @@ class _GlassComposer extends StatelessWidget {
             ),
           Row(
             children: [
-              IconButton(
-                tooltip: language.text(
-                  '旁白与发言分栏',
-                  'Split narration and speech',
-                  'ナレーションと発言を分ける',
-                ),
-                icon: Icon(
-                  splitNarration
-                      ? Icons.view_agenda_rounded
-                      : Icons.view_agenda_outlined,
-                ),
-                onPressed: onToggleNarration,
-                color: Colors.white,
-              ),
               if (showMicrophone) ...[
                 IconButton(
                   onPressed: () {},
@@ -9009,31 +9188,46 @@ class _GlassComposer extends StatelessWidget {
                 ),
               ),
               const SizedBox(width: 8),
-              IconButton.filled(
-                onPressed: isReplying ? onCancel : onSend,
-                tooltip: isReplying
-                    ? language.text('停止回复', 'Stop response', '返信を停止')
-                    : language.text('发送', 'Send', '送信'),
-                style: IconButton.styleFrom(
-                  fixedSize: const Size.square(46),
-                  backgroundColor: Theme.of(context).colorScheme.primary,
-                  foregroundColor: Theme.of(context).colorScheme.onPrimary,
-                ),
-                icon: isReplying
-                    ? Stack(
-                        alignment: Alignment.center,
-                        children: [
-                          const SizedBox.square(
-                            dimension: 27,
-                            child: CircularProgressIndicator(
-                              strokeWidth: 2,
-                              color: Colors.white70,
-                            ),
-                          ),
-                          const Icon(Icons.close_rounded, size: 19),
-                        ],
+              Tooltip(
+                triggerMode: TooltipTriggerMode.manual,
+                message: isReplying
+                    ? language.text(
+                        '停止回复；长按切换输入模式',
+                        'Stop response; hold to switch input mode',
+                        '返信を停止・長押しで入力モードを切り替え',
                       )
-                    : const Icon(Icons.arrow_upward_rounded),
+                    : language.text(
+                        '发送；长按切换输入模式',
+                        'Send; hold to switch input mode',
+                        '送信・長押しで入力モードを切り替え',
+                      ),
+                child: GestureDetector(
+                  onLongPress: onToggleNarration,
+                  child: IconButton.filled(
+                    key: const ValueKey('chat-send-button'),
+                    onPressed: isReplying ? onCancel : onSend,
+                    style: IconButton.styleFrom(
+                      fixedSize: const Size.square(46),
+                      backgroundColor: Theme.of(context).colorScheme.primary,
+                      foregroundColor: Theme.of(context).colorScheme.onPrimary,
+                    ),
+                    icon: isReplying
+                        ? Stack(
+                            alignment: Alignment.center,
+                            children: [
+                              const SizedBox.square(
+                                dimension: 27,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  color: Colors.white70,
+                                ),
+                              ),
+                              const Icon(Icons.close_rounded, size: 19),
+                            ],
+                          )
+                        : const Icon(Icons.arrow_upward_rounded),
+                  ),
+                ),
               ),
             ],
           ),

@@ -152,6 +152,7 @@ class _CollectionsState extends State<ConversationCollectionsPage> {
       var name = card['name'] as String;
       final result = await showDialog<String>(
         context: context,
+        useRootNavigator: false,
         builder: (context) => AlertDialog(
           title: Text(_t('重命名', 'Rename', '名前変更')),
           content: TextFormField(
@@ -175,6 +176,7 @@ class _CollectionsState extends State<ConversationCollectionsPage> {
     } else if (action == 'delete') {
       final confirmed = await showDialog<bool>(
         context: context,
+        useRootNavigator: false,
         builder: (context) => AlertDialog(
           title: Text(_t('删除收藏？', 'Delete collection?', 'お気に入りを削除しますか？')),
           content: Text(
@@ -210,9 +212,18 @@ class _CollectionsState extends State<ConversationCollectionsPage> {
   }
 
   @override
-  Widget build(BuildContext context) => SettingsDetailPage(
+  Widget build(BuildContext context) => AnimatedBuilder(
+    animation: widget.controller,
+    builder: (context, _) => _buildPage(context),
+  );
+
+  Widget _buildPage(BuildContext context) => SettingsDetailPage(
     controller: widget.controller,
-    title: Text(_t('语音和文字收藏', 'Voice & text collections', '音声・テキストのお気に入り')),
+    title: Text(
+      _t('语音和文字收藏', 'Voice & text collections', '音声・テキストのお気に入り'),
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+    ),
     content: Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [

@@ -115,6 +115,7 @@ class _LocalTtsSettingsPageState extends State<LocalTtsSettingsPage> {
   Future<bool> _confirm(String title, String detail) async =>
       await showDialog<bool>(
         context: context,
+        useRootNavigator: false,
         builder: (context) => AlertDialog(
           title: Text(title),
           content: Text(detail),

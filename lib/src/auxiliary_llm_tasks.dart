@@ -1,7 +1,10 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'app_controller.dart';
+import 'app_localization.dart';
 import 'chat_segments.dart';
+import 'dialogue_language_guard.dart';
 import 'memory_timeline.dart';
 
 typedef AuxiliaryCompletion = Future<String> Function(
@@ -14,6 +17,7 @@ class DialogueTranslator {
   Future<String> translate({
     required String source,
     required String language,
+    AppLanguage? targetLanguage,
     required AuxiliaryCompletion complete,
   }) async {
     final segments = parseAssistantSegments(source)
@@ -34,7 +38,7 @@ class DialogueTranslator {
       }
     }
     if (lines.isEmpty) return source;
-    final output = await complete([
+    final prompt = <Map<String, String>>[
       {
         'role': 'system',
         'content':
@@ -44,7 +48,71 @@ class DialogueTranslator {
         'role': 'user',
         'content': jsonEncode({'lines': lines}),
       },
-    ]);
+    ];
+    // Older callers pass the prompt label; current callers also capture the
+    // enum at dispatch so an in-flight settings change cannot retarget text.
+    final expectedLanguage =
+        targetLanguage ??
+        (language.toLowerCase().startsWith('chinese')
+            ? AppLanguage.chinese
+            : language.toLowerCase().startsWith('japanese')
+            ? AppLanguage.japanese
+            : language.toLowerCase().startsWith('english')
+            ? AppLanguage.english
+            : null);
+    // This budget includes transport retries and any format/language repair.
+    // A timed-out provider request must not trigger another completion.
+    var expired = false;
+    Future<String> perform() async {
+      for (var attempt = 0; attempt < 2; attempt++) {
+        if (expired) {
+          throw TimeoutException('翻译等待超时');
+        }
+        final output = await complete([
+          ...prompt,
+          if (attempt > 0)
+            {
+              'role': 'system',
+              'content':
+                  '上次翻译的语言或 JSON 结构没有通过应用校验。请严格使用 $language，逐条保留全部 id，只输出规定的 JSON；不复述原文，不添加标签或说明。',
+            },
+        ]);
+        if (expired) {
+          throw TimeoutException('翻译等待超时');
+        }
+        try {
+          final translations = _decodeTranslations(
+            output,
+            lines,
+            expectedLanguage,
+          );
+          return [
+            for (var i = 0; i < segments.length; i++) ...[
+              '${assistantSpeakerLabel(segments[i])}：${segments[i].text}',
+              if (translations[i] != null) '译文：${translations[i]}',
+            ],
+          ].join('\n');
+        } on FormatException {
+          if (attempt == 1) rethrow;
+        }
+      }
+      throw const FormatException('Translation validation failed');
+    }
+
+    return perform().timeout(
+      const Duration(seconds: 90),
+      onTimeout: () {
+        expired = true;
+        throw TimeoutException('翻译等待超时');
+      },
+    );
+  }
+
+  Map<int, String> _decodeTranslations(
+    String output,
+    List<Map<String, Object>> lines,
+    AppLanguage? expectedLanguage,
+  ) {
     final decoded = jsonDecode(
       output
           .trim()
@@ -68,6 +136,7 @@ class DialogueTranslator {
           .replaceAll(RegExp(r'[\r\n]+'), ' ')
           .trim();
       if (text.isEmpty ||
+          filterAssistantControlMarkup(text) != text ||
           translations.containsKey(id) ||
           RegExp(
             r'\[[^\]]+\]|(?:旁白|莱莎|苏菲|ソフィー|译文|角色|narrator|ryza|sophie|translation)\s*[:：]',
@@ -75,17 +144,17 @@ class DialogueTranslator {
           ).hasMatch(text)) {
         throw const FormatException('Invalid translation content');
       }
+      if (expectedLanguage != null &&
+          assessDialogueLanguage(text, expectedLanguage) ==
+              DialogueLanguageVerdict.mismatch) {
+        throw const FormatException('Translation language mismatch');
+      }
       translations[id] = text;
     }
     if (translations.length != lines.length) {
       throw const FormatException('Missing translation segments');
     }
-    return [
-      for (var i = 0; i < segments.length; i++) ...[
-        '${assistantSpeakerLabel(segments[i])}：${segments[i].text}',
-        if (translations[i] != null) '译文：${translations[i]}',
-      ],
-    ].join('\n');
+    return translations;
   }
 }
 

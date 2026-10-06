@@ -55,10 +55,16 @@ void main() {
   }
 
   Future<void> tapVisible(WidgetTester tester, Finder target) async {
+    // Settings retain each page's scroll position. This test visits categories
+    // out of their visual order, so search from the top before scrolling down.
+    final scrollable = find.byType(Scrollable).first;
+    final position = tester.state<ScrollableState>(scrollable).position;
+    position.jumpTo(position.minScrollExtent);
+    await tester.pumpAndSettle();
     await tester.scrollUntilVisible(
       target,
       180,
-      scrollable: find.byType(Scrollable).first,
+      scrollable: scrollable,
     );
     await tester.pumpAndSettle();
     await Scrollable.ensureVisible(tester.element(target), alignment: .5);

@@ -20,6 +20,7 @@ class AppearancePickerPage extends StatefulWidget {
     required this.previewBuilder,
     required this.onSelected,
     required this.onTextureChanged,
+    this.embedded = false,
   });
 
   final List<CharacterAppearance> appearances;
@@ -29,6 +30,9 @@ class AppearancePickerPage extends StatefulWidget {
   final Widget Function(CharacterAppearance appearance) previewBuilder;
   final ValueChanged<CharacterAppearance> onSelected;
   final VoidCallback onTextureChanged;
+
+  /// The phone provides its own frame, safe area and close controls.
+  final bool embedded;
 
   @override
   State<AppearancePickerPage> createState() => _AppearancePickerPageState();
@@ -120,7 +124,10 @@ class _AppearancePickerPageState extends State<AppearancePickerPage> {
     final language = widget.language;
     final confirmed = await showDialog<bool>(
       context: context,
+      useRootNavigator: false,
+      useSafeArea: !widget.embedded,
       builder: (dialogContext) => AlertDialog(
+        insetPadding: EdgeInsets.all(widget.embedded ? 12 : 24),
         title: Text(
           language.text(
             '删除导入贴图？',
@@ -190,38 +197,54 @@ class _AppearancePickerPageState extends State<AppearancePickerPage> {
             child: const SizedBox.expand(),
           ),
           SafeArea(
+            top: !widget.embedded,
+            bottom: !widget.embedded,
+            left: !widget.embedded,
+            right: !widget.embedded,
             child: Column(
               children: [
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(20, 12, 12, 4),
-                  child: Row(
-                    children: [
-                      Icon(Icons.checkroom_outlined, color: foreground),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: Text(
-                          language.text('服装切换', 'Outfits', '衣装切り替え'),
-                          style: TextStyle(
-                            color: foreground,
-                            fontSize: 22,
-                            fontWeight: FontWeight.w700,
+                SizedBox(
+                  height: widget.embedded ? 56 : null,
+                  child: Padding(
+                    padding: widget.embedded
+                        ? const EdgeInsets.fromLTRB(56, 0, 12, 0)
+                        : const EdgeInsets.fromLTRB(20, 12, 12, 4),
+                    child: Row(
+                      children: [
+                        Icon(
+                          Icons.checkroom_outlined,
+                          color: foreground,
+                          size: widget.embedded ? 20 : 24,
+                        ),
+                        SizedBox(width: widget.embedded ? 8 : 12),
+                        Expanded(
+                          child: Text(
+                            language.text('服装切换', 'Outfits', '衣装切り替え'),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              color: foreground,
+                              fontSize: widget.embedded ? 18 : 22,
+                              fontWeight: FontWeight.w700,
+                            ),
                           ),
                         ),
-                      ),
-                      Text(
-                        '${_focusedIndex + 1} / ${_appearances.length + 1}',
-                        style: TextStyle(
-                          color: foreground.withValues(alpha: .7),
+                        Text(
+                          '${_focusedIndex + 1} / ${_appearances.length + 1}',
+                          style: TextStyle(
+                            color: foreground.withValues(alpha: .7),
+                          ),
                         ),
-                      ),
-                      const SizedBox(width: 8),
-                      IconButton(
-                        onPressed: () => Navigator.of(context).pop(),
-                        tooltip: language.text('关闭', 'Close', '閉じる'),
-                        icon: const Icon(Icons.close_rounded),
-                        color: foreground,
-                      ),
-                    ],
+                        if (!widget.embedded) const SizedBox(width: 8),
+                        if (!widget.embedded)
+                          IconButton(
+                            onPressed: () => Navigator.of(context).pop(),
+                            tooltip: language.text('关闭', 'Close', '閉じる'),
+                            icon: const Icon(Icons.close_rounded),
+                            color: foreground,
+                          ),
+                      ],
+                    ),
                   ),
                 ),
                 Expanded(
@@ -246,7 +269,9 @@ class _AppearancePickerPageState extends State<AppearancePickerPage> {
                   ),
                 ),
                 Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
+                  padding: widget.embedded
+                      ? const EdgeInsets.fromLTRB(12, 6, 12, 8)
+                      : const EdgeInsets.fromLTRB(16, 8, 16, 12),
                   child: SizedBox(
                     width: 164,
                     height: 44,
@@ -275,7 +300,7 @@ class _AppearancePickerPageState extends State<AppearancePickerPage> {
   Widget _buildDeck(BoxConstraints constraints) {
     final width = constraints.maxWidth;
     final height = constraints.maxHeight;
-    final cardWidth = min(440.0, width * 0.66);
+    final cardWidth = min(440.0, width * (widget.embedded ? .78 : .66));
     final cardHeight = min(660.0, height * 0.92);
     int paintOrder(int index) => switch (index - _focusedIndex) {
       3 => 0,
@@ -342,6 +367,7 @@ class _AppearancePickerPageState extends State<AppearancePickerPage> {
                             child: SkinImportControls(
                               appearances: _appearances,
                               language: widget.language,
+                              embedded: widget.embedded,
                               onImported: _handleImported,
                               onTextureChanged: _handleImportedTexture,
                             ),
@@ -504,6 +530,7 @@ class _OutfitCard extends StatelessWidget {
                   left: 4,
                   child: PopupMenuButton<bool>(
                     key: ValueKey('outfit-texture-menu-${appearance.id}'),
+                    useRootNavigator: false,
                     tooltip: language.text(
                       '选择贴图',
                       'Choose texture',

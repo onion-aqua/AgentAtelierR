@@ -181,7 +181,12 @@ class _ConversationHistoryPageState extends State<ConversationHistoryPage> {
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => AnimatedBuilder(
+    animation: widget.controller,
+    builder: (context, _) => _buildPage(context),
+  );
+
+  Widget _buildPage(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
     final dark = Theme.of(context).brightness == Brightness.dark;
     final normalizedQuery = _query.trim().toLowerCase();
@@ -218,7 +223,11 @@ class _ConversationHistoryPageState extends State<ConversationHistoryPage> {
 
     return SettingsDetailPage(
       controller: widget.controller,
-      title: Text(_t('历史对话', 'Conversation history', '会話履歴')),
+      title: Text(
+        _t('历史对话', 'Conversation history', '会話履歴'),
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+      ),
       content: Column(
         children: [
           TextField(

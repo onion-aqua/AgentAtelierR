@@ -1,10 +1,10 @@
 param(
     [string]$Repository = 'onion-aqua/AgentAtelierR',
-    [string]$Tag = 'v1.0.0-dx.rc4',
-    [string]$ReleaseName = 'AgentAtelierR 1.0.0 DX RC4',
-    [string]$NotesPath = 'docs/CHANGELOG_1.0.0-DX-RC4.md',
+    [string]$Tag = 'v1.0.4-beta1.26106',
+    [string]$ReleaseName = 'AgentAtelierR 1.0.4 beta1 26106',
+    [string]$NotesPath = 'docs/CHANGELOG_1.0.4-beta1-26106.md',
     [string]$ApkPath = 'build/app/outputs/flutter-apk/app-release.apk',
-    [string]$AssetName = 'AgentAtelierR-1.0.0-DX-RC4-release.apk',
+    [string]$AssetName = 'AgentAtelierR-1.0.4-beta1-26106-release.apk',
     [switch]$Publish
 )
 

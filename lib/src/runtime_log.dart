@@ -53,49 +53,80 @@ extension RuntimeLogLevelLabel on RuntimeLogLevel {
 }
 
 class RuntimeLogEntry {
+  static int _nextLegacyId = 0;
+
   const RuntimeLogEntry({
+    this.id = '',
     required this.timestamp,
     required this.level,
     required this.source,
     required this.message,
+    this.repeatCount = 1,
+    this.lastTimestamp,
   });
 
   factory RuntimeLogEntry.fromJson(Map<String, dynamic> json) {
+    final timestamp =
+        DateTime.tryParse(json['timestamp'] as String? ?? '') ??
+        DateTime.fromMillisecondsSinceEpoch(0);
+    final storedId = json['id'] as String? ?? '';
     return RuntimeLogEntry(
-      timestamp:
-          DateTime.tryParse(json['timestamp'] as String? ?? '') ??
-          DateTime.fromMillisecondsSinceEpoch(0),
+      id: storedId.isEmpty
+          ? 'legacy:${timestamp.microsecondsSinceEpoch}:${_nextLegacyId++}'
+          : storedId,
+      timestamp: timestamp,
       level: RuntimeLogLevel.values.firstWhere(
         (value) => value.name == json['level'],
         orElse: () => RuntimeLogLevel.info,
       ),
       source: json['source'] as String? ?? 'App',
       message: json['message'] as String? ?? '',
+      repeatCount: switch (json['repeatCount']) {
+        final int count when count > 0 => count,
+        _ => 1,
+      },
+      lastTimestamp: DateTime.tryParse(json['lastTimestamp'] as String? ?? ''),
     );
   }
 
+  final String id;
   final DateTime timestamp;
   final RuntimeLogLevel level;
   final String source;
   final String message;
+  final int repeatCount;
+  final DateTime? lastTimestamp;
+  String get identity => id.isEmpty
+      ? '${timestamp.microsecondsSinceEpoch}:${source.hashCode}:${level.index}:${message.hashCode}'
+      : id;
   RuntimeLogModule get module => RuntimeLogModule.forSource(source);
   String get displayMessage => RuntimeLog.prettyMessage(message);
 
   Map<String, dynamic> toJson() => {
+    'id': id,
     'timestamp': timestamp.toIso8601String(),
     'level': level.name,
     'source': source,
     'message': message,
+    'repeatCount': repeatCount,
+    if (lastTimestamp != null)
+      'lastTimestamp': lastTimestamp!.toIso8601String(),
   };
 
   String get formatted {
     final local = timestamp.toLocal().toIso8601String().replaceFirst('T', ' ');
-    return '[$local] [${level.label}] [$source]\n$displayMessage';
+    final repeated = repeatCount > 1
+        ? ' [重复 $repeatCount 次；最近发生=${lastTimestamp?.toLocal().toIso8601String()}]'
+        : '';
+    return '[$local] [${level.label}] [$source]$repeated\n$displayMessage';
   }
 }
 
 class RuntimeLog extends ChangeNotifier {
   RuntimeLog._();
+
+  @visibleForTesting
+  RuntimeLog.forTesting() : this._();
 
   static final RuntimeLog instance = RuntimeLog._();
   static const _storageKey = 'runtime_debug_logs_v1';
@@ -104,7 +135,14 @@ class RuntimeLog extends ChangeNotifier {
   final List<RuntimeLogEntry> _entries = [];
   final Map<String, DateTime> _lastRateLimitedInfo = {};
   Future<void> _writeQueue = Future<void>.value();
+  Future<void>? _initialization;
   SharedPreferences? _preferences;
+  bool _initialized = false;
+  bool _discardStoredOnInitialize = false;
+  bool _notificationScheduled = false;
+  bool _persistScheduled = false;
+  bool _persistDirty = false;
+  int _nextEntryId = 0;
 
   List<RuntimeLogEntry> get entries => List.unmodifiable(_entries);
 
@@ -112,24 +150,45 @@ class RuntimeLog extends ChangeNotifier {
       ? '暂无运行日志。'
       : _entries.reversed.map((entry) => entry.formatted).join('\n');
 
-  Future<void> initialize() async {
-    _preferences ??= await SharedPreferences.getInstance();
-    final stored = _preferences?.getStringList(_storageKey) ?? const [];
-    _entries
-      ..clear()
-      ..addAll(
-        stored.map((value) {
-          try {
-            return RuntimeLogEntry.fromJson(
-              jsonDecode(value) as Map<String, dynamic>,
-            );
-          } on Object {
-            return null;
-          }
-        }).whereType<RuntimeLogEntry>(),
-      );
-    if (_entries.length > maxEntries) {
-      _entries.removeRange(0, _entries.length - maxEntries);
+  Future<void> initialize() {
+    if (_initialized) return Future<void>.value();
+    return _initialization ??= _loadStoredEntries();
+  }
+
+  Future<void> _loadStoredEntries() async {
+    try {
+      _preferences ??= await SharedPreferences.getInstance();
+      final stored = _discardStoredOnInitialize
+          ? const <String>[]
+          : _preferences!.getStringList(_storageKey) ?? const <String>[];
+      final pending = List<RuntimeLogEntry>.of(_entries);
+      final identities = pending.map((entry) => entry.identity).toSet();
+      final restored = <RuntimeLogEntry>[];
+      for (final value in stored) {
+        try {
+          final entry = RuntimeLogEntry.fromJson(
+            jsonDecode(value) as Map<String, dynamic>,
+          );
+          if (identities.add(entry.identity)) restored.add(entry);
+        } on Object {
+          // A corrupt row must not hide valid rows or startup diagnostics.
+        }
+      }
+      _entries
+        ..clear()
+        ..addAll(restored)
+        ..addAll(pending);
+      if (_entries.length > maxEntries) {
+        _entries.removeRange(0, _entries.length - maxEntries);
+      }
+      _initialized = true;
+      _queueNotification();
+    } on Object {
+      // Startup errors already in memory survive a failed storage read. A
+      // later initialize/write can retry rather than reusing a failed future.
+      _initialization = null;
+      _preferences = null;
+      rethrow;
     }
   }
 
@@ -154,7 +213,7 @@ class RuntimeLog extends ChangeNotifier {
       add(RuntimeLogLevel.warning, source, message);
 
   void error(String source, Object error, [StackTrace? stackTrace]) {
-    final stack = stackTrace?.toString().split('\n').take(5).join(' | ');
+    final stack = stackTrace?.toString().split('\n').take(12).join(' | ');
     add(
       RuntimeLogLevel.error,
       source,
@@ -168,20 +227,42 @@ class RuntimeLog extends ChangeNotifier {
     String message, {
     bool preserveFormatting = false,
   }) {
-    _entries.add(
-      RuntimeLogEntry(
-        timestamp: DateTime.now(),
-        level: level,
-        source: sanitize(source, maxLength: 80),
-        message: preserveFormatting
-            ? _sanitizeFormatted(message)
-            : prettyMessage(message),
-      ),
-    );
+    final timestamp = DateTime.now();
+    final safeSource = sanitize(source, maxLength: 80);
+    final safeMessage = preserveFormatting
+        ? _sanitizeFormatted(message)
+        : prettyMessage(message);
+    final previous = _entries.isEmpty ? null : _entries.last;
+    if (level == RuntimeLogLevel.error &&
+        previous?.level == level &&
+        previous?.source == safeSource &&
+        previous?.message == safeMessage &&
+        timestamp.difference(previous!.lastTimestamp ?? previous.timestamp) <
+            const Duration(seconds: 5)) {
+      _entries[_entries.length - 1] = RuntimeLogEntry(
+        id: previous.identity,
+        timestamp: previous.timestamp,
+        level: previous.level,
+        source: previous.source,
+        message: previous.message,
+        repeatCount: previous.repeatCount + 1,
+        lastTimestamp: timestamp,
+      );
+    } else {
+      _entries.add(
+        RuntimeLogEntry(
+          id: '${timestamp.microsecondsSinceEpoch}:${_nextEntryId++}',
+          timestamp: timestamp,
+          level: level,
+          source: safeSource,
+          message: safeMessage,
+        ),
+      );
+    }
     if (_entries.length > maxEntries) {
       _entries.removeRange(0, _entries.length - maxEntries);
     }
-    notifyListeners();
+    _queueNotification();
     _queuePersist();
   }
 
@@ -279,14 +360,11 @@ class RuntimeLog extends ChangeNotifier {
   }
 
   Future<void> clear() async {
+    if (!_initialized) _discardStoredOnInitialize = true;
     _entries.clear();
     _lastRateLimitedInfo.clear();
-    notifyListeners();
-    _writeQueue = _writeQueue.then((_) async {
-      await (_preferences ??= await SharedPreferences.getInstance()).remove(
-        _storageKey,
-      );
-    });
+    _queueNotification();
+    _queuePersist();
     await _writeQueue;
   }
 
@@ -311,13 +389,60 @@ class RuntimeLog extends ChangeNotifier {
   }
 
   void _queuePersist() {
+    _persistDirty = true;
+    if (_persistScheduled) return;
+    _persistScheduled = true;
     _writeQueue = _writeQueue.then((_) async {
-      final preferences = _preferences ??=
-          await SharedPreferences.getInstance();
+      try {
+        do {
+          _persistDirty = false;
+          await _persistSnapshot();
+        } while (_persistDirty);
+      } finally {
+        _persistScheduled = false;
+      }
+    });
+  }
+
+  Future<void> _persistSnapshot() async {
+    try {
+      // Reads and writes share the same startup load. Logging before main's
+      // explicit initialize cannot overwrite old diagnostics before reading
+      // them, and startup errors are merged into the loaded history.
+      await initialize();
+      final preferences = _preferences!;
+      if (_entries.isEmpty) {
+        await preferences.remove(_storageKey);
+        return;
+      }
       final encoded = _entries
           .map((entry) => jsonEncode(entry.toJson()))
           .toList(growable: false);
       await preferences.setStringList(_storageKey, encoded);
+    } on Object catch (error) {
+      // A failed diagnostic write must not poison the chain and prevent all
+      // later logs from being saved. Do not log this through RuntimeLog,
+      // which would recursively request another failing storage write.
+      debugPrint('Runtime log persistence failed (${error.runtimeType}).');
+    }
+  }
+
+  void _queueNotification() {
+    if (_notificationScheduled) return;
+    _notificationScheduled = true;
+    // FlutterError can reach this logger while layout or semantics is being
+    // flushed. Rebuilding the log viewer inside that operation creates a
+    // second framework error. Keep entries immediate, but refresh listeners
+    // once the current synchronous framework operation has finished.
+    scheduleMicrotask(() {
+      try {
+        notifyListeners();
+      } finally {
+        // A failing listener may itself be reported through FlutterError and
+        // logged here. Keep that diagnostic, without starting an endless
+        // notification/error loop from inside this notification.
+        _notificationScheduled = false;
+      }
     });
   }
 }

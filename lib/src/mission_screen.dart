@@ -6,9 +6,14 @@ import 'glass_ui.dart';
 import 'quest_models.dart';
 
 class MissionScreen extends StatelessWidget {
-  const MissionScreen({super.key, required this.controller});
+  const MissionScreen({
+    super.key,
+    required this.controller,
+    this.embedded = false,
+  });
 
   final AppController controller;
+  final bool embedded;
 
   @override
   Widget build(BuildContext context) {
@@ -21,7 +26,7 @@ class MissionScreen extends StatelessWidget {
           backgroundColor: glassPageHeaderColor(context),
           automaticallyImplyLeading: false,
           title: Padding(
-            padding: const EdgeInsets.only(left: 58),
+            padding: EdgeInsets.only(left: embedded ? 40 : 58),
             child: Text(language.text('任务', 'Quests', 'クエスト')),
           ),
           actions: [
@@ -339,6 +344,7 @@ class _DynamicQuestCard extends StatelessWidget {
     final language = controller.interfaceLanguage;
     final confirmed = await showDialog<bool>(
       context: context,
+      useRootNavigator: false,
       builder: (context) => AlertDialog(
         title: Text(language.text('放弃任务？', 'Abandon quest?', 'クエストを破棄しますか？')),
         content: Text(quest.title),

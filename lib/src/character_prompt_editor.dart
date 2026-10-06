@@ -102,6 +102,7 @@ class _CharacterPromptEditorState extends State<CharacterPromptEditor> {
     final language = widget.controller.interfaceLanguage;
     final restore = await showDialog<bool>(
       context: context,
+      useRootNavigator: false,
       builder: (context) => AlertDialog(
         title: Text(
           widget.world

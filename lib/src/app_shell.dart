@@ -10,7 +10,6 @@ import 'alarm_screen.dart';
 import 'alchemy_screen.dart';
 import 'chat_screen.dart';
 import 'frame_rate_controller.dart';
-import 'folding_button_group.dart';
 import 'glass_ui.dart';
 import 'mission_screen.dart';
 import 'page_navigation.dart';
@@ -18,6 +17,8 @@ import 'page_transition_surface.dart';
 import 'runtime_log.dart';
 import 'ryza_loading_indicator.dart';
 import 'settings_screen.dart';
+import 'relay/relay_service.dart';
+import 'relay/relay_page.dart';
 import 'shop_catalog.dart';
 import 'shop_screen.dart';
 import 'soundscape_controller.dart';
@@ -63,10 +64,12 @@ class AppShell extends StatefulWidget {
     super.key,
     required this.controller,
     this.onCharacterReady,
+    this.relayService,
     this.onCharacterLoadFailed,
   });
 
   final AppController controller;
+  final RelayService? relayService;
   final VoidCallback? onCharacterReady;
   final VoidCallback? onCharacterLoadFailed;
 
@@ -76,6 +79,7 @@ class AppShell extends StatefulWidget {
 
 class _AppShellState extends State<AppShell>
     with WidgetsBindingObserver, TickerProviderStateMixin {
+  late final RelayService _relay;
   final _scaffoldKey = GlobalKey<ScaffoldState>();
   final _soundscape = SoundscapeController();
   final _navigation = PageNavigation(AppDestination.chat);
@@ -90,7 +94,6 @@ class _AppShellState extends State<AppShell>
   bool _menuOpen = false;
   bool _chatUiHidden = false;
   bool _chatFullscreen = false;
-  bool _alwaysOnTop = false;
   bool _borderless = false;
   late final AnimationController _pageTransition;
   late final AnimationController _pageReveal;
@@ -111,10 +114,21 @@ class _AppShellState extends State<AppShell>
       duration: const Duration(milliseconds: 280),
     );
     WidgetsBinding.instance.addObserver(this);
+    _relay = widget.relayService ?? RelayService.production();
+    unawaited(
+      _relay.initialize().then(
+        (_) => _relay.setForeground(
+          WidgetsBinding.instance.lifecycleState == null ||
+              WidgetsBinding.instance.lifecycleState ==
+                  AppLifecycleState.resumed,
+        ),
+      ),
+    );
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    unawaited(_relay.setForeground(state == AppLifecycleState.resumed));
     if (state != AppLifecycleState.resumed) {
       _activePointers.clear();
       widget.controller.frameRate.setActivity(FrameRateActivity.touch, false);
@@ -137,6 +151,7 @@ class _AppShellState extends State<AppShell>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    if (widget.relayService == null) _relay.dispose();
     _pageTransition.dispose();
     _pageReveal.dispose();
     widget.controller.frameRate.setActivity(FrameRateActivity.touch, false);
@@ -321,6 +336,7 @@ class _AppShellState extends State<AppShell>
       ),
       AppDestination.settings => SettingsScreen(
         key: _settingsKey,
+        relayService: _relay,
         backHandledByShell: true,
         controller: widget.controller,
         onMenuPressed: _openMenu,
@@ -419,6 +435,7 @@ class _AppShellState extends State<AppShell>
           pageActive: chatDestination == AppDestination.chat,
           pauseCharacterAnimation: pauseCharacterAnimation,
           controller: widget.controller,
+          relayService: _relay,
           onMenuPressed: _openMenu,
           onShopPressed: () => _selectDestination(AppDestination.shop),
           onCharacterReady: widget.onCharacterReady,
@@ -437,6 +454,7 @@ class _AppShellState extends State<AppShell>
         final content = Stack(
           children: [
             chat,
+            RelayForegroundHost(service: _relay),
             if (displayedDestination != AppDestination.chat)
               Positioned.fill(
                 child: _outgoingDestination != null
@@ -482,33 +500,10 @@ class _AppShellState extends State<AppShell>
                         child: Stack(
                           children: [
                             content,
-                            if (!_chatUiHidden &&
-                                !(_chatFullscreen &&
-                                    displayedDestination ==
-                                        AppDestination.chat))
-                              Positioned(
-                                left: 16,
-                                top: safeTop + 8,
-                                child: GlassIconButton(
-                                  liquidGlass:
-                                      widget.controller.liquidGlassChatUi,
-                                  size: 48,
-                                  icon: _menuOpen
-                                      ? Icons.close_rounded
-                                      : Icons.menu_rounded,
-                                  tooltip: widget.controller.interfaceLanguage
-                                      .text(
-                                        _menuOpen ? '关闭菜单' : '打开菜单',
-                                        _menuOpen ? 'Close menu' : 'Open menu',
-                                        _menuOpen ? 'メニューを閉じる' : 'メニューを開く',
-                                      ),
-                                  onPressed: _openMenu,
-                                ),
-                              ),
                             if (displayedDestination == AppDestination.chat &&
                                 !_chatFullscreen)
                               Positioned(
-                                left: 72,
+                                left: MediaQuery.paddingOf(context).left + 8,
                                 top: safeTop + 8,
                                 child: GlassIconButton(
                                   liquidGlass:
@@ -528,7 +523,6 @@ class _AppShellState extends State<AppShell>
                                   onPressed: _toggleChatUiVisibility,
                                 ),
                               ),
-                            _buildFoldMenu(),
                           ],
                         ),
                       ),
@@ -581,18 +575,6 @@ class _AppShellState extends State<AppShell>
         );
       },
     );
-  }
-
-  Future<void> _toggleAlwaysOnTop() async {
-    if (!Platform.isWindows) return;
-    final next = !_alwaysOnTop;
-    try {
-      const channel = MethodChannel('agentatelier/window');
-      await channel.invokeMethod<void>('setAlwaysOnTop', next);
-      if (mounted) setState(() => _alwaysOnTop = next);
-    } catch (_) {
-      // The control is only available on the Windows runner.
-    }
   }
 
   Future<void> _windowCommand(String method, [Object? argument]) async {
@@ -650,57 +632,6 @@ class _AppShellState extends State<AppShell>
             icon: const Icon(Icons.close),
           ),
         ],
-      ),
-    );
-  }
-
-  Widget _buildFoldMenu() {
-    final language = widget.controller.interfaceLanguage;
-    final liquidGlass = widget.controller.liquidGlassChatUi;
-    return Positioned(
-      left: 16,
-      top: MediaQuery.paddingOf(context).top + 64,
-      child: Material(
-        color: Colors.transparent,
-        child: FoldingButtonGroup(
-          fromRight: false,
-          expanded: _menuOpen && !_chatUiHidden,
-          children: [
-            if (Platform.isWindows)
-              GlassIconButton(
-                liquidGlass: liquidGlass,
-                size: 48,
-                icon: _borderless ? Icons.web_asset : Icons.web_asset_off,
-                tooltip: language.text(
-                  '切换无边框窗口',
-                  'Toggle borderless window',
-                  'ウィンドウ枠の切替',
-                ),
-                onPressed: () => _windowCommand('setBorderless', !_borderless),
-              ),
-            if (Platform.isWindows)
-              GlassIconButton(
-                liquidGlass: liquidGlass,
-                size: 48,
-                icon: _alwaysOnTop ? Icons.push_pin : Icons.push_pin_outlined,
-                tooltip: language.text(
-                  _alwaysOnTop ? '取消置顶' : '窗口置顶',
-                  _alwaysOnTop ? 'Unpin window' : 'Always on top',
-                  _alwaysOnTop ? '最前面を解除' : '最前面に固定',
-                ),
-                onPressed: _toggleAlwaysOnTop,
-              ),
-            for (final destination in AppDestination.values)
-              if (destination != AppDestination.shop)
-                GlassIconButton(
-                  liquidGlass: liquidGlass,
-                  size: 48,
-                  icon: destination.icon,
-                  tooltip: destination.label(language),
-                  onPressed: () => _selectDestination(destination),
-                ),
-          ],
-        ),
       ),
     );
   }

@@ -7,9 +7,14 @@ import 'glass_ui.dart';
 import 'shop_catalog.dart';
 
 class AlchemyScreen extends StatefulWidget {
-  const AlchemyScreen({super.key, required this.controller});
+  const AlchemyScreen({
+    super.key,
+    required this.controller,
+    this.embedded = false,
+  });
 
   final AppController controller;
+  final bool embedded;
 
   @override
   State<AlchemyScreen> createState() => _AlchemyScreenState();
@@ -43,6 +48,7 @@ class _AlchemyScreenState extends State<AlchemyScreen> {
 
   Future<void> _useItem(AlchemyItem item, AppLanguage language) async {
     final confirmed = await showDialog<bool>(
+      useRootNavigator: false,
       context: context,
       builder: (context) => AlertDialog(
         title: Text(language.text('使用物品', 'Use item', 'アイテムを使う')),
@@ -85,6 +91,7 @@ class _AlchemyScreenState extends State<AlchemyScreen> {
 
   Future<void> _usePreciousItem(ShopItem item, AppLanguage language) async {
     final confirmed = await showDialog<bool>(
+      useRootNavigator: false,
       context: context,
       builder: (context) => AlertDialog(
         title: Text(item.name(language)),
@@ -135,7 +142,7 @@ class _AlchemyScreenState extends State<AlchemyScreen> {
           backgroundColor: glassPageHeaderColor(context),
           automaticallyImplyLeading: false,
           title: Padding(
-            padding: const EdgeInsets.only(left: 58),
+            padding: EdgeInsets.only(left: widget.embedded ? 40 : 58),
             child: Text(language.text('炼金工房', 'Atelier', 'アトリエ')),
           ),
           bottom: TabBar(

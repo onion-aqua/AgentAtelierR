@@ -16,6 +16,58 @@ void main() {
 
   tearDownAll(() => controller.dispose());
 
+  testWidgets('new phone product opens complete details on a small screen', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(320, 480);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.pumpWidget(
+      MaterialApp(
+        builder: (context, child) => MediaQuery(
+          data: MediaQuery.of(context)
+              .copyWith(textScaler: const TextScaler.linear(1.5)),
+          child: child!,
+        ),
+        home: ShopScreen(controller: controller, embedded: true),
+      ),
+    );
+    await tester.pumpAndSettle();
+    final item = ShopCatalog.byId('iphone_18_pro_max')!;
+    final image = find.byKey(ValueKey('shop-item-image-${item.id}'));
+    await tester.ensureVisible(image);
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+    expect(find.text('${item.price}'), findsOneWidget);
+    await tester.tap(image);
+    await tester.pumpAndSettle();
+    final dialog = find.byType(Dialog);
+    expect(
+      find.descendant(of: dialog, matching: find.text(item.nameZh)),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(of: dialog, matching: find.text(item.descriptionZh)),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(of: dialog, matching: find.text(item.effectZh)),
+      findsOneWidget,
+    );
+    final preview = tester.widget<Image>(
+      find.byKey(ValueKey('shop-item-preview-${item.id}')),
+    );
+    final provider = preview.image;
+    final asset = provider is ResizeImage ? provider.imageProvider : provider;
+    expect((asset as AssetImage).assetName, item.imageAsset);
+    await tester.ensureVisible(find.text('关闭'));
+    await tester.tap(find.text('关闭'));
+    await tester.pumpAndSettle();
+    expect(dialog, findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('shop keeps two columns without overflow on narrow screens', (
     tester,
   ) async {
