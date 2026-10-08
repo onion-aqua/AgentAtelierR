@@ -5,6 +5,7 @@ param(
     [string]$NotesPath = 'docs/CHANGELOG_1.0.4.md',
     [string]$ApkPath = 'build/app/outputs/flutter-apk/app-release.apk',
     [string]$AssetName = 'AgentAtelierR-1.0.4-release.apk',
+    [switch]$Prerelease,
     [switch]$Publish
 )
 
@@ -250,7 +251,7 @@ try {
                 name = $ReleaseName
                 body = $notesText
                 draft = $true
-                prerelease = $true
+                prerelease = $Prerelease.IsPresent
                 generate_release_notes = $false
             }
             $release = $create.Data
@@ -292,7 +293,7 @@ try {
             name = $ReleaseName
             body = $notesText
             draft = $false
-            prerelease = $true
+            prerelease = $Prerelease.IsPresent
         }
         Write-Host "Published release: $($published.Data['html_url'])"
         Write-Host "APK SHA-256: $sha256"
