@@ -115,7 +115,7 @@ downloaded_skin_resources/
 *.arsc
 
 # Local-only downloaded outfits: all revisions, textures, skeletons and gestures.
-**/crf_skn_002_000[2-5]_01*
+**/crf_skn_002_000[2-6]_01*
 **/firebase_distribution_test_*/
 
 # Local source snapshots kept outside release commits.
