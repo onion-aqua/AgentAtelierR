@@ -6,6 +6,7 @@ import 'dart:ui' as ui;
 
 import 'package:audioplayers/audioplayers.dart';
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart' show compute;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:image_picker/image_picker.dart';
@@ -18,9 +19,12 @@ import 'auxiliary_llm_tasks.dart';
 import 'performance_planner.dart';
 import 'independent_performance_tools.dart';
 import 'motion_recipe.dart';
+import 'motion_playback_timing.dart';
 import 'speech_planner.dart';
+import 'speech_performance_dispatch.dart';
 import 'app_controller.dart';
 import 'conversation_collection_store.dart';
+import 'conversation_motion_policy.dart';
 import 'swipe_collection_selection.dart';
 import 'voice_playback_progress.dart';
 import 'narration_composer_fields.dart';
@@ -40,6 +44,7 @@ import 'character_resource_behavior.dart';
 import 'character_lipsync.dart';
 import 'character_motion_dynamics.dart';
 import 'character_motion_layers.dart';
+import 'character_motion_semantics.dart';
 import 'character_track_transition.dart';
 import 'character_idle_behavior.dart';
 import 'character_posture.dart';
@@ -307,7 +312,6 @@ class _ChatScreenState extends State<ChatScreen> {
   String? _currentIdleAnimation;
   String? _activePoseType;
   final _postureState = CharacterPostureState();
-  String? _lastPostureCue;
 
   String get _sittingId =>
       _appearance.isStanding ? 'standing' : _postureState.sittingId;
@@ -375,6 +379,7 @@ class _ChatScreenState extends State<ChatScreen> {
   String? _activeMotionGroupId;
   final _motionLayers = CharacterMotionLayers();
   final _motionReleaseTimers = <int, Timer>{};
+  final _ambientMotionTokens = <int>{};
   final _activeMotionVariants = <int, CharacterMotionGroup>{};
   List<_SuspendedMotionGroup> _tapSuspendedMotions = const [];
   int _tapSuspendedMotionLoadGeneration = 0;
@@ -384,11 +389,16 @@ class _ChatScreenState extends State<ChatScreen> {
   static const _windTrack = 17;
   List<CharacterMotionGroup> _motionGroups = const [];
   List<MotionRecipe> _motionRecipes = const [];
+  Map<String, String> _motionRecipeDescriptions = const {};
   Set<String> _recipeAnimationNames = const {};
+  CharacterPerformancePromptContext? _cachedPerformancePromptContext;
+  String? _cachedPerformancePose;
+  CharacterExpression? _cachedPerformanceExpression;
+  String? _cachedPerformanceIntensity;
   final List<String> _recentAmbientGroupIds = <String>[];
   int _motionLoadGeneration = 0;
-  String? _lastPerformanceActionKey;
   DateTime? _lastSemanticActionAt;
+  DateTime? _lastConversationLegAt;
   final Stopwatch _speechStopwatch = Stopwatch();
   AudioAmplitudeEnvelope? _activeSpeechEnvelope;
   CharacterLipSyncDynamics? _lipSyncDynamics;
@@ -591,7 +601,22 @@ class _ChatScreenState extends State<ChatScreen> {
   String _expressionIntensity = 'normal';
 
   bool get _motionBusy =>
-      _motionBusyUntil != null && DateTime.now().isBefore(_motionBusyUntil!);
+      _motionReleaseTimers.isNotEmpty ||
+      (_motionBusyUntil != null && DateTime.now().isBefore(_motionBusyUntil!));
+
+  // A default foot sway can accompany head/body attention. Authored torso
+  // beats and every explicit gesture retain their existing procedural shield.
+  bool get _motionBlocksProcedural {
+    if (!_motionBusy) return false;
+    final leases = _motionLayers.active;
+    return leases.isEmpty ||
+        _motionReleaseTimers.keys.any(
+          (token) => !_ambientMotionTokens.contains(token),
+        ) ||
+        leases.any(
+          (lease) => _activeMotionVariants[lease.token]?.occupancy != 'C',
+        );
+  }
 
   @override
   void initState() {
@@ -758,6 +783,8 @@ class _ChatScreenState extends State<ChatScreen> {
     _activeMotionGroupId = null;
     _activePoseType = null;
     _motionLayers.clear();
+    _ambientMotionTokens.clear();
+    _lastConversationLegAt = null;
     _activeMotionVariants.clear();
     _tapSuspendedMotions = const [];
     for (final timer in _motionReleaseTimers.values) {
@@ -782,12 +809,10 @@ class _ChatScreenState extends State<ChatScreen> {
       _spineReady = false;
       _currentIdleAnimation = null;
       _postureState.reset();
-      _lastPostureCue = null;
       _motionGroups = const [];
       _motionRecipes = const [];
       _recipeAnimationNames = const {};
       _recentAmbientGroupIds.clear();
-      _lastPerformanceActionKey = null;
       _appearanceBundleFuture = _usesProtectedSpine
           ? ProtectedCharacterAssets.bundleFor(next.assetName)
           : Future.value(ProtectedCharacterAssetBundle(const {}));
@@ -803,8 +828,8 @@ class _ChatScreenState extends State<ChatScreen> {
   void _resetConversationWorkForDataReplacement() {
     _recentDialogueActions.clear();
     _recentAmbientGroupIds.clear();
-    _lastPerformanceActionKey = null;
     _lastSemanticActionAt = null;
+    _lastConversationLegAt = null;
     _previousSpeechEmotion = 'relaxed';
     _pendingMemoryRefresh = null;
     _replyGeneration += 1;
@@ -824,7 +849,6 @@ class _ChatScreenState extends State<ChatScreen> {
     _gazeStartedAt = null;
     _gazeHeld = false;
     _postureState.reset();
-    _lastPostureCue = null;
     _resetMotionOverlays(mixDuration: 0.3);
     _motionGeneration += 1;
     _motionLayers.clear();
@@ -872,12 +896,19 @@ class _ChatScreenState extends State<ChatScreen> {
       final source = await bundle.loadString(appearance.gestureAsset);
       final profile = CharacterPerformanceProfile.parse(source);
       final behavior = CharacterResourceBehavior.parse(source);
-      final recipes = MotionRecipe.parse(
-        await rootBundle.loadString('assets/data/motion_recipes.json'),
-      );
+      final recipes = await _loadMotionRecipes();
+      final recipeDescriptions = await compute(motionRecipePromptDescriptions, (
+        recipes: recipes,
+        groups: groups,
+        groupDescriptions: {
+          for (final group in groups) group.id: _motionPromptDescription(group),
+        },
+      ));
       if (!mounted || generation != _motionLoadGeneration) return;
       _motionGroups = groups;
       _motionRecipes = recipes;
+      _motionRecipeDescriptions = recipeDescriptions;
+      _cachedPerformancePromptContext = null;
       _performanceDirector = CharacterPerformanceDirector(profile);
       _resourceBehavior = behavior;
       final animations = _spineController?.skeletonData.getAnimations();
@@ -904,6 +935,42 @@ class _ChatScreenState extends State<ChatScreen> {
       }
       RuntimeLog.instance.error('CharacterMotion', error, stack);
     }
+  }
+
+  /// Loads the built-in recipe catalogue and an optional extension catalogue.
+  ///
+  /// The extension is deliberately best-effort: older installations do not
+  /// ship `motion_recipes_extra.json`, and that must not make the character
+  /// lose its built-in motion groups. Duplicate ids keep the built-in entry so
+  /// an extension cannot silently replace a tested recipe.
+  Future<List<MotionRecipe>> _loadMotionRecipes() async {
+    final builtIn = await compute(
+      MotionRecipe.parse,
+      await rootBundle.loadString('assets/data/motion_recipes.json'),
+    );
+    final catalogues = <Iterable<MotionRecipe>>[builtIn];
+    try {
+      final extension = await compute(
+        MotionRecipe.parse,
+        await rootBundle.loadString('assets/data/motion_recipes_extra.json'),
+      );
+      catalogues.add(extension);
+      RuntimeLog.instance.infoRateLimited(
+        'ActionPlanner',
+        'recipe-extension',
+        '扩展动作配方已加载：${extension.length}；合并后=${builtIn.length + extension.length}',
+      );
+    } on Object catch (error) {
+      // Missing extension files are expected for existing builds. Keep the
+      // diagnostic rate-limited so startup remains quiet while malformed
+      // extension files are still visible in the runtime log.
+      RuntimeLog.instance.infoRateLimited(
+        'ActionPlanner',
+        'recipe-extension-unavailable',
+        '扩展动作配方不可用，继续使用内置目录：$error',
+      );
+    }
+    return MotionRecipe.merge(catalogues);
   }
 
   Future<void> _playSkinChangeEffect() async {
@@ -1059,55 +1126,7 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   String _motionPromptDescription(CharacterMotionGroup group) {
-    final semantic = switch (group.id) {
-      'grp_b_01' => '仅轻微转肩（肩约6至7度），手臂微动；不举臂、不伸懒腰、不做大幅伸展',
-      'grp_b_02' => '双手叠放，安静倾听',
-      'grp_b_03' => '双手叉腰，自信或佯装不满',
-      'grp_b_05' => '双手抱臂，思考或质疑',
-      'grp_b_07' => '双手放在胸前，真诚回应',
-      'grp_b_12' => '左右伸展或伸懒腰',
-      'grp_b_13' => '双手放在大腿内侧，收敛坐姿',
-      'grp_c_01' => '双脚轻轻晃荡',
-      'grp_c_02' => '改变腿部角度，调整坐姿',
-      'grp_c_03' => '调整膝盖开合',
-      'grp_c_04' => '调整大腿高度',
-      'grp_c_05' => '盘腿姿态变化',
-      'grp_eh_10' => '身体左右轻晃',
-      'grp_eh_20' => '身体倾斜待机',
-      'grp_eh_30' => '身体轻微上下弹动',
-      'grp_eh_40' => '身体向后倾斜',
-      'grp_eh_50' => '身体向左倾斜',
-      'grp_eh_60' => '身体向右倾斜',
-      'grp_eh_70' => '身体向前倾听',
-      'grp_fg_016' => '双手比耶',
-      'grp_fg_018' => '双手配合耳语姿势',
-      'grp_fg_019' => '双手张开手掌触碰',
-      'grp_fg_020' => '双手做嘘手势',
-      'grp_fg_021' => '双手指向或展示',
-      'grp_fg_022' => '双手叠放在大腿上',
-      'grp_fg_023' => '双手抱臂组合',
-      'grp_fg_024' => '双手拍手',
-      'grp_fg_025' => '双手放在沙发上支撑',
-      'grp_fg_026' => '双手放在大腿上',
-      'grp_fg_027' => '盘腿专用手位',
-      'grp_fg_028' => '展示双掌并挥手',
-      'grp_fg_029' => '展示双掌并慌张摆动',
-      'grp_fg_030' => '双手握拳打气',
-      'grp_fg_031' => '双手向前伸出或拥抱邀请',
-      'grp_fg_032' => '双掌示意等一下',
-      'grp_fg_033' => '双手挥手问候',
-      'grp_fg_000' => '站姿双臂自然放置',
-      'grp_fg_001' => '站姿双手叉腰',
-      'grp_fg_002' => '站姿双手抱臂',
-      'grp_fg_003' => '站姿双手轻摆',
-      'grp_fg_004' => '站姿双手背后交握',
-      'grp_fg_g_006' => '站姿右手猫爪般轻抬',
-      'grp_fg_g_007' => '站姿右手向前伸出',
-      'grp_fg_g_008' => '站姿右手耳语姿势',
-      'grp_fg_g_009' => '站姿右手触碰脸颊',
-      _ => '资源标签所描述的动作；不要推断未写明的姿势',
-    };
-    return '$semantic；资源标签：${group.label}。';
+    return characterMotionPromptDescription(group);
   }
 
   /// Builds the capability snapshot from the resources that are actually
@@ -1116,6 +1135,7 @@ class _ChatScreenState extends State<ChatScreen> {
   /// tells it which semantic actions can be rendered right now.
   CharacterPerformancePromptContext _buildPerformancePromptContext() {
     if (!_usesProtectedSpine) {
+      _cachedPerformancePromptContext = null;
       return CharacterPerformancePromptContext(
         appearanceId: _activeCharacterProfile.defaultAppearanceId,
         posture: 'static',
@@ -1141,7 +1161,19 @@ class _ChatScreenState extends State<ChatScreen> {
         (_postureState.manual ? 2 : 0) +
         (_sittingId == 'sitting_agura' ? 1 : 0);
 
+    final cached = _cachedPerformancePromptContext;
+    if (ready &&
+        cached != null &&
+        cached.appearanceId == _appearance.id &&
+        cached.revision == revision &&
+        _cachedPerformancePose == _currentIdleAnimation &&
+        _cachedPerformanceExpression == _currentExpression &&
+        _cachedPerformanceIntensity == _expressionIntensity) {
+      return cached;
+    }
+
     if (!ready) {
+      _cachedPerformancePromptContext = null;
       return CharacterPerformancePromptContext(
         appearanceId: _appearance.id,
         posture: posture,
@@ -1169,12 +1201,19 @@ class _ChatScreenState extends State<ChatScreen> {
       }
     }
     for (final recipe in _motionRecipes.where(_canPlayRecipe)) {
-      motionGroups[recipe.id] =
-          '${recipe.name}：${recipe.description}；'
-          '${recipe.stages.length}个阶段，脸部由表情工具独立控制';
+      final description =
+          _motionRecipeDescriptions[recipe.id] ??
+          '${recipe.name}：${recipe.description}；${recipe.stages.length}个阶段';
+      // Keep unlabelled combinations available in the manual workbench, but
+      // do not let the planner promise an extra hand/leg movement whose
+      // meaning is unknown just because another layer has a known label.
+      if (recipe.tags.contains('generated') && description.contains('语义未标注')) {
+        continue;
+      }
+      motionGroups[recipe.id] = description;
     }
 
-    return CharacterPerformancePromptContext(
+    final context = CharacterPerformancePromptContext(
       appearanceId: _appearance.id,
       posture: posture,
       revision: revision,
@@ -1197,6 +1236,14 @@ class _ChatScreenState extends State<ChatScreen> {
         if (_crossLeggedGroup != null) 'sitting_agura': '放松的盘腿坐姿',
       },
     );
+    // The capability map is independent of the current line. Reusing this
+    // snapshot also lets the motion candidate index reuse its tokenized
+    // catalogue instead of rebuilding it for every reply.
+    _cachedPerformancePromptContext = context;
+    _cachedPerformancePose = _currentIdleAnimation;
+    _cachedPerformanceExpression = _currentExpression;
+    _cachedPerformanceIntensity = _expressionIntensity;
+    return context;
   }
 
   List<String> _runtimeActionCapabilities(CharacterAction action) {
@@ -1273,6 +1320,7 @@ class _ChatScreenState extends State<ChatScreen> {
   bool _playMotionGroup(
     CharacterMotionGroup group, {
     bool pairFace = false,
+    bool ambient = false,
     double alphaScale = 1.0,
     Map<int, double> trackTimes = const {},
     Set<int>? allowedTracks,
@@ -1307,8 +1355,7 @@ class _ChatScreenState extends State<ChatScreen> {
       if (group.animation2 case final second?)
         (name: second, alpha: group.alpha2, speed: group.speed2),
     ];
-    TrackEntry? longestEntry;
-    var longestDuration = -1.0;
+    var longestDuration = Duration.zero;
     final appliedTracks = <int>[];
     for (var index = 0; index < animations.length; index++) {
       final animation = animations[index];
@@ -1318,36 +1365,35 @@ class _ChatScreenState extends State<ChatScreen> {
         continue;
       }
 
+      final clip = spineController.skeletonData.findAnimation(animation.name)!;
+      final timing = MotionPlaybackTiming.forClip(
+        clip.getDuration(),
+        mixDuration: blend,
+        speed: animation.speed,
+      );
       final entry =
           transitionCharacterTrack(
               state,
               tracks[index],
               animation.name,
-              loop: false,
-              mixDuration: blend,
+              loop: timing.loop,
+              mixDuration: timing.mixDuration,
             )
             ..setAlpha((animation.alpha * alphaScale).clamp(0.0, 1.0))
-            ..setTimeScale(animation.speed)
+            ..setTimeScale(timing.timeScale)
             ..setMixBlend(MixBlend.replace)
-            ..setMixDuration(blend);
+            ..setMixDuration(timing.mixDuration);
       if (trackTimes[tracks[index]] case final time?) {
         entry.setTrackTime(time);
       }
       appliedTracks.add(tracks[index]);
 
-      final speed = animation.speed.abs() < 0.01 ? 1.0 : animation.speed.abs();
-      final duration = entry.getAnimation().getDuration() / speed;
-      if (duration > longestDuration) {
-        longestDuration = duration;
-        longestEntry = entry;
+      if (timing.duration > longestDuration) {
+        longestDuration = timing.duration;
       }
     }
-    if (longestEntry == null) return false;
-    final fullDuration = Duration(
-      milliseconds:
-          ((max(0, longestDuration) + max(0.3, group.blendTime)) * 1000).ceil(),
-    );
-    final motionDuration = remainingDuration ?? fullDuration;
+    if (appliedTracks.isEmpty) return false;
+    final motionDuration = remainingDuration ?? longestDuration;
     _motionLayers.claim(
       generation,
       group.id,
@@ -1355,6 +1401,7 @@ class _ChatScreenState extends State<ChatScreen> {
       DateTime.now().add(motionDuration),
     );
     _activeMotionVariants[generation] = group;
+    if (ambient) _ambientMotionTokens.add(generation);
     _activeMotionGroupId = _motionLayers.latestGroupId;
     _motionBusyUntil = _motionLayers.latestExpiry;
     var finished = false;
@@ -1382,14 +1429,13 @@ class _ChatScreenState extends State<ChatScreen> {
       _releaseMotionLease(generation, release);
     }
 
-    longestEntry.setListener((type, _, _) {
-      if (type == EventType.complete) finish();
-    });
+    // A complete event ends one cycle, not the intention's entrance/hold.
+    // Zero-duration poses complete immediately; they still need to be seen.
     _motionReleaseTimers[generation] = Timer(motionDuration, finish);
     RuntimeLog.instance.infoRateLimited(
       'ActionPlanner',
       'motion-start',
-      '动作开始：${group.id}；动画=${animations.map((a) => a.name).join(',')}；轨道=$appliedTracks；时长=${longestDuration.toStringAsFixed(2)}秒；混合=$blend；generation=$generation',
+      '动作开始：${group.id}；动画=${animations.map((a) => a.name).join(',')}；轨道=$appliedTracks；可见窗口=${motionDuration.inMilliseconds}ms；混合上限=$blend；generation=$generation',
     );
     widget.controller.frameRate.boost(
       FrameRateActivity.characterMotion,
@@ -1400,6 +1446,7 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   void _releaseMotionLease(int token, double mixDuration) {
+    _ambientMotionTokens.remove(token);
     _motionReleaseTimers.remove(token)?.cancel();
     _activeMotionVariants.remove(token);
     final tracks = _motionLayers.release(token);
@@ -1429,7 +1476,8 @@ class _ChatScreenState extends State<ChatScreen> {
     final now = DateTime.now();
     return [
       for (final lease in _motionLayers.active)
-        if (lease.expiresAt.isAfter(now))
+        if (lease.expiresAt.isAfter(now) &&
+            !_ambientMotionTokens.contains(lease.token))
           if (_activeMotionVariants[lease.token] case final group?)
             _SuspendedMotionGroup(
               group: group,
@@ -1496,6 +1544,10 @@ class _ChatScreenState extends State<ChatScreen> {
           _recipeAnimationNames,
           _currentIdleAnimation,
           _sittingId,
+          appearanceId: _appearance.id,
+          baseAppearanceId: _appearance.baseAppearanceId,
+          appearanceAssetName: _appearance.assetName,
+          isStanding: _appearance.isStanding,
         );
   }
 
@@ -1525,38 +1577,40 @@ class _ChatScreenState extends State<ChatScreen> {
       state.setEmptyAnimation(1, blend);
     }
     _activeMotionGroupId = recipe.id;
-    TrackEntry? longest;
-    var duration = 0.0;
+    var busy = Duration.zero;
     for (final layer in layers) {
-      final entry =
-          transitionCharacterTrack(
-              state,
-              layer.track,
-              layer.name,
-              loop: false,
-              mixDuration: blend,
-            )
-            ..setAlpha(layer.alpha)
-            ..setTimeScale(layer.speed)
-            ..setMixBlend(MixBlend.replace);
-      final seconds = entry.getAnimation().getDuration() / layer.speed;
-      if (longest == null || seconds > duration) {
-        longest = entry;
-        duration = seconds;
-      }
+      final clip = controller.skeletonData.findAnimation(layer.name)!;
+      final timing = MotionPlaybackTiming.forClip(
+        clip.getDuration(),
+        mixDuration: blend,
+        speed: layer.speed,
+      );
+      transitionCharacterTrack(
+          state,
+          layer.track,
+          layer.name,
+          loop: timing.loop,
+          mixDuration: timing.mixDuration,
+        )
+        ..setAlpha(layer.alpha)
+        ..setTimeScale(timing.timeScale)
+        ..setMixBlend(MixBlend.replace);
+      if (timing.duration > busy) busy = timing.duration;
     }
-    final busy = Duration(milliseconds: ((duration + blend) * 1000).ceil());
     _motionBusyUntil = DateTime.now().add(busy);
     widget.controller.frameRate.boost(
       FrameRateActivity.characterMotion,
       duration: busy,
     );
-    longest?.setListener((type, _, _) {
-      if (type != EventType.complete ||
-          !mounted ||
-          generation != _motionGeneration) {
+    // Stage lifetime includes visible poses and short gestures, so advancing
+    // on the first clip completion would erase them before their entrance.
+    _motionReleaseTimers[generation] = Timer(busy, () {
+      if (!mounted ||
+          generation != _motionGeneration ||
+          !_motionReleaseTimers.containsKey(generation)) {
         return;
       }
+      _motionReleaseTimers.remove(generation);
       if (index + 1 < recipe.stages.length &&
           _canPlayRecipe(recipe) &&
           !_tapReactionActive) {
@@ -1592,6 +1646,7 @@ class _ChatScreenState extends State<ChatScreen> {
     }
     _motionGeneration += 1;
     _motionLayers.clear();
+    _ambientMotionTokens.clear();
     _activeMotionVariants.clear();
     for (final timer in _motionReleaseTimers.values) {
       timer.cancel();
@@ -2013,10 +2068,14 @@ class _ChatScreenState extends State<ChatScreen> {
       emotion: _currentExpression.name,
       speaking: _isCharacterSpeaking,
       energy: _currentSpeechEnergy,
+      enhanceConversation:
+          !widget.pauseCharacterAnimation && !widget.controller.continuousAsmr,
       suppressed:
           _tapReactionActive ||
           _gazePointer != null ||
-          (_motionBusy && !_performanceDirector.hasActiveAttitudeCue),
+          _performanceQueue.isNotEmpty ||
+          (_motionBlocksProcedural &&
+              !_performanceDirector.hasActiveAttitudeCue),
     );
     for (final entry in parts.entries) {
       if (_tapReactionActive) break;
@@ -2373,10 +2432,12 @@ class _ChatScreenState extends State<ChatScreen> {
     if (!_spineReady || !_appearance.animated) return;
     // Speech retains resource-authored torso beats. Explicit gestures keep
     // priority; the speaking candidate filter below never selects random arms.
-    final delay = _randomDuration(
-      _resourceEmotion?.poseRerollIntervalMin ?? 5,
-      _resourceEmotion?.poseRerollIntervalMax ?? 8,
+    final interval = ConversationMotionPolicy.intervalSeconds(
+      speaking: _isCharacterSpeaking,
+      idleMinimum: _resourceEmotion?.poseRerollIntervalMin ?? 5,
+      idleMaximum: _resourceEmotion?.poseRerollIntervalMax ?? 8,
     );
+    final delay = _randomDuration(interval.minimum, interval.maximum);
     _microMotionTimer = Timer(delay, () {
       if (!mounted) return;
       if (_tapReactionActive || _gazePointer != null) {
@@ -2393,9 +2454,16 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   void _playAmbientMotion() {
-    if (!_spineReady ||
-        _motionBusy ||
-        _tapReactionActive ||
+    if (!ConversationMotionPolicy.canAnimate(
+          resourcesReady: _spineReady,
+          paused:
+              widget.pauseCharacterAnimation ||
+              widget.controller.continuousAsmr,
+          tapActive: _tapReactionActive,
+          gazeActive: _gazePointer != null,
+          explicitMotionActive: _motionBusy,
+          pendingExplicit: _performanceQueue.isNotEmpty,
+        ) ||
         _motionGroups.isEmpty) {
       return;
     }
@@ -2415,10 +2483,18 @@ class _ChatScreenState extends State<ChatScreen> {
       _random,
     );
     _activePoseType = poseType;
-    final allowSpeakingLeg =
-        _isCharacterSpeaking &&
-        _sittingId == 'sitting_normal' &&
-        _random.nextDouble() < 0.15;
+    final now = DateTime.now();
+    final allowSpeakingLeg = ConversationMotionPolicy.shouldPlayLeg(
+      speaking: _isCharacterSpeaking,
+      sittingId: _appearance.isStanding ? 'standing' : _sittingId,
+      occupancy: 'C',
+      groupId: 'grp_c_01',
+      roll: _random.nextDouble(),
+      resourcesReady: _spineReady,
+      sinceLastLeg: _lastConversationLegAt == null
+          ? null
+          : now.difference(_lastConversationLegAt!),
+    );
     final idleWeights = <String, double>{
       if (torso != null)
         for (final group in _motionGroups.where(
@@ -2429,9 +2505,9 @@ class _ChatScreenState extends State<ChatScreen> {
               : 0,
       if (allowSpeakingLeg)
         for (final group in _motionGroups.where(
-          (g) => isSpeakingLegMotion(g.occupancy, g.id),
+          (g) => g.occupancy == 'C' && g.id == 'grp_c_01',
         ))
-          group.id: speakingLegAmbientWeight(group.occupancy, group.id),
+          group.id: ConversationMotionPolicy.speakingLegWeight,
     };
     // Idle uses authored weights only; explicit zero means disabled. Semantic
     // actions still have access to the full compatible gesture catalogue.
@@ -2442,15 +2518,19 @@ class _ChatScreenState extends State<ChatScreen> {
               (!_isCharacterSpeaking ||
                   isSpeakingTorsoMotion(group.occupancy, torso?[group.id]) ||
                   (allowSpeakingLeg &&
-                      isSpeakingLegMotion(group.occupancy, group.id))) &&
+                      group.occupancy == 'C' &&
+                      group.id == 'grp_c_01')) &&
               (idleWeights[group.id] ??
                       group.weightFor(_currentExpression, poseType: poseType)) >
                   0,
         )
         .toList(growable: false);
     if (candidates.isEmpty) return;
+    final legs = candidates
+        .where((g) => g.occupancy == 'C')
+        .toList(growable: false);
     final group = selectCharacterAmbientMotionGroup(
-      groups: candidates,
+      groups: allowSpeakingLeg && legs.isNotEmpty ? legs : candidates,
       expression: _currentExpression,
       pose: _currentIdleAnimation,
       recentGroupIds: _recentAmbientGroupIds.toSet(),
@@ -2470,44 +2550,17 @@ class _ChatScreenState extends State<ChatScreen> {
     if (_recentAmbientGroupIds.length > 5) {
       _recentAmbientGroupIds.removeAt(0);
     }
-    _playMotionGroup(
+    final played = _playMotionGroup(
       group,
-      alphaScale: _isCharacterSpeaking && group.occupancy == 'C' ? 0.45 : 1.0,
+      ambient: true,
+      alphaScale: ConversationMotionPolicy.alphaScale(
+        speaking: _isCharacterSpeaking,
+        occupancy: group.occupancy,
+        groupId: group.id,
+      ),
     );
-  }
-
-  void _applyPerformanceFromResponse(String response) {
-    final posture = postureCueForAssistantResponse(response);
-    if (posture != null && posture != _lastPostureCue) {
-      _lastPostureCue = posture;
-      _selectPosture(posture);
-    }
-    final cue = performanceCueForAssistantResponse(response);
-    final expression = cue.expression;
-    if (expression != null &&
-        (expression != _currentExpression ||
-            cue.expressionIntensity != _expressionIntensity)) {
-      _applyExpression(expression, intensity: cue.expressionIntensity);
-    }
-    final actions = cue.actions.isEmpty && cue.action != null
-        ? <CharacterAction>[cue.action!]
-        : cue.actions;
-    final motionGroupIds = cue.motionGroupIds;
-    if (actions.isEmpty && motionGroupIds.isEmpty) return;
-    final key =
-        '${actions.map((a) => a.name).join('+')}|${motionGroupIds.join('+')}:${cue.actionCueCount}';
-    if (_lastPerformanceActionKey == key) {
-      return;
-    }
-    _lastPerformanceActionKey = key;
-    // Play the first authored gesture immediately; queue the remaining
-    // compatible gestures so a line can combine expression, posture and hand
-    // intent instead of collapsing to its last tag.
-    for (final item in actions.take(3)) {
-      if (item != CharacterAction.none) _performSemanticAction(item);
-    }
-    for (final motionGroupId in motionGroupIds.take(2)) {
-      _performMotionGroupIntent(motionGroupId);
+    if (played && _isCharacterSpeaking && group.occupancy == 'C') {
+      _lastConversationLegAt = now;
     }
   }
 
@@ -2515,7 +2568,11 @@ class _ChatScreenState extends State<ChatScreen> {
     if (!_usesProtectedSpine) return;
     if (segment.posture case final posture?) _selectPosture(posture);
     if (segment.expression case final expression?) {
-      _applyExpression(expression, intensity: segment.expressionIntensity);
+      _applyExpression(
+        expression,
+        intensity: segment.expressionIntensity,
+        clearQueuedActions: false,
+      );
     }
     if (segment.action case final action?) _performSemanticAction(action);
     for (final id in segment.motionGroupIds.take(2)) {
@@ -2527,6 +2584,7 @@ class _ChatScreenState extends State<ChatScreen> {
     if (action == CharacterAction.none || !_spineReady || _tapReactionActive) {
       return;
     }
+    _yieldAmbientMotionToExplicitIntent();
     _performanceQueue.add(action, _currentExpression, DateTime.now());
     _drainPerformanceQueue();
   }
@@ -2560,12 +2618,25 @@ class _ChatScreenState extends State<ChatScreen> {
       );
       return;
     }
+    _yieldAmbientMotionToExplicitIntent();
     _performanceQueue.addMotionGroup(
       normalized,
       _currentExpression,
       DateTime.now(),
     );
     _drainPerformanceQueue();
+  }
+
+  void _yieldAmbientMotionToExplicitIntent() {
+    if (_ambientMotionTokens.isEmpty) return;
+    for (final token in _ambientMotionTokens.toList(growable: false)) {
+      _releaseMotionLease(token, 0.18);
+    }
+    // The next explicit entrance supplies the blend; don't make an intention
+    // wait for the default motion's hold/release window.
+    if (_motionReleaseTimers.isEmpty && !_motionLayers.isNotEmpty) {
+      _motionBusyUntil = null;
+    }
   }
 
   final _performanceQueue = CharacterPerformanceQueue(
@@ -3105,8 +3176,6 @@ class _ChatScreenState extends State<ChatScreen> {
         ),
       );
     }
-    _lastPerformanceActionKey = null;
-    _lastPostureCue = null;
     setState(() {
       if (!isAutomatic) _pendingAttachments.clear();
       _isReplying = true;
@@ -3125,6 +3194,10 @@ class _ChatScreenState extends State<ChatScreen> {
       if (!mounted || generation != _replyGeneration) return;
       final reply = widget.controller.demoReply(text);
       widget.controller.addAssistantMessage(reply);
+      // Preserve the local fact ledger after a complete demo response.
+      if (!isAutomatic) {
+        widget.controller.recordDeterministicMemoryForLastTurn();
+      }
       _showLatestAssistantFromStartIfOverflow();
       await _playTtsIfConfigured(reply);
       if (!mounted || generation != _replyGeneration) return;
@@ -3270,7 +3343,8 @@ class _ChatScreenState extends State<ChatScreen> {
         if (!mounted || generation != _replyGeneration) return;
       }
       widget.controller.replaceAssistantStreamText(reply);
-      widget.controller.finishAssistantStream();
+      // Commit complete turns to Horae before translation, TTS and planning.
+      widget.controller.finishAssistantStream(recordMemory: !isAutomatic);
       // Commit before any translation, performance planning or audio work.
       widget.controller.completeLlmDialogueTurn(signalTurn);
       signalTurn = null;
@@ -3981,7 +4055,14 @@ class _ChatScreenState extends State<ChatScreen> {
     Future<String>? plannedPerformance,
   }) async {
     final replyGeneration = _replyGeneration;
+    final initialSpeechGeneration = _speechPlaybackGeneration;
     final characterId = widget.controller.activeCharacterId;
+    final dataRevision = widget.controller.dataRevision;
+    bool performanceIsCurrent() =>
+        mounted &&
+        replyGeneration == _replyGeneration &&
+        _conversationIsCurrent(characterId, dataRevision) &&
+        _mayPlayVoice;
     Future<String> fallbackPerformance() async {
       if (plannedPerformance == null) return text;
       try {
@@ -3990,6 +4071,28 @@ class _ChatScreenState extends State<ChatScreen> {
         RuntimeLog.instance.warning('ActionPlanner', '表演回退失败：$error');
         return text;
       }
+    }
+
+    Future<void> applyWithoutSpeech() async {
+      final fallback = await fallbackPerformance();
+      if (!performanceIsCurrent() ||
+          initialSpeechGeneration != _speechPlaybackGeneration) {
+        return;
+      }
+      final cues = performanceSegmentsMatchingSpeech(
+        text,
+        fallback,
+        fallbackMood: widget.controller.characterMood,
+      );
+      if (cues == null) {
+        RuntimeLog.instance.warning('ActionPlanner', '无语音演出正文不匹配，跳过动作');
+        _stopSpeakingAnimation();
+        return;
+      }
+      for (final cue in cues) {
+        _applySpeechSegmentPerformance(cue);
+      }
+      _stopSpeakingAnimation();
     }
 
     final collectionMessage = widget.controller.messages
@@ -4007,10 +4110,7 @@ class _ChatScreenState extends State<ChatScreen> {
       return;
     }
     if (!widget.controller.fishTtsEnabled) {
-      final fallback = await fallbackPerformance();
-      if (!mounted || replyGeneration != _replyGeneration) return;
-      _applyPerformanceFromResponse(fallback);
-      _stopSpeakingAnimation();
+      await applyWithoutSpeech();
       return;
     }
     final fallbackEmotion = fishEmotionForContinuity(
@@ -4033,11 +4133,11 @@ class _ChatScreenState extends State<ChatScreen> {
           DialogueLanguageVerdict.mismatch,
     )) {
       RuntimeLog.instance.warning('TTS', '台词与所选回复语言不符，跳过合成');
-      _stopSpeakingAnimation();
+      await applyWithoutSpeech();
       return;
     }
     if (candidateSegments.isEmpty) {
-      _stopSpeakingAnimation();
+      await applyWithoutSpeech();
       return;
     }
     final hasPrimary = candidateSegments.any((segment) => segment.isPrimary);
@@ -4084,10 +4184,11 @@ class _ChatScreenState extends State<ChatScreen> {
         'TTS',
         '跳过合成：主角语音模型或服务配置、科洛蒂娅 Fish Audio 配置未就绪',
       );
-      final fallback = await fallbackPerformance();
-      if (!mounted || replyGeneration != _replyGeneration) return;
-      _applyPerformanceFromResponse(fallback);
-      _stopSpeakingAnimation();
+      await applyWithoutSpeech();
+      return;
+    }
+    if (!performanceIsCurrent() ||
+        initialSpeechGeneration != _speechPlaybackGeneration) {
       return;
     }
     final generation = ++_speechPlaybackGeneration;
@@ -4098,6 +4199,12 @@ class _ChatScreenState extends State<ChatScreen> {
     final cancellation = Completer<void>();
     _speechCancellation = cancellation;
     final completedSegments = <_CachedSpeechSegment>[];
+    final primaryOrdinals = <AssistantSpeechSegment, int>{};
+    var primaryCount = 0;
+    for (final segment in candidateSegments) {
+      if (segment.isPrimary) primaryOrdinals[segment] = primaryCount++;
+    }
+    final dispatch = SpeechPerformanceDispatch(primaryCount);
     List<RyzaPerformanceSegment>? plannedSegments = plannedPerformance == null
         ? performanceSegmentsForAssistantResponse(
             text,
@@ -4106,77 +4213,59 @@ class _ChatScreenState extends State<ChatScreen> {
           )
         : null;
     String? plannedText;
-    var activeIndex = -1;
     var playbackFinished = false;
-    final appliedPerformance = <int>{};
-    int primaryOrdinalAt(int index) =>
-        segments.take(index).where((segment) => segment.isPrimary).length;
-    void applyPerformanceAt(int index) {
-      final cues = plannedSegments;
-      if (cues == null ||
-          index < 0 ||
-          index >= segments.length ||
-          !segments[index].isPrimary) {
+    int primaryOrdinalAt(int index) => primaryOrdinals[segments[index]] ?? -1;
+    void applyDispatched(List<SpeechPerformanceDispatchCue> cues) {
+      if (!performanceIsCurrent() || generation != _speechPlaybackGeneration) {
         return;
       }
-      final ordinal = primaryOrdinalAt(index);
-      if (ordinal >= cues.length) return;
-      if (!appliedPerformance.add(index)) return;
-      _applySpeechSegmentPerformance(cues[ordinal]);
+      for (final cue in cues) {
+        RuntimeLog.instance.infoRateLimited(
+          'ActionPlanner',
+          'performance-dispatch',
+          '台词演出分发：主角段落${cue.ordinal}；动作=${cue.performance.motionGroupIds.join(',')}；语音已结束=$playbackFinished',
+        );
+        _applySpeechSegmentPerformance(cue.performance);
+      }
     }
 
+    if (plannedSegments != null) dispatch.setPlan(plannedSegments);
+    Future<void> performanceReady = Future<void>.value();
+
     if (plannedPerformance != null) {
-      unawaited(
-        plannedPerformance.then<void>(
-          (planned) {
-            if (!mounted || generation != _speechPlaybackGeneration) return;
-            final aligned = performanceSegmentsMatchingSpeech(
-              text,
-              planned,
-              fallbackMood: widget.controller.characterMood,
-              fallbackEmotion: fallbackEmotion,
+      performanceReady = plannedPerformance.then<void>(
+        (planned) {
+          if (!performanceIsCurrent() ||
+              generation != _speechPlaybackGeneration) {
+            return;
+          }
+          final aligned = performanceSegmentsMatchingSpeech(
+            text,
+            planned,
+            fallbackMood: widget.controller.characterMood,
+            fallbackEmotion: fallbackEmotion,
+          );
+          if (aligned == null) {
+            RuntimeLog.instance.warning(
+              'ActionPlanner',
+              '表演规划段落与语音正文不一致，跳过晚到动作',
             );
-            if (aligned == null) {
-              RuntimeLog.instance.warning(
-                'ActionPlanner',
-                '表演规划段落与语音正文不一致，跳过晚到动作',
+            return;
+          }
+          plannedText = planned;
+          plannedSegments = aligned;
+          for (var i = 0; i < completedSegments.length; i++) {
+            if (completedSegments[i].speaker == ChatSpeaker.ryza) {
+              completedSegments[i] = completedSegments[i].withPerformance(
+                aligned[completedSegments[i].speakerOrdinal ?? 0],
               );
-              return;
             }
-            plannedText = planned;
-            plannedSegments = aligned;
-            var completedPrimaryOrdinal = 0;
-            for (var i = 0; i < completedSegments.length; i++) {
-              if (completedSegments[i].speaker == ChatSpeaker.ryza) {
-                completedSegments[i] = completedSegments[i].withPerformance(
-                  aligned[completedPrimaryOrdinal++],
-                );
-              }
-            }
-            if (!playbackFinished) applyPerformanceAt(activeIndex);
-            if (activeIndex < 0 &&
-                completedSegments.length == segments.length &&
-                segments.last.isPrimary &&
-                aligned.isNotEmpty) {
-              if (aligned.last.expression case final expression?) {
-                _applyExpression(
-                  expression,
-                  intensity: aligned.last.expressionIntensity,
-                );
-              }
-            }
-            if (playbackFinished &&
-                _lastSpeechSource == (displaySource ?? text)) {
-              _lastSpeech = List<_CachedSpeechSegment>.unmodifiable(
-                completedSegments,
-              );
-              _lastSpeechPerformance = planned;
-            }
-          },
-          onError: (Object error, StackTrace stackTrace) {
-            RuntimeLog.instance.warning('ActionPlanner', '晚到表演规划失败：$error');
-          },
-        ),
+          }
+          applyDispatched(dispatch.setPlan(aligned));
+        },
+        onError: (Object error, StackTrace stackTrace) {
+          RuntimeLog.instance.warning('ActionPlanner', '晚到表演规划失败：$error');
+        },
       );
     }
     try {
@@ -4221,8 +4310,7 @@ class _ChatScreenState extends State<ChatScreen> {
           }
           continue;
         }
-        if (!mounted ||
-            !_mayPlayVoice ||
+        if (!performanceIsCurrent() ||
             generation != _speechPlaybackGeneration) {
           unawaited(_deleteTemporarySpeech(prepared.path));
           return;
@@ -4243,11 +4331,13 @@ class _ChatScreenState extends State<ChatScreen> {
           displayIndex,
           _readingDurationFor(segment.speechText),
         );
-        activeIndex = index;
-        applyPerformanceAt(index);
+        if (segment.isPrimary) {
+          applyDispatched(dispatch.startPrimary(primaryOrdinalAt(index)));
+        }
         await _audioPlayer.stop();
         await _audioPlayer.setVolume(widget.controller.voiceVolume);
-        if (!mounted || generation != _speechPlaybackGeneration) {
+        if (!performanceIsCurrent() ||
+            generation != _speechPlaybackGeneration) {
           await _deleteTemporarySpeech(prepared.path);
           return;
         }
@@ -4262,8 +4352,8 @@ class _ChatScreenState extends State<ChatScreen> {
         final completed = _audioPlayer.onPlayerComplete.first;
         await _audioPlayer.play(DeviceFileSource(prepared.path));
         await Future.any([completed, cancellation.future]);
-        activeIndex = -1;
-        if (generation != _speechPlaybackGeneration) {
+        if (!performanceIsCurrent() ||
+            generation != _speechPlaybackGeneration) {
           await _deleteSpeechSegments(completedSegments);
           await _deleteTemporarySpeech(prepared.path);
           return;
@@ -4278,10 +4368,12 @@ class _ChatScreenState extends State<ChatScreen> {
               ChatSegment(speaker: segment.speaker, text: segment.speechText),
             ),
             speaker: segment.speaker,
-            speakerOrdinal: segments
-                .take(index)
-                .where((s) => s.speaker == segment.speaker)
-                .length,
+            speakerOrdinal: segment.isPrimary
+                ? primaryOrdinalAt(index)
+                : segments
+                      .take(index)
+                      .where((s) => s.speaker == segment.speaker)
+                      .length,
             path: prepared.path,
             envelope: prepared.envelope,
             expression: performance?.expression,
@@ -4305,13 +4397,24 @@ class _ChatScreenState extends State<ChatScreen> {
       if (completedSegments.isEmpty) {
         throw const AiServiceException('没有语音片段生成成功');
       }
+      // Audio readiness must not determine whether a character intention is
+      // delivered. Finish the turn after pending performance is dispatched,
+      // while cancellation still prevents obsolete turns from executing.
+      playbackFinished = true;
+      applyDispatched(dispatch.finishPlayback());
+      await Future.any([performanceReady, cancellation.future]);
+      if (!performanceIsCurrent() || generation != _speechPlaybackGeneration) {
+        await _deleteSpeechSegments(completedSegments);
+        return;
+      }
       if (collectionMessage != null &&
           generation == _speechPlaybackGeneration) {
         try {
           final store = await ConversationCollectionStore.open(
             characterId: characterId,
           );
-          if (generation == _speechPlaybackGeneration) {
+          if (performanceIsCurrent() &&
+              generation == _speechPlaybackGeneration) {
             await store.cacheVoice(
               collectionMessage.collectionKey,
               completedSegments.map((s) => s.path).toList(),
@@ -4323,17 +4426,15 @@ class _ChatScreenState extends State<ChatScreen> {
           RuntimeLog.instance.warning('TTS', '语音缓存保存失败：$error');
         }
       }
-      if (generation != _speechPlaybackGeneration) {
+      if (!performanceIsCurrent() || generation != _speechPlaybackGeneration) {
         await _deleteSpeechSegments(completedSegments);
         return;
       }
-      await _replaceLastSpeech(completedSegments);
       _lastSpeechSource = displaySource ?? text;
       _lastSpeechPerformance = plannedText ?? text;
-      if (plannedText != null) {
-        _lastSpeech = List<_CachedSpeechSegment>.unmodifiable(
-          completedSegments,
-        );
+      await _replaceLastSpeech(completedSegments);
+      if (!performanceIsCurrent() || generation != _speechPlaybackGeneration) {
+        return;
       }
       playbackFinished = true;
       RuntimeLog.instance.info(
@@ -4347,9 +4448,11 @@ class _ChatScreenState extends State<ChatScreen> {
       }
     } on Object catch (error, stackTrace) {
       RuntimeLog.instance.error('TTS', error, stackTrace);
+      if (!performanceIsCurrent() || generation != _speechPlaybackGeneration) {
+        return;
+      }
       _stopSpeakingAnimation();
-      if (generation != _speechPlaybackGeneration) return;
-      _speechPlaybackGeneration += 1;
+      final recoveryGeneration = ++_speechPlaybackGeneration;
       if (!cancellation.isCompleted) cancellation.complete();
       if (identical(_speechCancellation, cancellation)) {
         _speechCancellation = null;
@@ -4358,8 +4461,22 @@ class _ChatScreenState extends State<ChatScreen> {
         unawaited(_deleteTemporarySpeech(path));
       }
       final fallback = await fallbackPerformance();
-      if (!mounted || replyGeneration != _replyGeneration) return;
-      _applyPerformanceFromResponse(fallback);
+      if (!performanceIsCurrent() ||
+          recoveryGeneration != _speechPlaybackGeneration) {
+        return;
+      }
+      final aligned = performanceSegmentsMatchingSpeech(
+        text,
+        fallback,
+        fallbackMood: widget.controller.characterMood,
+        fallbackEmotion: fallbackEmotion,
+      );
+      if (aligned != null) {
+        final pending = dispatch.setPlan(aligned);
+        for (final cue in [...pending, ...dispatch.finishPlayback()]) {
+          _applySpeechSegmentPerformance(cue.performance);
+        }
+      }
       _stopSpeakingAnimation();
       if (!mounted) return;
       final failedProvider = segments.any((segment) => segment.isPrimary)
@@ -5708,7 +5825,6 @@ class _ChatScreenState extends State<ChatScreen> {
                 TextButton(
                   onPressed: () => refresh(() {
                     _postureState.manual = false;
-                    _lastPostureCue = null;
                   }),
                   child: Text(language.text('自动姿态', 'Auto posture', '姿勢を自動選択')),
                 ),

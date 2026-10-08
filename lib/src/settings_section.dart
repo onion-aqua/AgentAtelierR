@@ -80,7 +80,7 @@ extension SettingsSectionDetails on SettingsSection {
       'Memory, local import, export and chat history',
       '長期記憶、データの読み込み・書き出し、会話履歴',
     ),
-    SettingsSection.about => 'AgentAtelierR · 1.0.4 beta1 26106',
+    SettingsSection.about => 'AgentAtelierR · 1.0.4 正式版',
     SettingsSection.pcAgent => language.text(
       '扫码绑定、前台问答、任务与通知',
       'Pairing, questions, tasks and notifications',

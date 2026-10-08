@@ -1,11 +1,14 @@
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:ryza_chat_mvp/src/app_controller.dart';
 import 'package:ryza_chat_mvp/src/independent_performance_tools.dart';
 import 'package:ryza_chat_mvp/src/speech_planner.dart';
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+  SharedPreferences.setMockInitialValues({});
   test('unsupported exact request expands once and reports mismatch without substitute', () async {
     final capabilities = CharacterPerformancePromptContext(
       appearanceId: 'test',

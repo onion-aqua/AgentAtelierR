@@ -1,6 +1,8 @@
 import 'dart:convert';
 import 'dart:math';
 
+import 'conversation_motion_policy.dart';
+
 /// Spine's native findBone aborts the process for an empty name.
 T? resolveOptionalRigBone<T>(String? name, T? Function(String) findBone) {
   if (name == null || name.trim().isEmpty) return null;
@@ -249,6 +251,7 @@ class CharacterPerformanceDirector {
   double _transition = 1;
   double _hold = 1;
   double _strength = 0.3;
+  double _conversationBlend = 0;
   double _tension = 0;
   String _band = 'low';
   String? _driverBand;
@@ -383,6 +386,7 @@ class CharacterPerformanceDirector {
     required bool speaking,
     required double energy,
     bool suppressed = false,
+    bool enhanceConversation = false,
   }) {
     final dt = delta.isFinite ? delta.clamp(0.0, 0.05).toDouble() : 0.0;
     final rate = _number(
@@ -616,6 +620,18 @@ class CharacterPerformanceDirector {
         : 0.9;
     _strength +=
         (targetStrength - _strength) * (1 - exp(-dt / strengthResponse));
+    // Follow the broad speaking state, never the syllable envelope. Keeping
+    // this blend separate from authored strength preserves the skin's intent.
+    final conversationActive =
+        enhanceConversation && speaking && !suppressed && !hasActiveAttitudeCue;
+    final conversationResponse = suppressed
+        ? 0.12
+        : speaking
+        ? 0.35
+        : 0.9;
+    _conversationBlend +=
+        ((conversationActive ? 1 : 0) - _conversationBlend) *
+        (1 - exp(-dt / conversationResponse));
     for (final part in {
       'head',
       'body',
@@ -635,7 +651,19 @@ class CharacterPerformanceDirector {
     }
     return Map.unmodifiable({
       for (final entry in _parts.entries)
-        entry.key: entry.value.scaled(_strength),
+        entry.key: () {
+          final motion = entry.value.scaled(_strength);
+          if (!enhanceConversation || suppressed || hasActiveAttitudeCue) {
+            return motion;
+          }
+          final gain = ConversationMotionPolicy.partScale(
+            entry.key,
+            talkStrength: _conversationBlend,
+          );
+          return gain > 1
+              ? profile.constrainAmbient(motion.scaled(gain))
+              : motion;
+        }(),
     });
   }
 }

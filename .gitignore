@@ -78,6 +78,11 @@ assets/**/*
 !assets/**/
 !assets/**/.gitkeep
 
+# Generated motion catalogue is code data consumed by the runtime and must be
+# shipped with the application even though other proprietary assets stay out.
+!assets/data/
+!assets/data/motion_recipes_extra.json
+
 # User-provided branding explicitly approved for public distribution.
 !assets/branding/
 !assets/branding/agent_atelier_logo.png

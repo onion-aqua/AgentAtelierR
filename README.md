@@ -8,7 +8,7 @@ AgentAtelierR 是以 Android 为主要开发平台的 Flutter AI 角色互动项
 
 ## 当前版本与适用范围
 
-当前源码版本为 **AgentAtelierR 1.0.4 beta1 26106**，Android 版本号 `1.0.4-beta1.26106+36`，GitHub 版本标签为 `v1.0.4-beta1.26106`。变更见[beta1 更新记录](docs/CHANGELOG_1.0.4-beta1-26106.md)。以下功能以当前源码为准；具体效果会受到本地资源、设备、模型和服务能力影响。
+当前源码版本为 **AgentAtelierR 1.0.4 正式版**，Android 版本号 `1.0.4+38`；本 APK 更新到 GitHub 的 `AgentAtelierR 1.0.4 正式版` Release。以下功能以当前源码为准；具体效果会受到本地资源、设备、模型和服务能力影响。
 
 > beta1 提供使用加密构建脚本生成的 **release APK**，启用 Dart 混淆，作为 GitHub 测试版发布。当前仍沿用 Android 调试签名以兼容已有安装，并非商店正式签名包。旧版 debug 测试包的卡顿与不稳定表现不能代表 release 包。
 
@@ -69,7 +69,7 @@ AgentAtelierR 是以 Android 为主要开发平台的 Flutter AI 角色互动项
 
 ## 记忆、存档与数据迁移
 
-对话历史、人物状态、用户设定和记忆主要保存在本机。最近记忆通常按约 4 轮对话整理；累计约 8 条待整理的最近记忆后，再整理长期记忆，前提是相关记忆设置已开启且 LLM 服务可用。长期记忆提示词可编辑，也可手动触发整理，在确认卡片中读写结果和译文后一起保存。自动整理依赖模型判断，不保证永不遗漏或重复。
+对话历史、人物状态、用户设定和记忆主要保存在本机。最近记忆通常按约 4 轮对话整理；累计约 8 条待整理的最近记忆后，再整理长期记忆，前提是相关记忆设置已开启且 LLM 服务可用。长期记忆提示词可编辑，也可手动触发整理，在确认卡片中读写结果和译文后一起保存。当前长期记忆采用追加式时间线：每轮完整回复后先由本地规则保存高置信的约定、物品、地点、关系转折、偏好和情绪事件，再让模型做可撤销的语言压缩；模型失败、遗漏或返回过短结果时不会清空已有事实。召回使用本地关键词和时间评分，不依赖向量模型。详细设计见 [记忆框架说明](docs/memory_framework.md)。
 
 数据管理支持版本化 JSON 导入/导出。导出时可以选择是否包含 API 服务配置及密钥；**包含密钥的 JSON 是明文文件**，请自行保管，不要公开上传。切换到新存档会重置相应人物的状态；角色数据分别保存，避免两位人物的历史和关系混用。
 
@@ -117,7 +117,7 @@ APK 输出位于 `build/app/outputs/flutter-apk/`。Windows 目标还需 Visual 
 | `lib/src/continuous_asmr_page.dart` | 持续 ASMR 的准备与播放界面 |
 | `lib/src/world_map_screen.dart`、`lib/src/stage_environment_catalog.dart` | 地图、地点和场景映射 |
 | `lib/src/local_skin_store.dart`、`lib/src/appearance_picker_page.dart` | 本地服装导入与切换 |
-| `lib/src/memory_timeline.dart`、`lib/src/manual_memory_consolidation.dart` | 记忆时间线与手动整理 |
+| `lib/src/memory_ledger.dart`、`lib/src/memory_timeline.dart`、`lib/src/manual_memory_consolidation.dart` | 追加式记忆账本、可解释召回与手动整理 |
 | `tool/build_protected.ps1`、`tool/run_protected.ps1` | 受保护资源构建与运行入口 |
 
 更多记录：[人物表现映射](docs/CHARACTER_PERFORMANCE_MAPPING.md) · [动画运行时对照](docs/APK_RUNTIME_RECHECK_2026-09-26.md) · [DX 更新记录](docs/CHANGELOG_1.0.0-DX.md) · [提交历史](https://github.com/onion-aqua/AgentAtelierR/commits/main/)。历史文档描述的是各阶段实现，遇到差异以当前源码和版本记录为准。

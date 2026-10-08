@@ -21,8 +21,9 @@ void main() {
     availablePostures: const {'sitting_normal': '自然坐姿', 'sitting_agura': '盘腿'},
   );
 
-  test('independent requests preserve full catalogue and narration order', () async {
+  test('independent requests keep catalogue expansion bounded and preserve narration order', () async {
     var calls = 0;
+    var actionCalls = 0;
     final output = await IndependentPerformanceTools().plan(
       userInput: '挥手',
       source: '旁白：她走近。\n莱莎：你好。\n译文：Hello.\n旁白：她笑了。',
@@ -33,14 +34,18 @@ void main() {
         calls++;
         final input = jsonDecode(messages.last['content']!);
         if (input.containsKey('candidates')) {
-          if (input['catalogue_complete'] == false) {
+          actionCalls++;
+          if (actionCalls == 1) {
             expect(input['candidates'].length, 17);
             return '{"request_catalog":true}';
           }
-          expect(input['candidates'].length, 101);
-          expect(input['candidates']['grp_fg_99'], '动作99');
+          // A retry may expand the retrieval window, but it must not put all
+          // generated groups into the prompt. `none` + 48 motion candidates
+          // is the current upper bound.
+          expect(input['candidates'].length, 49);
+          expect(input['candidates']['grp_fg_0'], '动作0');
           expect(input.containsKey('expression_intensities'), isFalse);
-          return '{"segments":[{"id":1,"match":"exact","action":"grp_fg_99"}]}';
+          return '{"segments":[{"id":1,"match":"exact","action":"grp_fg_0"}]}';
         }
         expect(input.containsKey('candidates'), isFalse);
         return '{"segments":[{"id":1,"face":"happy"}]}';
@@ -49,7 +54,7 @@ void main() {
     expect(calls, 3);
     expect(
       output,
-      '旁白：她走近。\n莱莎：[face:happy][action:grp_fg_99]你好。\n译文：Hello.\n旁白：她笑了。',
+      '旁白：她走近。\n莱莎：[face:happy][action:grp_fg_0]你好。\n译文：Hello.\n旁白：她笑了。',
     );
   });
 

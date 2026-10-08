@@ -17,6 +17,7 @@ import 'local_skin_store.dart';
 import 'llm_dialogue_signal.dart';
 import 'mimo_tts_config.dart';
 import 'memory_timeline.dart';
+import 'memory_ledger.dart';
 import 'model_thinking.dart';
 import 'npc_chat_contacts.dart';
 import 'npc_chat_models.dart';
@@ -1781,6 +1782,43 @@ class AppController extends ChangeNotifier {
     _changed();
   }
 
+  /// Record high-confidence facts without waiting for an auxiliary model.
+  /// This is an append-only write; it never replaces a user-edited timeline.
+  bool recordDeterministicMemoryForLastTurn({DateTime? now}) {
+    if (!longTermMemoryEnabled) return false;
+    final assistantIndex = messages.lastIndexWhere(
+      (message) =>
+          !message.isUser &&
+          !message.isFailure &&
+          message.text.trim().isNotEmpty,
+    );
+    if (assistantIndex < 0) return false;
+    final userIndex = messages.lastIndexWhere(
+      (message) => message.isUser && message.text.trim().isNotEmpty,
+      assistantIndex - 1,
+    );
+    if (userIndex < 0) return false;
+    final assistant = messages[assistantIndex];
+    final user = messages[userIndex];
+    final facts = MemoryLedger.extractTurn(
+      userText: user.text,
+      assistantText: assistant.text,
+      sourceMessageId: assistant.id,
+      now: now,
+    );
+    if (facts.isEmpty) return false;
+    final merged = MemoryLedger.mergeIntoTimeline(
+      memorySummary,
+      facts,
+      now: now,
+    );
+    if (merged == null || merged == memorySummary) return false;
+    memorySummary = merged;
+    memoryEditRevision += 1;
+    _changed();
+    return true;
+  }
+
   Future<bool> attachTranslation(
     ChatMessage original,
     String translated,
@@ -1902,11 +1940,12 @@ class AppController extends ChangeNotifier {
     notifyListeners();
   }
 
-  void finishAssistantStream() {
+  void finishAssistantStream({bool recordMemory = false}) {
     if (messages.isNotEmpty && messages.last.text.trim().isEmpty) {
       messages.removeLast();
     }
     if (messages.length > 60) messages.removeRange(0, messages.length - 60);
+    if (recordMemory) recordDeterministicMemoryForLastTurn();
     _changed();
   }
 
@@ -2257,7 +2296,13 @@ ${independentSpeechPerformance || !fishTtsEnabled || ttsProvider == TtsProvider.
         },
       };
     } else {
-      performanceData = performanceContext.toPromptData();
+      final fullPerformanceData = performanceContext.toPromptData();
+      // Independent performance planning receives the full verified map in
+      // its own retrieval step. Keep the dialogue prompt bounded when the
+      // generated catalogue grows into tens of thousands of combinations.
+      performanceData = independentPerformance || llmContextCompatibility
+          ? _compactPerformancePromptData(fullPerformanceData)
+          : fullPerformanceData;
     }
 
     final voiceRule = fishTtsEnabled && ttsProvider == TtsProvider.local
@@ -2981,12 +3026,16 @@ $japanesePunctuationRule
     final hasLegacyMemory =
         memorySummary.trim().isNotEmpty &&
         MemoryTimeline.decode(memorySummary) == null;
-    final normalized = hasLegacyMemory
-        ? MemoryTimeline.normalizeCandidate(
+    // Always merge a model result as an append-only candidate. A compact
+    // response may omit older entries; normalizeCandidate restores them from
+    // the saved timeline before adding new events, so model omissions cannot
+    // delete facts.
+    final normalized = memorySummary.trim().isEmpty
+        ? MemoryTimeline.normalizeExisting(value)
+        : MemoryTimeline.normalizeCandidate(
             value,
             previousMemory: memorySummary,
-          )
-        : MemoryTimeline.normalizeExisting(value);
+          );
     if (normalized == null) return false;
     final previousEntries =
         MemoryTimeline.decode(memorySummary)?['entries'] as List? ?? const [];
@@ -3096,31 +3145,11 @@ $japanesePunctuationRule
     final latestUserText = currentInput.trim().isNotEmpty
         ? currentInput.trim().toLowerCase()
         : latestMessageText;
-    final dated = [...entries]
-      ..sort((a, b) => (b['sequence'] as int).compareTo(a['sequence'] as int));
-    final selected = <Map<String, dynamic>>[];
-    for (var index = 0; index < dated.length; index++) {
-      final entry = dated[index];
-      final category = '${entry['category']}';
-      final importance = (entry['importance'] as num?)?.toInt() ?? 1;
-      final keywords = (entry['keywords'] as List<dynamic>? ?? const [])
-          .map((value) => '$value'.toLowerCase())
-          .where((value) => value.length >= 2);
-      final related =
-          latestUserText.isNotEmpty &&
-          keywords.any((keyword) => latestUserText.contains(keyword));
-      final recentContext =
-          index < 3 &&
-          RegExp(r'昨天|前天|之前|上次|还记得|remember|yesterday|昨日|前回')
-              .hasMatch(latestUserText);
-      if (MemoryTimeline.protectedCategories.contains(category) ||
-          importance >= 5 ||
-          related ||
-          recentContext) {
-        selected.add(entry);
-      }
-      if (selected.length >= 12) break;
-    }
+    final selected = MemoryTimeline.selectRelevantEntries(
+      raw: raw,
+      query: latestUserText,
+      limit: 12,
+    );
     return jsonEncode({
       ...MemoryTimeline.promptDocument(raw, selected),
       if (recent.isNotEmpty) 'recent_memories': recent,
@@ -3188,7 +3217,14 @@ $japanesePunctuationRule
           entry.key.toString(): _compactMotionDescription(entry.value),
       };
       compact['motionGroupCount'] = entries.length;
-      compact['motionGroupKeys'] = entries.map((entry) => entry.key).join(',');
+      // The independent planner owns exact catalogue lookup. A bounded key
+      // preview keeps the main dialogue prompt useful without serializing
+      // every generated recipe into the context window.
+      compact['motionGroupKeys'] = entries
+          .take(256)
+          .map((entry) => entry.key)
+          .join(',');
+      if (entries.length > 256) compact['motionGroupKeysTruncated'] = true;
     }
     return compact;
   }

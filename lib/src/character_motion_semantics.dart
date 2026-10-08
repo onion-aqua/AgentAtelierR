@@ -1,0 +1,56 @@
+import 'character_appearance.dart';
+
+/// Describe an authored group for both direct selection and generated recipes.
+/// These meanings refer to known resources; an unknown group keeps its label
+/// without guessing a gesture from its animation number.
+String characterMotionPromptDescription(CharacterMotionGroup group) {
+  final semantic = switch (group.id) {
+    'grp_b_01' => '仅轻微转肩（肩约6至7度），手臂微动；不举臂、不伸懒腰、不做大幅伸展',
+    'grp_b_02' => '双手叠放，安静倾听',
+    'grp_b_03' => '双手叉腰，自信或佯装不满',
+    'grp_b_05' => '双臂在胸前交叉抱臂（抱胸/环胸），可用于思考、质疑或自信回应',
+    'grp_b_07' => '双手放在胸前，真诚回应',
+    'grp_b_12' => '左右伸展或伸懒腰',
+    'grp_b_13' => '双手放在大腿内侧，收敛坐姿',
+    'grp_c_01' => '双脚轻轻晃荡',
+    'grp_c_02' => '改变腿部角度，调整坐姿',
+    'grp_c_03' => '调整膝盖开合',
+    'grp_c_04' => '调整大腿高度',
+    'grp_c_05' => '盘腿姿态变化',
+    'grp_eh_10' => '身体左右轻晃',
+    'grp_eh_20' => '身体倾斜待机',
+    'grp_eh_30' => '身体轻微上下弹动',
+    'grp_eh_40' => '身体向后倾斜',
+    'grp_eh_50' => '身体向左倾斜',
+    'grp_eh_60' => '身体向右倾斜',
+    'grp_eh_70' => '身体向前倾听',
+    'grp_fg_016' => '双手比耶',
+    'grp_fg_018' => '双手配合耳语姿势',
+    'grp_fg_019' => '双手张开手掌触碰',
+    'grp_fg_020' => '双手做嘘手势',
+    'grp_fg_021' => '双手指向或展示',
+    'grp_fg_022' => '双手叠放在大腿上',
+    'grp_fg_023' => '双臂在胸前交叉抱臂组合（抱胸/环胸），可用于思考、质疑或自信回应',
+    'grp_fg_024' => '双手拍手',
+    'grp_fg_025' => '双手放在沙发上支撑',
+    'grp_fg_026' => '双手放在大腿上',
+    'grp_fg_027' => '盘腿专用手位',
+    'grp_fg_028' => '展示双掌并挥手',
+    'grp_fg_029' => '展示双掌并慌张摆动',
+    'grp_fg_030' => '双手握拳打气',
+    'grp_fg_031' => '双手向前伸出或拥抱邀请',
+    'grp_fg_032' => '双掌示意等一下',
+    'grp_fg_033' => '双手挥手问候',
+    'grp_fg_000' => '站姿双臂自然放置',
+    'grp_fg_001' => '站姿双手叉腰',
+    'grp_fg_002' => '站姿双臂在胸前交叉抱臂（抱胸/环胸），可用于思考、质疑或自信回应',
+    'grp_fg_003' => '站姿双手轻摆',
+    'grp_fg_004' => '站姿双手背后交握',
+    'grp_fg_g_006' => '站姿右手猫爪般轻抬',
+    'grp_fg_g_007' => '站姿右手向前伸出',
+    'grp_fg_g_008' => '站姿右手耳语姿势',
+    'grp_fg_g_009' => '站姿右手触碰脸颊',
+    _ => '资源标签所描述的动作；不要推断未写明的姿势',
+  };
+  return '$semantic；资源标签：${group.label}。';
+}

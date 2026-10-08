@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 class MemoryTimeline {
+  static const schemaVersion = 2;
   static final _summarySeparators = RegExp(r'[\s\p{P}\p{S}]', unicode: true);
   static const protectedCategories = <String>{
     'promise',
@@ -126,11 +127,76 @@ class MemoryTimeline {
       (a, b) => (a['sequence'] as int).compareTo(b['sequence'] as int),
     );
     return {
+      'schema_version': schemaVersion,
+      'engine': 'append_only_ledger',
       'current_state': document?['current_state'] ?? <String, dynamic>{},
       'rule': '当前情况以 current_state 和最新确认事件为准；status=superseded 的旧状态只用于回忆。',
       'entries': selected,
       if (all.isEmpty) 'note': '暂无长期记忆',
     };
+  }
+
+  /// Selects memory with an explainable local score. This is intentionally
+  /// independent of an embedding model: exact entities and keywords remain
+  /// recallable on small devices and when an API is unavailable.
+  static List<Map<String, dynamic>> selectRelevantEntries({
+    required String raw,
+    required String query,
+    int limit = 12,
+  }) {
+    final document = decode(normalizeExisting(raw));
+    final entries = (document?['entries'] as List? ?? const [])
+        .whereType<Map<String, dynamic>>()
+        .toList();
+    if (entries.isEmpty || limit <= 0) return const [];
+    final terms = _memoryTerms(query);
+    final scored = <({Map<String, dynamic> entry, double score})>[];
+    for (final entry in entries) {
+      final summary = '${entry['summary'] ?? ''}';
+      final keywords = (entry['keywords'] as List? ?? const [])
+          .map((value) => '$value')
+          .toList(growable: false);
+      final searchable = _memoryTerms(
+        [
+          summary,
+          ...keywords,
+          '${entry['category'] ?? ''}',
+          '${entry['translation'] ?? ''}',
+          '${entry['state_change'] ?? ''}',
+        ].join(' '),
+      );
+      final overlap = terms.intersection(searchable).length;
+      final importance = ((entry['importance'] as num?)?.toDouble() ?? 1).clamp(
+        1,
+        5,
+      );
+      final sequence = (entry['sequence'] as num?)?.toDouble() ?? 0;
+      final category = '${entry['category'] ?? ''}';
+      var score = overlap * 3.0 + importance * .55 + sequence / 100000;
+      if (protectedCategories.contains(category)) score += 4.0;
+      if (entry['status'] == 'active') score += .35;
+      // When a query has no useful terms, return a stable recent/protected
+      // slice rather than pretending that semantic similarity was computed.
+      if (terms.isEmpty) score = importance * 1.1 + sequence / 100000;
+      scored.add((entry: entry, score: score));
+    }
+    scored.sort((a, b) {
+      final scoreOrder = b.score.compareTo(a.score);
+      if (scoreOrder != 0) return scoreOrder;
+      return ((b.entry['sequence'] as num?) ?? 0).compareTo(
+        (a.entry['sequence'] as num?) ?? 0,
+      );
+    });
+    final selected = scored
+        .take(limit)
+        .map((item) => Map<String, dynamic>.from(item.entry))
+        .toList();
+    selected.sort(
+      (a, b) => ((a['sequence'] as num?) ?? 0).compareTo(
+        (b['sequence'] as num?) ?? 0,
+      ),
+    );
+    return selected;
   }
 
   static String currentStatePrompt(String raw) {
@@ -240,6 +306,16 @@ class MemoryTimeline {
           .where((word) => word.isNotEmpty)
           .take(8)
           .toList(),
+      if ('${raw['source'] ?? ''}'.trim().isNotEmpty)
+        'source': _take('${raw['source']}'.trim(), 32),
+      if ('${raw['source_message_id'] ?? ''}'.trim().isNotEmpty)
+        'source_message_id': _take('${raw['source_message_id']}'.trim(), 96),
+      if ('${raw['source_role'] ?? ''}'.trim().isNotEmpty)
+        'source_role': _take('${raw['source_role']}'.trim(), 16),
+      if ('${raw['observed_at'] ?? ''}'.trim().isNotEmpty)
+        'observed_at': _take('${raw['observed_at']}'.trim(), 40),
+      if (raw['confidence'] is num)
+        'confidence': ((raw['confidence'] as num).toDouble()).clamp(0, 1),
     };
     if (transition != null) entry['state_change'] = transition;
     if (quotes.isNotEmpty &&
@@ -274,6 +350,8 @@ class MemoryTimeline {
       }
     }
     return {
+      'schema_version': schemaVersion,
+      'engine': 'append_only_ledger',
       'updated_at': updatedAt ?? DateTime.now().toIso8601String(),
       'last_sequence': entries.fold<int>(lastSequence ?? 0, (max, entry) {
         final sequence = entry['sequence'] as int;
@@ -345,6 +423,28 @@ class MemoryTimeline {
 
   static String _comparableSummary(String summary) =>
       summary.toLowerCase().replaceAll(_summarySeparators, '');
+
+  static Set<String> _memoryTerms(String value) {
+    final terms = <String>{};
+    final lower = value.toLowerCase();
+    for (final match in RegExp(
+      r'[a-z0-9][a-z0-9_-]{1,}',
+      caseSensitive: false,
+    ).allMatches(lower)) {
+      terms.add(match.group(0)!);
+    }
+    final cjkRuns = RegExp(r'[\u3400-\u9fff\uf900-\ufaff]+').allMatches(value);
+    for (final match in cjkRuns) {
+      final chars = match.group(0)!.runes.toList();
+      for (var i = 0; i < chars.length; i++) {
+        terms.add(String.fromCharCode(chars[i]));
+        if (i + 1 < chars.length) {
+          terms.add(String.fromCharCodes([chars[i], chars[i + 1]]));
+        }
+      }
+    }
+    return terms;
+  }
 
   static Set<String> _characterPairs(String text) {
     final runes = text.runes.toList();

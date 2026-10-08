@@ -11,7 +11,9 @@ param(
 
     [string]$RelayPushConfig = '',
 
-    [string]$RelayServerConfig = ''
+    [string]$RelayServerConfig = '',
+
+    [string]$EntryPoint = ''
 )
 
 $ErrorActionPreference = "Stop"
@@ -47,6 +49,9 @@ try {
 
     if ($Target -eq "appbundle") { $Mode = "release" }
     $flutterArgs = @("build", $Target, "--$Mode", "--no-pub", "--dart-define=AAR_CHARACTER_ASSET_KEY=$assetKey")
+    if ($EntryPoint) {
+        $flutterArgs += @('--target', (Resolve-Path -LiteralPath $EntryPoint).Path)
+    }
     if ($privateRelayDefines) {
         $flutterArgs += "--dart-define-from-file=$privateRelayDefines"
     }

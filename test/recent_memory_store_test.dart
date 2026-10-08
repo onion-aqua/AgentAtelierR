@@ -150,7 +150,7 @@ void main() {
   });
 
   test(
-    'a collapsed long-term result cannot replace the existing timeline',
+    'a collapsed long-term result preserves the existing timeline',
     () async {
       SharedPreferences.setMockInitialValues({});
       final controller = await AppController.load();
@@ -187,29 +187,17 @@ void main() {
           expectedEditRevision: controller.memoryEditRevision,
           throughRecentMemoryCount: 1,
         ),
-        isFalse,
-      );
-      expect(controller.memorySummary, original);
-      expect(controller.pendingRecentMemoryCount, 1);
-      final oldEntries =
-          (jsonDecode(original) as Map<String, dynamic>)['entries']
-              as List<dynamic>;
-      final valid = jsonEncode({
-        'entries': [
-          ...oldEntries,
-          {'summary': '新记忆', 'date': '2026-09-26', 'category': 'other'},
-        ],
-      });
-      expect(
-        controller.applyConsolidatedLongTermMemory(
-          valid,
-          expectedEditRevision: controller.memoryEditRevision,
-          throughRecentMemoryCount: 1,
-        ),
         isTrue,
       );
       expect(controller.pendingRecentMemoryCount, 0);
-      expect(controller.memorySummary, contains('新记忆'));
+      final merged =
+          jsonDecode(controller.memorySummary) as Map<String, dynamic>;
+      final summaries = (merged['entries'] as List)
+          .map((entry) => entry['summary'])
+          .toList();
+      expect(summaries, containsAll(['原有记忆 0', '原有记忆 1', '原有记忆 2', '原有记忆 3']));
+      expect(summaries, contains('只剩一条'));
+      expect(controller.memorySummary, isNot(original));
     },
   );
 }
