@@ -139,6 +139,38 @@ final characterAppearances = <CharacterAppearance>[
       'motion_A_003_idle',
     ],
   ),
+  CharacterAppearance(
+    id: 'crf_skn_002_0006_01',
+    label: '东方旗袍·紫色',
+    description: '本地内置的完整 Spine 坐姿服装资源',
+    promptDescription:
+        '莱莎穿着深紫色、金色滚边和花纹装饰的中式旗袍，头发扎成双髻并配有黑色兔耳发饰；当前是坐姿。服装名称是应用内描述名，不是已确认的官方名称。',
+    assetName: 'crf_skn_002_0006_01',
+    animated: true,
+    baseAppearanceId: 'seated_01',
+    idleAnimations: [
+      'motion_A_001_idle',
+      'motion_A_002_idle',
+      'motion_A_003_idle',
+      'motion_A_004_idle',
+      'motion_A_005_idle',
+      'motion_A_006_idle',
+      'motion_A_007_idle',
+      'motion_A_008_idle',
+      'motion_A_022_idle',
+      'motion_A_024_idle',
+      'motion_A_025_idle',
+      'motion_A_026_idle',
+      'motion_A_027_idle',
+      'motion_A_028_idle',
+      'motion_A_029_idle',
+      'motion_A_030_idle',
+      'motion_A_031_idle',
+      'motion_A_032_idle',
+      'motion_A_033_idle',
+      'motion_A_034_idle',
+    ],
+  ),
 ];
 
 void registerLocalSkinAppearances() {

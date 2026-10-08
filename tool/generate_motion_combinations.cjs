@@ -17,6 +17,15 @@ const EXTRA_FILE = path.join(ROOT, 'assets', 'data', 'motion_recipes_extra.json'
 const BASE_POSE = 'motion_A_001_idle';
 const ANIMATION_RE = /^motion_(add|oneshot)_([B-J])_\d+_active$/;
 const RESOURCE_RE = /^crf_skn_\d+_\d+_(?:01|99)$/;
+// The shipped catalogue is generated from these six canonical resources.
+// Additional local outfits can reuse the catalogue through baseAppearanceId;
+// they must still contain every animation shared by the canonical pool, but
+// they must not change the generated IDs or recipe ordering.
+const CANONICAL_RESOURCE_NAMES = new Set([
+  'crf_skn_002_0001_01', 'crf_skn_002_0001_99',
+  'crf_skn_002_0002_01', 'crf_skn_002_0003_01',
+  'crf_skn_002_0004_01', 'crf_skn_002_0005_01',
+]);
 
 const REGION_LABEL = {
   B: '上身', C: '双腿', D: '瞬间反应', E: '身体', F: '左手',
@@ -108,10 +117,19 @@ function loadResources() {
     .map((entry) => parseResource(path.join(CHARACTER_ROOT, entry)))
     .filter(Boolean)
     .sort((a, b) => a.name.localeCompare(b.name));
-  if (entries.length !== 6) {
-    throw new Error(`expected six readable gesture resources, found ${entries.length}`);
+  const resources = entries.filter((resource) => CANONICAL_RESOURCE_NAMES.has(resource.name));
+  if (resources.length !== CANONICAL_RESOURCE_NAMES.size) {
+    throw new Error(`expected six canonical readable gesture resources, found ${resources.length}`);
   }
-  return entries;
+  const canonicalAnimations = [...resources[0].animations].filter((name) =>
+    resources.every((resource) => resource.animations.has(name)));
+  for (const supplemental of entries.filter((resource) => !CANONICAL_RESOURCE_NAMES.has(resource.name))) {
+    const missing = canonicalAnimations.filter((name) => !supplemental.animations.has(name));
+    if (missing.length) {
+      throw new Error(`${supplemental.name} is missing ${missing.length} canonical animations`);
+    }
+  }
+  return resources;
 }
 
 function intersection(resources) {

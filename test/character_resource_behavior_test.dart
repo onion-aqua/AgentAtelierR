@@ -40,6 +40,7 @@ void main() {
     '0003_01',
     '0004_01',
     '0005_01',
+    '0006_01',
   ]) {
     final skin = 'crf_skn_002_$id';
     final file = File('assets/character/ryza/$skin/${skin}_gesture.json');

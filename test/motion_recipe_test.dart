@@ -188,6 +188,32 @@ void main() {
     },
   );
 
+  test('a seated outfit can reuse the seated recipe pool', () {
+    final recipe = MotionRecipe.parse('''
+    {"recipes":[{
+      "id":"seated-scoped",
+      "name":"坐姿限定",
+      "description":"",
+      "posture":"seated",
+      "skins":["seated_01"],
+      "base":"motion_A_001_idle",
+      "stages":[[{"name":"motion_B_001_active","region":"B","alpha":1,"speed":1}]]
+    }]}
+    ''').single;
+    expect(
+      recipe.available(
+        {'motion_B_001_active'},
+        recipe.base,
+        'sitting_normal',
+        appearanceId: 'crf_skn_002_0006_01',
+        baseAppearanceId: 'seated_01',
+        appearanceAssetName: 'crf_skn_002_0006_01',
+        isStanding: false,
+      ),
+      isTrue,
+    );
+  });
+
   test('retrieval ranks descriptions without executing user instructions', () {
     final result = selectMotionCandidates(
       {'grp_a': '挥手问候', 'grp_b': '抱臂思考', 'grp_c': '安静等待'},

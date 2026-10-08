@@ -5,6 +5,8 @@
     [string]$NotesPath = 'docs/CHANGELOG_1.0.4.md',
     [string]$ApkPath = 'build/app/outputs/flutter-apk/app-release.apk',
     [string]$AssetName = 'AgentAtelierR-1.0.4-release.apk',
+    [string]$AdditionalAssetPath = '',
+    [string]$AdditionalAssetName = '',
     [switch]$Prerelease,
     [switch]$Publish
 )
@@ -148,7 +150,8 @@ function Upload-ReleaseAsset {
     param(
         [long]$ReleaseId,
         [string]$Name,
-        [System.IO.FileInfo]$File
+        [System.IO.FileInfo]$File,
+        [string]$ContentType = 'application/octet-stream'
     )
     $encodedName = [System.Uri]::EscapeDataString($Name)
     $uri = "https://uploads.github.com/repos/$Repository/releases/$ReleaseId/assets?name=$encodedName"
@@ -161,7 +164,7 @@ function Upload-ReleaseAsset {
     try {
         $request.Content = [System.Net.Http.StreamContent]::new($fileStream, 1048576)
         $request.Content.Headers.ContentType =
-            [System.Net.Http.Headers.MediaTypeHeaderValue]::new('application/vnd.android.package-archive')
+            [System.Net.Http.Headers.MediaTypeHeaderValue]::new($ContentType)
         $request.Content.Headers.ContentLength = $File.Length
         $response = $script:githubClient.SendAsync(
             $request,
@@ -170,7 +173,7 @@ function Upload-ReleaseAsset {
         $status = [int]$response.StatusCode
         $responseText = $response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
         if ($status -ne 201) {
-            throw "APK upload failed: $(Get-ApiError $status $responseText)"
+            throw "$Name upload failed: $(Get-ApiError $status $responseText)"
         }
         $asset = ConvertFrom-Json -InputObject $responseText -AsHashtable
         if ($asset['state'] -ne 'uploaded' -or [long]$asset['size'] -ne $File.Length) {
@@ -195,13 +198,26 @@ try {
     if ($AssetName -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]*\.apk$') {
         throw 'AssetName must be a plain .apk filename.'
     }
+    if ($AdditionalAssetPath -and -not $AdditionalAssetName) {
+        throw 'AdditionalAssetName is required when AdditionalAssetPath is supplied.'
+    }
+    if ($AdditionalAssetName -and $AdditionalAssetName -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]*\.(zip|exe)$') {
+        throw 'AdditionalAssetName must be a plain .zip or .exe filename.'
+    }
 
     $resolvedApk = Resolve-ProjectPath $ApkPath
     $resolvedNotes = Resolve-ProjectPath $NotesPath
     $apk = Get-Item -LiteralPath $resolvedApk -ErrorAction SilentlyContinue
     $notes = Get-Item -LiteralPath $resolvedNotes -ErrorAction SilentlyContinue
+    $additional = $null
+    if ($AdditionalAssetPath) {
+        $additional = Get-Item -LiteralPath (Resolve-ProjectPath $AdditionalAssetPath) -ErrorAction SilentlyContinue
+    }
     if ($Publish -and ($null -eq $apk -or $apk.Length -le 0)) {
         throw "APK is missing or empty: $resolvedApk"
+    }
+    if ($Publish -and $AdditionalAssetPath -and ($null -eq $additional -or $additional.Length -le 0)) {
+        throw "Additional release asset is missing or empty: $AdditionalAssetPath"
     }
     if ($Publish -and $null -eq $notes) {
         throw "Release notes are missing: $resolvedNotes"
@@ -227,6 +243,7 @@ try {
     Write-Host "Remote tag $Tag`: $(if ($tagResult.Status -eq 200) { 'present' } else { 'missing' })"
     Write-Host "Release $Tag`: $(if ($releaseResult.Status -eq 200) { 'present' } else { 'missing' })"
     Write-Host "APK: $(if ($null -ne $apk) { "$($apk.Length) bytes" } else { 'missing' })"
+    if ($AdditionalAssetPath) { Write-Host "Additional asset: $(if ($null -ne $additional) { "$($additional.Length) bytes" } else { 'missing' })" }
     Write-Host "Notes: $(if ($null -ne $notes) { 'present' } else { 'missing' })"
 
     if ($Publish) {
@@ -287,6 +304,32 @@ try {
         }
         else {
             Upload-ReleaseAsset $releaseId $AssetName $apk | Out-Null
+        }
+
+        if ($null -ne $additional) {
+            $additionalSha256 = (Get-FileHash -LiteralPath $additional.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            $additionalExisting = $assets | Where-Object { $_['name'] -eq $AdditionalAssetName } | Select-Object -First 1
+            if ($null -ne $additionalExisting -and $additionalExisting['digest'] -eq "sha256:$additionalSha256") {
+                Write-Host "The additional release asset already matches the local SHA-256; upload skipped."
+            }
+            elseif ($null -ne $additionalExisting) {
+                $temporaryName = "$AdditionalAssetName.uploading-$($additionalSha256.Substring(0, 12))"
+                $temporary = $assets | Where-Object { $_['name'] -eq $temporaryName } | Select-Object -First 1
+                if ($null -ne $temporary -and
+                    ($temporary['state'] -ne 'uploaded' -or [long]$temporary['size'] -ne $additional.Length)) {
+                    Send-GitHubJson DELETE "/repos/$Repository/releases/assets/$($temporary['id'])" -AllowedStatus @(204) | Out-Null
+                    $temporary = $null
+                }
+                if ($null -eq $temporary) {
+                    $temporary = Upload-ReleaseAsset $releaseId $temporaryName $additional 'application/zip'
+                }
+                Send-GitHubJson DELETE "/repos/$Repository/releases/assets/$($additionalExisting['id'])" -AllowedStatus @(204) | Out-Null
+                Send-GitHubJson PATCH "/repos/$Repository/releases/assets/$($temporary['id'])" -Body @{ name = $AdditionalAssetName } | Out-Null
+            }
+            else {
+                Upload-ReleaseAsset $releaseId $AdditionalAssetName $additional 'application/zip' | Out-Null
+            }
+            Write-Host "Additional asset SHA-256: $additionalSha256"
         }
 
         $published = Send-GitHubJson PATCH "/repos/$Repository/releases/$releaseId" -Body @{
