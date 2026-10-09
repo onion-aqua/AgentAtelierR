@@ -3106,19 +3106,11 @@ class _ChatScreenState extends State<ChatScreen> {
         )
         .lastOrNull;
     if (latest == null) return const [];
-    final ids = <String>[];
-    for (final segment in parseAssistantSegments(
+    return NpcContactRequestDetector.speakingContactIds(
       latest.text,
-      defaultPrimaryCharacterId: widget.controller.activeCharacterId,
-    )) {
-      if (segment.speaker != ChatSpeaker.character ||
-          segment.characterId == null ||
-          ids.contains(segment.characterId)) {
-        continue;
-      }
-      ids.add(segment.characterId!);
-    }
-    return ids;
+      contacts: widget.controller.npcChatContacts,
+      primaryCharacterId: widget.controller.activeCharacterId,
+    );
   }
 
   Future<void> _sendMessage({String? automaticPrompt}) async {
@@ -3151,7 +3143,7 @@ class _ChatScreenState extends State<ChatScreen> {
     final contactRequest = isAutomatic
         ? null
         : NpcContactRequestDetector.detect(
-            rawText,
+            [narration, rawText, narrationBottom].join('\n'),
             contacts: widget.controller.npcChatContacts,
             fallbackContactIds: _recentNpcIdsFromMainDialogue(),
           );
@@ -3199,8 +3191,6 @@ class _ChatScreenState extends State<ChatScreen> {
         widget.controller.recordDeterministicMemoryForLastTurn();
       }
       _showLatestAssistantFromStartIfOverflow();
-      await _playTtsIfConfigured(reply);
-      if (!mounted || generation != _replyGeneration) return;
       if (contactRequest != null) {
         await _offerNpcContactAddition(
           contactRequest,
@@ -3209,6 +3199,9 @@ class _ChatScreenState extends State<ChatScreen> {
           primaryCharacterId: contactRequestCharacter,
         );
       }
+      if (!mounted || generation != _replyGeneration) return;
+      await _playTtsIfConfigured(reply);
+      if (!mounted || generation != _replyGeneration) return;
       if (mounted && generation == _replyGeneration) {
         setState(() {
           _isReplying = false;
@@ -3348,6 +3341,17 @@ class _ChatScreenState extends State<ChatScreen> {
       // Commit before any translation, performance planning or audio work.
       widget.controller.completeLlmDialogueTurn(signalTurn);
       signalTurn = null;
+      // Contact consent belongs to the completed dialogue, independently of
+      // translation, performance planning and optional audio availability.
+      if (contactRequest != null) {
+        await _offerNpcContactAddition(
+          contactRequest,
+          reply,
+          expectedRevision: contactRequestRevision,
+          primaryCharacterId: contactRequestCharacter,
+        );
+        if (!mounted || generation != _replyGeneration) return;
+      }
       if (requestIndependentTranslation &&
           widget.controller.messages.isNotEmpty &&
           widget.controller.messages.last.text == reply &&
@@ -3586,14 +3590,6 @@ class _ChatScreenState extends State<ChatScreen> {
         plannedPerformance: plannedPerformance,
       );
       if (!mounted || generation != _replyGeneration) return;
-      if (contactRequest != null) {
-        await _offerNpcContactAddition(
-          contactRequest,
-          reply,
-          expectedRevision: contactRequestRevision,
-          primaryCharacterId: contactRequestCharacter,
-        );
-      }
     } on Object catch (error, stackTrace) {
       if (generation != _replyGeneration) return;
       RuntimeLog.instance.error('AI', error, stackTrace);
@@ -3631,6 +3627,7 @@ class _ChatScreenState extends State<ChatScreen> {
       reply,
       request,
       primaryCharacterId: primaryCharacterId,
+      contacts: widget.controller.npcChatContacts,
     );
     final contacts = acceptedIds
         .map(

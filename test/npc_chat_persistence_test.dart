@@ -6,6 +6,7 @@ import 'package:ryza_chat_mvp/src/app_controller.dart';
 import 'package:ryza_chat_mvp/src/app_localization.dart';
 import 'package:ryza_chat_mvp/src/character_runtime_profile.dart';
 import 'package:ryza_chat_mvp/src/npc_chat_models.dart';
+import 'package:ryza_chat_mvp/src/npc_contact_requests.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 NpcChatState conversation(String npcId, String topic) => NpcChatState(
@@ -224,6 +225,46 @@ void main() {
         controller.npcMessagingContacts.map((contact) => contact.id),
         contains('claudia'),
       );
+    },
+  );
+
+  test(
+    'confirmed exchange survives a restart before any private message',
+    () async {
+      final controller = await AppController.load();
+      addTearDown(controller.dispose);
+      await controller.saveToLocalSlot(0);
+      final revision = controller.dataRevision;
+      final request = NpcContactRequestDetector.detect(
+        '我询问科洛蒂娅是否可以交换联系方式。',
+        contacts: controller.npcChatContacts,
+      )!;
+      const reply = '科洛蒂娅：当然可以。';
+      controller.addUserMessage('发言：科洛蒂娅，交换一下联系方式吧。');
+      controller.addAssistantMessage(reply);
+      expect(controller.dataRevision, revision);
+      final accepted = NpcContactRequestDetector.acceptedContactIds(
+        reply,
+        request,
+        contacts: controller.npcChatContacts,
+        primaryCharacterId: controller.activeCharacterId,
+      );
+      expect(accepted, ['claudia']);
+      expect(controller.addNpcContact(accepted.single), isTrue);
+      // Saving waits for the same serial slot writes used by contact addition.
+      await controller.saveToLocalSlot(0);
+      final restarted = await AppController.load();
+      addTearDown(restarted.dispose);
+      expect(restarted.npcMessagingContacts.map((contact) => contact.id), [
+        'claudia',
+      ]);
+      expect(restarted.npcChats.threads, isEmpty);
+      await restarted.createLocalSlot(1);
+      expect(restarted.npcMessagingContacts, isEmpty);
+      await restarted.loadFromLocalSlot(0);
+      expect(restarted.npcMessagingContacts.map((contact) => contact.id), [
+        'claudia',
+      ]);
     },
   );
 

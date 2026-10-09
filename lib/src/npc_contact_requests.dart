@@ -101,10 +101,11 @@ class NpcContactRequestDetector {
     String reply,
     NpcContactRequest request, {
     required String primaryCharacterId,
+    Iterable<NpcChatContact> contacts = const [],
   }) {
     final speech = <String, List<String>>{};
     for (final segment in parseAssistantSegments(
-      reply,
+      _normalizeContactSpeakers(reply, contacts),
       defaultPrimaryCharacterId: primaryCharacterId,
     )) {
       final id = segment.speaker == ChatSpeaker.character
@@ -121,6 +122,74 @@ class NpcContactRequestDetector {
       ),
     );
   }
+
+  /// The same speaker resolution is used when a follow-up request says "you"
+  /// rather than repeating an NPC's name. Only unambiguous catalog identities
+  /// count, never names mentioned inside narration or translation.
+  static List<String> speakingContactIds(
+    String reply, {
+    required Iterable<NpcChatContact> contacts,
+    required String primaryCharacterId,
+  }) {
+    final known = contacts.map((contact) => contact.id).toSet();
+    return List<String>.unmodifiable({
+      for (final segment in parseAssistantSegments(
+        _normalizeContactSpeakers(reply, contacts),
+        defaultPrimaryCharacterId: primaryCharacterId,
+      ))
+        if (segment.speaker == ChatSpeaker.character &&
+            known.contains(segment.characterId))
+          segment.characterId!,
+    });
+  }
+
+  static String _normalizeContactSpeakers(
+    String reply,
+    Iterable<NpcChatContact> contacts,
+  ) {
+    // Filter private model output before looking for speaker names. In
+    // particular, a hidden name prefix must not rescue consent from <think>.
+    final visible = filterAssistantControlMarkup(reply);
+    final catalog = contacts.toList(growable: false);
+    var translating = false;
+    return visible
+        .split('\n')
+        .map((line) {
+          final canonical = _canonicalSpeaker.firstMatch(line)?.group(1);
+          if (canonical != null) {
+            translating = RegExp(
+              r'^(?:译文|translation)$',
+              caseSensitive: false,
+            ).hasMatch(canonical);
+          }
+          // A translation can contain a copied NPC name or speaker marker.
+          // Never promote those continuation lines into original speech.
+          if (translating) return '';
+          final prefix = _namedSpeaker.firstMatch(line);
+          if (prefix == null) return line;
+          final label = (prefix.group(1) ?? prefix.group(2)!)
+              .trim()
+              .toLowerCase();
+          final matches = catalog
+              .where(
+                (contact) => contact.aliases.any(
+                  (alias) => alias.toLowerCase() == label,
+                ),
+              )
+              .toList(growable: false);
+          if (matches.length != 1) return line;
+          return '角色[${matches.single.id}]：${line.substring(prefix.end)}';
+        })
+        .join('\n');
+  }
+
+  static final _namedSpeaker = RegExp(
+    r'^\s*(?:\*\*|__)?(?:角色\s*\[\s*([^\]\r\n]+?)\s*\]|([^：:\r\n]{1,80}?))(?:\*\*|__)?\s*[：:]\s*(?:\*\*|__)?',
+  );
+  static final _canonicalSpeaker = RegExp(
+    r'^\s*(旁白|莱莎|苏菲|ソフィー|译文|narrator|ryza|sophie|translation|角色\s*\[[^\]\r\n]+\])\s*[：:]',
+    caseSensitive: false,
+  );
 
   static const _contactObject =
       r'(?:好友|朋友|联系人|联系方式|联络方式|联络|私信|微信|电报|短信|邮箱|邮件|連絡先|友達|交換|追加|\b(?:friend|contacts?|wechat|weixin|wx|qq|sms|line|discord|telegram|email|mail)\b)';
@@ -158,7 +227,7 @@ class NpcContactRequestDetector {
     caseSensitive: false,
   );
   static final _directAgreement = RegExp(
-    r'^(?:当然可以|当然好|当然|可以的|可以呀|可以啊|可以哦|可以|好呀|好啊|好的|好哦|好|没问题|没有问题|行啊|行呀|乐意|愿意|同意|いいよ|いいですよ|もちろん|はい|大丈夫|了解です|\b(?:yes|yeah|yep|sure|absolutely|certainly|of\s+course|no\s+problem|okay|ok)\b)(?:$|[\s，,:：。.!！?？~～、]|加|给|交換|追加)',
+    r'^(?:(?:うん|ええ)[、,\s]+)?(?:当然可以|当然没问题|当然好|当然|可以的|可以呀|可以啊|可以哦|可以|好呀|好啊|好的|好哦|好|没问题|没有问题|行啊|行呀|乐意|愿意|同意|いいわよ|いいわ|いいよ|いいですよ|いいです|いいとも|いいね|もちろん(?:いいわよ|いいわ|いいよ|いいですよ)?|はい|喜んで|よろこんで|構わない|かまわない|大丈夫|了解です)[呀啊哦啦哟]?(?:$|[\s，,:：。.!！?？~～、]|加|给|交換|追加)|^\b(?:yes|yeah|yep|sure|absolutely|certainly|of\s+course|no\s+problem|okay|ok)\b',
     caseSensitive: false,
   );
   static final _contactAgreement = RegExp(

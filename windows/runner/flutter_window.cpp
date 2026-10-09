@@ -1,10 +1,12 @@
 #include "flutter_window.h"
 
 #include <optional>
+#include <winhttp.h>
 #include <flutter/method_channel.h>
 #include <flutter/standard_method_codec.h>
 
 #include "flutter/generated_plugin_registrant.h"
+#include "utils.h"
 
 FlutterWindow::FlutterWindow(const flutter::DartProject& project)
     : project_(project) {}
@@ -88,6 +90,30 @@ bool FlutterWindow::OnCreate() {
     result->NotImplemented();
   });
   window_channel_ = std::move(window_channel);
+  // Read the current user's static system proxy without a shell or network
+  // work on the UI thread. Dart probes connectivity before sending TTS data.
+  auto network_channel = std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
+      flutter_controller_->engine()->messenger(), "agentatelier/network",
+      &flutter::StandardMethodCodec::GetInstance());
+  network_channel->SetMethodCallHandler([](const auto& call, auto result) {
+    if (call.method_name() != "getSystemProxyConfig") {
+      result->NotImplemented();
+      return;
+    }
+    WINHTTP_CURRENT_USER_IE_PROXY_CONFIG config{};
+    flutter::EncodableMap values;
+    if (WinHttpGetIEProxyConfigForCurrentUser(&config)) {
+      values[flutter::EncodableValue("server")] =
+          flutter::EncodableValue(Utf8FromUtf16(config.lpszProxy));
+      values[flutter::EncodableValue("bypass")] =
+          flutter::EncodableValue(Utf8FromUtf16(config.lpszProxyBypass));
+    }
+    if (config.lpszProxy) GlobalFree(config.lpszProxy);
+    if (config.lpszProxyBypass) GlobalFree(config.lpszProxyBypass);
+    if (config.lpszAutoConfigUrl) GlobalFree(config.lpszAutoConfigUrl);
+    result->Success(flutter::EncodableValue(values));
+  });
+  network_channel_ = std::move(network_channel);
   SetChildContent(flutter_controller_->view()->GetNativeWindow());
 
   flutter_controller_->engine()->SetNextFrameCallback([&]() {
@@ -103,6 +129,7 @@ bool FlutterWindow::OnCreate() {
 }
 
 void FlutterWindow::OnDestroy() {
+  network_channel_.reset();
   window_channel_.reset();
   if (flutter_controller_) {
     flutter_controller_ = nullptr;

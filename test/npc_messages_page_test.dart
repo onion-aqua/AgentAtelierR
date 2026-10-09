@@ -10,6 +10,7 @@ import 'package:ryza_chat_mvp/src/app_theme.dart';
 import 'package:ryza_chat_mvp/src/glass_ui.dart';
 import 'package:ryza_chat_mvp/src/npc_chat_models.dart';
 import 'package:ryza_chat_mvp/src/npc_chat_service.dart';
+import 'package:ryza_chat_mvp/src/npc_contact_requests.dart';
 import 'package:ryza_chat_mvp/src/npc_messages_page.dart';
 import 'package:ryza_chat_mvp/src/virtual_phone.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -441,6 +442,49 @@ void main() {
     expect(backend.requests, isEmpty);
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets(
+    'confirming an exchange immediately creates a usable contact in messages',
+    (tester) async {
+      controller.replaceNpcChats(
+        const NpcChatState.empty(),
+        expectedRevision: controller.dataRevision,
+      );
+      await mount(tester);
+      expect(_contact('claudia'), findsNothing);
+      expect(find.textContaining('在主对话中询问 NPC'), findsOneWidget);
+      final request = NpcContactRequestDetector.detect(
+        '科洛蒂娅，能加我 LINE 吗？',
+        contacts: controller.npcChatContacts,
+      )!;
+      final accepted = NpcContactRequestDetector.acceptedContactIds(
+        'クラウディア：「うん、いいよ！」',
+        request,
+        contacts: controller.npcChatContacts,
+        primaryCharacterId: controller.activeCharacterId,
+      );
+      expect(accepted, ['claudia']);
+      // This is the same controller operation performed by the confirmation
+      // dialog; the already-open messages page must react without reopening.
+      expect(controller.addNpcContact(accepted.single), isTrue);
+      await tester.pumpAndSettle();
+      expect(_contact('claudia'), findsOneWidget);
+      expect(_contact('lent'), findsNothing);
+      expect(controller.npcChats.threads, isEmpty);
+      expect(controller.addNpcContact(accepted.single), isTrue);
+      await tester.pumpAndSettle();
+      expect(_contact('claudia'), findsOneWidget);
+      await openContact(tester, 'claudia');
+      expect(_draft('claudia'), findsOneWidget);
+      await send(tester, 'claudia', '刚才交换联系方式了，你还记得吗？');
+      expect(backend.requests.single.contact.id, 'claudia');
+      backend.streams.single.add('もちろん、覚えているよ！');
+      unawaited(backend.streams.single.close());
+      await tester.pumpAndSettle();
+      expect(find.text('もちろん、覚えているよ！'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   testWidgets('glass changes keep drafts without sending or saving anything', (
     tester,

@@ -241,4 +241,140 @@ void main() {
       );
     }
   });
+
+  test('natural Japanese consent is recognized after an explicit request', () {
+    for (final words in [
+      'うん、いいよ！',
+      'ええ、喜んで。',
+      'もちろんいいわよ。',
+      '連絡先？いいわよ、交換しましょう。',
+      'LINEを交換しよう！',
+      '当然可以啦！',
+      '当然没问题，微信给你。',
+    ]) {
+      expect(
+        NpcContactRequestDetector.looksLikeAgreement(words),
+        isTrue,
+        reason: words,
+      );
+    }
+    for (final words in [
+      'うん。でも連絡先は教えたくない。',
+      'ええ、でも今はまだ決めていない。',
+      'いいわよ、でもLINEを交換しない。',
+      'うん、今日の景色はきれいだね。',
+      'ええ、それで今日はどうする？',
+    ]) {
+      expect(
+        NpcContactRequestDetector.looksLikeAgreement(words),
+        isFalse,
+        reason: words,
+      );
+    }
+  });
+
+  test('speaker names resolve to the same contact as the explicit npc id', () {
+    const request = NpcContactRequest(
+      contactIds: ['claudia'],
+      channel: NpcContactChannel.line,
+    );
+    List<String> accepted(String reply) =>
+        NpcContactRequestDetector.acceptedContactIds(
+          reply,
+          request,
+          contacts: contacts,
+          primaryCharacterId: 'ryza',
+        );
+    for (final reply in [
+      '科洛蒂娅：当然可以。',
+      'クラウディア：「うん、いいよ！」',
+      'Claudia: Sure, add me on LINE.',
+      '**科洛蒂娅**：当然可以。',
+      '**科洛蒂娅：**当然可以。',
+      '角色[科洛蒂娅]：当然可以。',
+    ]) {
+      expect(accepted(reply), ['claudia'], reason: reply);
+      expect(
+        NpcContactRequestDetector.speakingContactIds(
+          reply,
+          contacts: contacts,
+          primaryCharacterId: 'ryza',
+        ),
+        ['claudia'],
+        reason: reply,
+      );
+    }
+    for (final reply in [
+      '旁白：科洛蒂娅：当然可以。',
+      '译文：科洛蒂娅：当然可以。',
+      '译文：\n科洛蒂娅：当然可以。',
+      '译文：\nクラウディア：「うん、いいよ！」',
+      '译文：角色[claudia]：当然可以。',
+      '<think>科洛蒂娅：当然可以。</think>\n莱莎：她在考虑。',
+      '科洛蒂娅：不行，我不方便交换联系方式。',
+      '兰托：没问题。',
+    ]) {
+      expect(accepted(reply), isEmpty, reason: reply);
+    }
+  });
+
+  test('shared speaker names never resolve an ambiguous contact', () {
+    final sophieContacts = npcChatContactsFor('sophie', catalog);
+    const request = NpcContactRequest(
+      contactIds: ['sophie_plachta_doll', 'sophie_plachta_young'],
+      channel: NpcContactChannel.generic,
+    );
+    expect(
+      NpcContactRequestDetector.acceptedContactIds(
+        '普拉芙妲：当然可以。',
+        request,
+        contacts: sophieContacts,
+        primaryCharacterId: 'sophie',
+      ),
+      isEmpty,
+    );
+    expect(
+      NpcContactRequestDetector.acceptedContactIds(
+        '普拉芙妲（人偶）：当然可以。',
+        request,
+        contacts: sophieContacts,
+        primaryCharacterId: 'sophie',
+      ),
+      ['sophie_plachta_doll'],
+    );
+  });
+
+  test(
+    'a translation cannot override an original refusal or count as consent',
+    () {
+      const request = NpcContactRequest(
+        contactIds: ['claudia'],
+        channel: NpcContactChannel.generic,
+      );
+      for (final reply in [
+        '角色[claudia]：連絡先は教えられない。\n译文：\n科洛蒂娅：当然可以。',
+        '角色[claudia]：今日は景色がきれいね。\n译文：\n科洛蒂娅：当然可以。',
+      ]) {
+        expect(
+          NpcContactRequestDetector.acceptedContactIds(
+            reply,
+            request,
+            contacts: contacts,
+            primaryCharacterId: 'ryza',
+          ),
+          isEmpty,
+          reason: reply,
+        );
+      }
+      expect(
+        NpcContactRequestDetector.acceptedContactIds(
+          '莱莎：ありがとう。\n译文：谢谢。\n角色[claudia]：もちろん、いいよ！',
+          request,
+          contacts: contacts,
+          primaryCharacterId: 'ryza',
+        ),
+        ['claudia'],
+      );
+    },
+  );
 }

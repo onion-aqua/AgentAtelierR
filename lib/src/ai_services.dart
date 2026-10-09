@@ -18,6 +18,7 @@ import 'retry_policy.dart';
 import 'model_thinking.dart';
 import 'planning_http_client.dart';
 import 'tts_text_normalizer.dart';
+import 'desktop_tts_transport.dart';
 
 part 'gemini_interactions.dart';
 
@@ -1232,7 +1233,7 @@ class FishAudioClient {
   FishAudioClient({
     http.Client? client,
     this.requestTimeout = const Duration(seconds: 90),
-  }) : _client = client ?? http.Client();
+  }) : _client = client ?? createFishAudioTransport();
 
   static const endpoint = 'https://api.fish.audio/v1/tts';
   final http.Client _client;
@@ -1249,16 +1250,21 @@ class FishAudioClient {
       timedOut = true;
       abort.complete();
     });
+    final request = http.AbortableRequest(
+      'POST',
+      uri,
+      abortTrigger: abort.future,
+    )..headers.addAll(headers);
+    request.body = body;
     try {
-      final request = http.AbortableRequest(
-        'POST',
-        uri,
-        abortTrigger: abort.future,
-      )..headers.addAll(headers);
-      request.body = body;
       return await http.Response.fromStream(await _client.send(request));
     } on http.RequestAbortedException {
-      if (timedOut) throw TimeoutException('Fish Audio 请求超时', requestTimeout);
+      if (timedOut) {
+        if (_client case final DesktopTtsClient transport) {
+          transport.requestTimedOut(request);
+        }
+        throw TimeoutException('Fish Audio 请求超时', requestTimeout);
+      }
       rethrow;
     } finally {
       timer.cancel();
