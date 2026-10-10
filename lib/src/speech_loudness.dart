@@ -5,18 +5,42 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
 import 'runtime_log.dart';
+import 'speech_spatial.dart';
+import 'tts_spatial_settings.dart';
 
 /// Process once before playback/cache; decoding and sample loops stay off the UI
 /// isolate. A failed/unsupported decode leaves the original speech playable.
-Future<String> balanceSpeechLoudness(String path, {bool asmr = false}) async {
-  final output = '$path.balanced.wav';
+Future<String> balanceSpeechLoudness(
+  String path, {
+  bool asmr = false,
+  bool stereoEnabled = false,
+  TtsStereoPosition stereoPosition = TtsStereoPosition.center,
+}) async {
+  final output = stereoEnabled
+      ? '$path.balanced-stereo-${stereoPosition.name}.wav'
+      : '$path.balanced.wav';
   final decoded = '$path.decoded.wav';
   try {
-    if (await compute(_balanceFile, (path, output, asmr))) return output;
+    if (await compute(_balanceFile, (
+      path,
+      output,
+      asmr,
+      stereoEnabled,
+      stereoPosition,
+    ))) {
+      return output;
+    }
     if (Platform.isAndroid) {
       final wav = await const MethodChannel('agent_atelier_r/speech_envelope')
           .invokeMethod<String>('decodeWav', {'path': path});
-      if (wav != null && await compute(_balanceFile, (wav, output, asmr))) {
+      if (wav != null &&
+          await compute(_balanceFile, (
+            wav,
+            output,
+            asmr,
+            stereoEnabled,
+            stereoPosition,
+          ))) {
         return output;
       }
     }
@@ -40,11 +64,18 @@ Future<String> balanceSpeechLoudness(String path, {bool asmr = false}) async {
   return path;
 }
 
-Future<bool> _balanceFile((String, String, bool) request) async {
+Future<bool> _balanceFile(
+  (String, String, bool, bool, TtsStereoPosition) request,
+) async {
   final file = File(request.$1);
   if (await file.length() > 64 * 1024 * 1024) return false;
-  final result = balanceSpeechWav(await file.readAsBytes(), asmr: request.$3);
+  var result = balanceSpeechWav(await file.readAsBytes(), asmr: request.$3);
   if (result == null) return false;
+  if (request.$4) {
+    result =
+        spatializeSpeechWav(result, position: request.$5, asmr: request.$3) ??
+        result;
+  }
   await File(request.$2).writeAsBytes(result, flush: true);
   return true;
 }

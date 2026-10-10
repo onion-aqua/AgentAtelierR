@@ -13,6 +13,7 @@ import 'app_localization.dart';
 import 'mimo_tts_client.dart';
 import 'mimo_tts_config.dart';
 import 'platform_slider.dart';
+import 'speech_loudness.dart';
 
 class MimoTtsSettingsDialog extends StatefulWidget {
   const MimoTtsSettingsDialog({super.key, required this.controller});
@@ -122,6 +123,9 @@ class _MimoTtsSettingsDialogState extends State<MimoTtsSettingsDialog> {
   }
 
   Future<void> _test() async {
+    final asmr = _previewAsmr;
+    final stereoEnabled = widget.controller.ttsStereoEnabled;
+    final stereoPosition = widget.controller.ttsStereoPosition;
     setState(() {
       _busy = true;
       _error = null;
@@ -139,14 +143,25 @@ class _MimoTtsSettingsDialogState extends State<MimoTtsSettingsDialog> {
         text: _preview.text,
         intensity: _intensity,
         density: _density,
-        asmr: _previewAsmr,
+        asmr: asmr,
       );
       if (!mounted) {
         await _delete(path);
         return;
       }
-      _files.add(path);
-      await _player.play(DeviceFileSource(path));
+      final playbackPath = await balanceSpeechLoudness(
+        path,
+        asmr: asmr,
+        stereoEnabled: stereoEnabled,
+        stereoPosition: stereoPosition,
+      );
+      if (playbackPath != path) await _delete(path);
+      if (!mounted) {
+        await _delete(playbackPath);
+        return;
+      }
+      _files.add(playbackPath);
+      await _player.play(DeviceFileSource(playbackPath));
     } on Object catch (error) {
       if (mounted) setState(() => _error = error.toString());
     } finally {

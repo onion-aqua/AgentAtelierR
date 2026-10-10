@@ -12,6 +12,7 @@ import 'app_localization.dart';
 import 'local_tts_client.dart';
 import 'local_tts_models.dart';
 import 'settings_detail_page.dart';
+import 'speech_loudness.dart';
 
 class LocalTtsSettingsPage extends StatefulWidget {
   const LocalTtsSettingsPage({super.key, required this.controller});
@@ -307,6 +308,9 @@ class _LocalTtsSettingsPageState extends State<LocalTtsSettingsPage> {
   }
 
   Future<void> _previewVoice() => _run(() async {
+    final asmr = widget.controller.asmrModeEnabled;
+    final stereoEnabled = widget.controller.ttsStereoEnabled;
+    final stereoPosition = widget.controller.ttsStereoPosition;
     await _player.stop();
     final path = await LocalTtsClient.instance.synthesize(
       text: _preview.text.trim(),
@@ -317,8 +321,19 @@ class _LocalTtsSettingsPageState extends State<LocalTtsSettingsPage> {
       await _deleteFile(path);
       return;
     }
-    _previewFiles.add(path);
-    await _player.play(DeviceFileSource(path));
+    final playbackPath = await balanceSpeechLoudness(
+      path,
+      asmr: asmr,
+      stereoEnabled: stereoEnabled,
+      stereoPosition: stereoPosition,
+    );
+    if (playbackPath != path) await _deleteFile(path);
+    if (!mounted) {
+      await _deleteFile(playbackPath);
+      return;
+    }
+    _previewFiles.add(playbackPath);
+    await _player.play(DeviceFileSource(playbackPath));
   });
 
   void _save() {

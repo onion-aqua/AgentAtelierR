@@ -16,6 +16,9 @@ import 'mimo_tts_client.dart';
 import 'glass_ui.dart';
 import 'runtime_log.dart';
 import 'speech_envelope_loader.dart';
+import 'speech_loudness.dart';
+import 'speech_file_playback.dart';
+import 'tts_spatial_settings.dart';
 import 'tts_duration_guard.dart';
 import 'local_tts_client.dart';
 import 'local_tts_models.dart';
@@ -112,6 +115,11 @@ class _AsmrClip {
   final Duration pauseAfter;
   Duration? duration;
   String? translation;
+}
+
+class _InvalidAsmrAudio implements Exception {
+  @override
+  String toString() => '音频损坏或无法解码，重新生成后仍未通过校验';
 }
 
 class AsmrPlaybackSurface extends StatelessWidget {
@@ -213,6 +221,7 @@ class _ContinuousAsmrPageState extends State<ContinuousAsmrPage> {
   bool _timerEnabled = false;
   bool _atTime = false;
   bool _replaying = false;
+  bool _preparingReplay = false;
   final _clips = <_AsmrClip>[];
   final _translations = <int, String>{};
   int _nextClipNumber = 1;
@@ -244,8 +253,10 @@ class _ContinuousAsmrPageState extends State<ContinuousAsmrPage> {
     List<AsmrSpeechSegment> segments,
     String topic,
     String voiceKey,
-    int generation,
-  ) async {
+    int generation, {
+    required bool stereoEnabled,
+    required TtsStereoPosition stereoPosition,
+  }) async {
     try {
       for (
         var index = 0;
@@ -257,7 +268,12 @@ class _ContinuousAsmrPageState extends State<ContinuousAsmrPage> {
         }
         if (!_isCurrent(generation)) break;
         final segment = segments[index];
-        final path = await _synthesize(segment.text, voiceKey);
+        final path = await _synthesize(
+          segment.text,
+          voiceKey,
+          stereoEnabled: stereoEnabled,
+          stereoPosition: stereoPosition,
+        );
         if (!_isCurrent(generation)) {
           await _deleteClipFile(path);
           break;
@@ -309,6 +325,12 @@ class _ContinuousAsmrPageState extends State<ContinuousAsmrPage> {
           setState(
             () => _status = _synthesisError == null
                 ? t('语音已准备好', 'Audio is ready', '音声の準備ができました')
+                : _synthesisError is _InvalidAsmrAudio
+                ? t(
+                    '音频准备失败：文件损坏或无法解码，重新生成后仍未通过校验，请重试',
+                    'Audio is damaged or cannot be decoded after retrying. Please retry.',
+                    '音声が破損しているか、再生成後もデコードできません。再試行してください。',
+                  )
                 : t('语音准备失败，请重试', 'Audio failed; retry', '音声の準備に失敗しました'),
           );
         }
@@ -482,6 +504,10 @@ class _ContinuousAsmrPageState extends State<ContinuousAsmrPage> {
     _synthesisFinished = false;
     _synthesisError = null;
     final topic = _theme.text.trim();
+    // A session keeps its chosen position across all buffered clips. This
+    // also keeps old replay clips stable after a later settings change.
+    final stereoEnabled = c.ttsStereoEnabled;
+    final stereoPosition = c.ttsStereoPosition;
     setState(() {
       _running = true;
       _playing = false;
@@ -551,7 +577,16 @@ class _ContinuousAsmrPageState extends State<ContinuousAsmrPage> {
       if (segments.isEmpty) throw const FormatException('Empty speech');
       setState(() => _status = t('正在缓冲语音…', 'Buffering audio…', '音声を準備中…'));
       unawaited(_translateSegments(segments, key, generation));
-      unawaited(_fillBuffer(segments, topic, voiceKey, generation));
+      unawaited(
+        _fillBuffer(
+          segments,
+          topic,
+          voiceKey,
+          generation,
+          stereoEnabled: stereoEnabled,
+          stereoPosition: stereoPosition,
+        ),
+      );
     } on Object catch (error) {
       if (mounted && generation == _generation) {
         await _stop();
@@ -589,15 +624,31 @@ class _ContinuousAsmrPageState extends State<ContinuousAsmrPage> {
           _status = t('正在播放', 'Playing', '再生中');
         });
         final playback = Completer<void>();
+        playback.future.ignore();
         _playback = playback;
-        final subscription = _player.onPlayerComplete.listen((_) {
-          if (!playback.isCompleted) playback.complete();
-        });
+        var sourcePrepared = false;
+        final subscription = _player.onPlayerComplete.listen(
+          (_) {
+            if (!playback.isCompleted) playback.complete();
+          },
+          onError: (Object error, StackTrace stack) {
+            // Preparation errors are handled by playSpeechFile, including its
+            // Android fallback. Once prepared, even an error during resume
+            // must terminate the active clip.
+            if (sourcePrepared && !playback.isCompleted) {
+              playback.completeError(error, stack);
+            }
+          },
+        );
         try {
-          await _player.play(
-            DeviceFileSource(clip.path),
+          final started = await playSpeechFile(
+            _player,
+            clip.path,
             volume: c.voiceVolume,
+            isCurrent: () => _isCurrent(generation),
+            onPrepared: () => sourcePrepared = true,
           );
+          if (!started) break;
           clip.duration = await _player.getDuration();
           await playback.future.timeout(const Duration(minutes: 10));
         } finally {
@@ -642,8 +693,26 @@ class _ContinuousAsmrPageState extends State<ContinuousAsmrPage> {
   }
 
   Future<void> _replay(_AsmrClip clip) async {
-    if (_running || _replaying) await _stop();
-    if (!mounted) return;
+    // Source preparation must finish before another replay can replace it.
+    if (_preparingReplay) return;
+    _preparingReplay = true;
+    if (_running || _replaying) {
+      final stoppedGeneration = _generation + 1;
+      try {
+        await _stop();
+      } on Object {
+        _preparingReplay = false;
+        rethrow;
+      }
+      if (!mounted || _generation != stoppedGeneration) {
+        _preparingReplay = false;
+        return;
+      }
+    }
+    if (!mounted) {
+      _preparingReplay = false;
+      return;
+    }
     final generation = ++_generation;
     final now = DateTime.now();
     _deadline = _timerEnabled
@@ -659,14 +728,34 @@ class _ContinuousAsmrPageState extends State<ContinuousAsmrPage> {
       _status = t('正在播放', 'Playing', '再生中');
     });
     final done = Completer<void>();
+    done.future.ignore();
     _playback = done;
-    final subscription = _player.onPlayerComplete.listen((_) {
-      if (!done.isCompleted) done.complete();
-    });
+    var sourcePrepared = false;
+    final subscription = _player.onPlayerComplete.listen(
+      (_) {
+        if (!done.isCompleted) done.complete();
+      },
+      onError: (Object error, StackTrace stack) {
+        if (sourcePrepared && !done.isCompleted) {
+          done.completeError(error, stack);
+        }
+      },
+    );
     String? failureStatus;
     try {
-      await _player.play(DeviceFileSource(clip.path), volume: c.voiceVolume);
-      clip.duration = await _player.getDuration();
+      try {
+        final started = await playSpeechFile(
+          _player,
+          clip.path,
+          volume: c.voiceVolume,
+          isCurrent: () => mounted && _replaying && generation == _generation,
+          onPrepared: () => sourcePrepared = true,
+        );
+        if (!started) return;
+        clip.duration = await _player.getDuration();
+      } finally {
+        _preparingReplay = false;
+      }
       await done.future.timeout(const Duration(minutes: 10));
     } on Object catch (error) {
       failureStatus = '${t('播放失败', 'Playback failed', '再生失敗')}: $error';
@@ -680,7 +769,12 @@ class _ContinuousAsmrPageState extends State<ContinuousAsmrPage> {
     }
   }
 
-  Future<String> _synthesize(String ttsText, String apiKey) async {
+  Future<String> _synthesize(
+    String ttsText,
+    String apiKey, {
+    required bool stereoEnabled,
+    required TtsStereoPosition stereoPosition,
+  }) async {
     final playbackFormat =
         c.ttsProvider == TtsProvider.mimo || !Platform.isAndroid
         ? 'wav'
@@ -753,15 +847,30 @@ class _ContinuousAsmrPageState extends State<ContinuousAsmrPage> {
     for (var attempt = 0; attempt < maxAttempts; attempt++) {
       var path = await synthesizeOnce();
       try {
+        final processed = await balanceSpeechLoudness(
+          path,
+          asmr: true,
+          stereoEnabled: stereoEnabled,
+          stereoPosition: stereoPosition,
+        );
+        if (processed != path) {
+          await _deleteClipFile(path);
+          path = processed;
+        }
         final bytes = await File(path).readAsBytes();
         final envelope = await loadSpeechEnvelope(path, bytes);
         final actualDuration = ttsAudioDuration(envelope);
-        if (actualDuration != null &&
-            isTtsAudioOverlong(
-              plainText,
-              actualDuration,
-              asmr: c.asmrModeEnabled,
-            )) {
+        if (envelope == null ||
+            envelope.values.isEmpty ||
+            actualDuration == null ||
+            actualDuration <= Duration.zero) {
+          throw _InvalidAsmrAudio();
+        }
+        if (isTtsAudioOverlong(
+          plainText,
+          actualDuration,
+          asmr: c.asmrModeEnabled,
+        )) {
           final maximum = maximumTtsAudioDuration(
             plainText,
             asmr: c.asmrModeEnabled,
@@ -781,6 +890,13 @@ class _ContinuousAsmrPageState extends State<ContinuousAsmrPage> {
           continue;
         }
         return path;
+      } on _InvalidAsmrAudio {
+        await _deleteClipFile(path);
+        if (attempt + 1 >= maxAttempts) rethrow;
+        RuntimeLog.instance.warning(
+          'TTS',
+          'ASMR 音频为空或无法解码，丢弃并重新请求：attempt=${attempt + 1}/$maxAttempts',
+        );
       } on Object {
         await _deleteClipFile(path);
         rethrow;

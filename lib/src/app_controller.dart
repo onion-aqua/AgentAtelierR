@@ -39,6 +39,7 @@ import 'settings_slots.dart';
 import 'settings_section.dart';
 import 'shop_catalog.dart';
 import 'story_clock.dart';
+import 'tts_spatial_settings.dart';
 import 'virtual_phone_carrier.dart';
 import 'virtual_phone_wallpapers.dart';
 import 'openai_configuration_slots.dart';
@@ -1007,6 +1008,19 @@ class AppController extends ChangeNotifier {
   bool fishTtsEnabled = false;
   bool independentSpeechPerformance = true;
   bool backgroundVoicePlayback = true;
+  bool ttsStereoEnabled = false;
+  TtsStereoPosition ttsStereoPosition = TtsStereoPosition.center;
+
+  void configureTtsStereo({bool? enabled, TtsStereoPosition? position}) {
+    final nextEnabled = enabled ?? ttsStereoEnabled;
+    final nextPosition = position ?? ttsStereoPosition;
+    if (nextEnabled == ttsStereoEnabled && nextPosition == ttsStereoPosition) {
+      return;
+    }
+    ttsStereoEnabled = nextEnabled;
+    ttsStereoPosition = nextPosition;
+    _changed();
+  }
 
   void setBackgroundVoicePlayback(bool value) {
     backgroundVoicePlayback = value;
@@ -1299,6 +1313,10 @@ class AppController extends ChangeNotifier {
       orElse: () => NpcInteractionFrequency.normal,
     );
     fishTtsEnabled = _preferences.getBool('fish_tts_enabled') ?? false;
+    ttsStereoEnabled = _preferences.getBool('tts_stereo_enabled') ?? false;
+    ttsStereoPosition = parseTtsStereoPosition(
+      _preferences.getString('tts_stereo_position'),
+    );
     backgroundVoicePlayback =
         _preferences.getBool('background_voice_playback') ?? true;
     independentSpeechPerformance =
@@ -1669,8 +1687,13 @@ class AppController extends ChangeNotifier {
 
   void _applyCharacterSession(Map<String, dynamic> session) {
     final llm = _sharedLlmSettings();
+    // Listening position is a device preference, never a character's state.
+    final stereoEnabled = ttsStereoEnabled;
+    final stereoPosition = ttsStereoPosition;
     _applyImportedData(session, allowLocalTtsReference: true);
     _restoreSharedLlmSettings(llm);
+    ttsStereoEnabled = stereoEnabled;
+    ttsStereoPosition = stereoPosition;
   }
 
   Future<void> initializeAlarmRuntime({
@@ -3666,6 +3689,8 @@ $japanesePunctuationRule
       'llmContextCompatibility': llmContextCompatibility,
       'npcInteractionFrequency': npcInteractionFrequency.name,
       'fishTtsEnabled': fishTtsEnabled,
+      'ttsStereoEnabled': ttsStereoEnabled,
+      'ttsStereoPosition': ttsStereoPosition.name,
       'independentSpeechPerformance': independentSpeechPerformance,
       'backgroundVoicePlayback': backgroundVoicePlayback,
       'ttsProvider': ttsProvider.name,
@@ -4512,6 +4537,10 @@ $japanesePunctuationRule
       orElse: () => NpcInteractionFrequency.normal,
     );
     fishTtsEnabled = preferences['fishTtsEnabled'] as bool? ?? false;
+    ttsStereoEnabled = preferences['ttsStereoEnabled'] == true;
+    ttsStereoPosition = parseTtsStereoPosition(
+      preferences['ttsStereoPosition'],
+    );
     independentSpeechPerformance =
         preferences['independentSpeechPerformance'] as bool? ?? true;
     backgroundVoicePlayback =
@@ -5858,6 +5887,8 @@ $japanesePunctuationRule
         npcInteractionFrequency.name,
       ),
       _preferences.setBool('fish_tts_enabled', fishTtsEnabled),
+      _preferences.setBool('tts_stereo_enabled', ttsStereoEnabled),
+      _preferences.setString('tts_stereo_position', ttsStereoPosition.name),
       _preferences.setBool(
         'independent_speech_performance',
         independentSpeechPerformance,

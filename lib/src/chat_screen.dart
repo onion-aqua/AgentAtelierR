@@ -39,6 +39,7 @@ import 'image_food_invitation.dart';
 import 'audio_envelope.dart';
 import 'speech_envelope_loader.dart';
 import 'speech_loudness.dart';
+import 'tts_spatial_settings.dart';
 import 'character_speech_driver.dart';
 import 'character_resource_behavior.dart';
 import 'character_lipsync.dart';
@@ -4189,6 +4190,11 @@ class _ChatScreenState extends State<ChatScreen> {
       return;
     }
     final generation = ++_speechPlaybackGeneration;
+    // One voice position for the whole reply, including prefetched sentences.
+    // Changing settings during playback affects the next reply only.
+    final asmr = widget.controller.asmrModeEnabled;
+    final stereoEnabled = widget.controller.ttsStereoEnabled;
+    final stereoPosition = widget.controller.ttsStereoPosition;
     final previousCancellation = _speechCancellation;
     if (previousCancellation != null && !previousCancellation.isCompleted) {
       previousCancellation.complete();
@@ -4288,6 +4294,9 @@ class _ChatScreenState extends State<ChatScreen> {
             segment,
             segment.isPrimary ? apiKey : fishApiKey,
             generation,
+            asmr: asmr,
+            stereoEnabled: stereoEnabled,
+            stereoPosition: stereoPosition,
           );
         } on Object catch (error) {
           if (segment.isPrimary || generation != _speechPlaybackGeneration) {
@@ -4488,8 +4497,11 @@ class _ChatScreenState extends State<ChatScreen> {
   Future<_PreparedSpeech> _prepareSpeech(
     AssistantSpeechSegment segment,
     String apiKey,
-    int generation,
-  ) async {
+    int generation, {
+    required bool asmr,
+    required bool stereoEnabled,
+    required TtsStereoPosition stereoPosition,
+  }) async {
     // Request the provider-compatible format, then locally decode and balance
     // it into standard PCM16 WAV before playback and lip-sync analysis.
     final provider = segment.isPrimary
@@ -4512,8 +4524,7 @@ class _ChatScreenState extends State<ChatScreen> {
       if (emotionIntensity != TtsEmotionIntensity.off &&
           speechEmotionTags.contains(plannedEmotion))
         'Express $plannedEmotion naturally; preserve continuity with the preceding sentence.',
-      if (widget.controller.asmrModeEnabled)
-        'Speak softly in a close, quiet voice.',
+      if (asmr) 'Speak softly in a close, quiet voice.',
     ].join(' ');
     Future<String> synthesizeOnce() => switch (provider) {
       TtsProvider.fishAudio => _fishAudioClient.synthesize(
@@ -4533,7 +4544,7 @@ class _ChatScreenState extends State<ChatScreen> {
                 ttsText,
                 emotionIntensity,
                 density: widget.controller.ttsCueDensity,
-                asmr: widget.controller.asmrModeEnabled,
+                asmr: asmr,
               )
             : plainText,
       ),
@@ -4578,7 +4589,7 @@ class _ChatScreenState extends State<ChatScreen> {
         text: ttsText,
         intensity: emotionIntensity,
         density: widget.controller.ttsCueDensity,
-        asmr: widget.controller.asmrModeEnabled,
+        asmr: asmr,
       ),
       TtsProvider.local => LocalTtsClient.instance.synthesize(
         text: plainText,
@@ -4596,7 +4607,9 @@ class _ChatScreenState extends State<ChatScreen> {
         }
         final balanced = await balanceSpeechLoudness(
           path,
-          asmr: widget.controller.asmrModeEnabled,
+          asmr: asmr,
+          stereoEnabled: stereoEnabled,
+          stereoPosition: stereoPosition,
         );
         if (balanced != path) {
           _temporarySpeechPaths.add(balanced);
@@ -4610,17 +4623,10 @@ class _ChatScreenState extends State<ChatScreen> {
         final envelope = await loadSpeechEnvelope(path, bytes);
         final actualDuration = ttsAudioDuration(envelope);
         if (actualDuration != null &&
-            isTtsAudioOverlong(
-              plainText,
-              actualDuration,
-              asmr: widget.controller.asmrModeEnabled,
-            )) {
+            isTtsAudioOverlong(plainText, actualDuration, asmr: asmr)) {
           throw TtsAudioTooLongException(
             actual: actualDuration,
-            maximum: maximumTtsAudioDuration(
-              plainText,
-              asmr: widget.controller.asmrModeEnabled,
-            ),
+            maximum: maximumTtsAudioDuration(plainText, asmr: asmr),
           );
         }
         RuntimeLog.instance.info(

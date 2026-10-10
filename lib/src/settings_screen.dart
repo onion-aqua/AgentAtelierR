@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:audioplayers/audioplayers.dart';
 import 'package:file_picker/file_picker.dart';
@@ -35,6 +36,8 @@ import 'legacy_data_converter.dart';
 import 'settings_detail_page.dart';
 import 'conversation_collections_page.dart';
 import 'conversation_history_page.dart';
+import 'tts_spatial_settings.dart';
+import 'speech_loudness.dart';
 
 String _activeTtsModel(AppController controller) =>
     switch (controller.ttsProvider) {
@@ -47,6 +50,19 @@ String _activeTtsModel(AppController controller) =>
 
 String _activeCharacterName(AppController controller, AppLanguage language) =>
     controller.activeCharacterProfile.names.forLocale(language.name);
+
+Future<void> _deleteTtsPreviewFiles(Set<String> paths) async {
+  final pending = paths.toList();
+  paths.clear();
+  for (final path in pending) {
+    try {
+      final file = File(path);
+      if (await file.exists()) await file.delete();
+    } on FileSystemException {
+      // A preview still held by the platform player can expire with temp files.
+    }
+  }
+}
 
 // Keep the category rows visually consistent with the main scene's controls.
 // Only direct tiles are wrapped; embedded cards and section headings retain
@@ -1150,6 +1166,48 @@ class SettingsScreenState extends State<SettingsScreen> {
                   value: controller.backgroundVoicePlayback,
                   onChanged: controller.setBackgroundVoicePlayback,
                 ),
+                SwitchListTile(
+                  key: const ValueKey('tts-stereo-enabled'),
+                  title: Text(language.text('立体声', 'Stereo voice', 'ステレオ音声')),
+                  subtitle: Text(
+                    language.text(
+                      '普通语音与持续 ASMR 共用，建议使用耳机。声音保持所选位置，不随机移动；对新生成的音频生效，已有真实立体声保留原声。',
+                      'Shared by normal speech and continuous ASMR. Use headphones. The selected position stays fixed. Applies to newly generated audio and preserves existing stereo.',
+                      '通常音声と連続ASMRで共通です。ヘッドホンを推奨します。音の位置は固定されます。新しく生成する音声に適用し、既存のステレオ音声はそのまま再生します。',
+                    ),
+                  ),
+                  value: controller.ttsStereoEnabled,
+                  onChanged: (enabled) =>
+                      controller.configureTtsStereo(enabled: enabled),
+                ),
+                if (controller.ttsStereoEnabled)
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+                    child: DropdownButtonFormField<TtsStereoPosition>(
+                      key: const ValueKey('tts-stereo-position'),
+                      initialValue: controller.ttsStereoPosition,
+                      isExpanded: true,
+                      decoration: InputDecoration(
+                        labelText: language.text(
+                          '固定声音位置',
+                          'Fixed voice position',
+                          '音声の固定位置',
+                        ),
+                      ),
+                      items: [
+                        for (final position in TtsStereoPosition.values)
+                          DropdownMenuItem(
+                            value: position,
+                            child: Text(position.label(language)),
+                          ),
+                      ],
+                      onChanged: (position) {
+                        if (position != null) {
+                          controller.configureTtsStereo(position: position);
+                        }
+                      },
+                    ),
+                  ),
                 for (final provider in TtsProvider.values)
                   ListTile(
                     key: ValueKey('tts-settings-${provider.name}'),
@@ -1763,6 +1821,7 @@ class SettingsScreenState extends State<SettingsScreen> {
     final apiKey = TextEditingController();
     final previewText = TextEditingController(text: controller.ttsPreviewText);
     final player = AudioPlayer();
+    final previewFiles = <String>{};
     var enabled = controller.fishTtsEnabled;
     var model = controller.fishAudioModel;
     var format = controller.fishAudioFormat;
@@ -1950,9 +2009,13 @@ class SettingsScreenState extends State<SettingsScreen> {
                       controller: previewText,
                       testing: isTesting,
                       onTest: () async {
+                        final asmr = controller.asmrModeEnabled;
+                        final stereoEnabled = controller.ttsStereoEnabled;
+                        final stereoPosition = controller.ttsStereoPosition;
                         final key = apiKey.text.trim().isNotEmpty
                             ? apiKey.text.trim()
                             : await const SecretStore().readFishAudioKey();
+                        if (!context.mounted) return;
                         final referenceForTest =
                             switch (controller.ttsVoiceMode) {
                               TtsVoiceMode.normal => referenceId.text.trim(),
@@ -1983,18 +2046,37 @@ class SettingsScreenState extends State<SettingsScreen> {
                               ),
                               emotionIntensity,
                               density: cueDensity,
-                              asmr: controller.asmrModeEnabled,
+                              asmr: asmr,
                             ),
                             model: model,
-                            format: format,
+                            // Desktop preprocessing requires a PCM WAV source.
+                            format: stereoEnabled && !Platform.isAndroid
+                                ? 'wav'
+                                : format,
                             latency: latency,
                             speed: speed,
                             temperature: emotionIntensity.fishTemperature,
                             baseUrl: endpoint.text.trim(),
                           );
+                          previewFiles.add(path);
+                          if (!context.mounted) {
+                            await _deleteTtsPreviewFiles(previewFiles);
+                            return;
+                          }
+                          final playbackPath = await balanceSpeechLoudness(
+                            path,
+                            asmr: asmr,
+                            stereoEnabled: stereoEnabled,
+                            stereoPosition: stereoPosition,
+                          );
+                          previewFiles.add(playbackPath);
+                          if (!context.mounted) {
+                            await _deleteTtsPreviewFiles(previewFiles);
+                            return;
+                          }
                           await player.stop();
                           await player.setVolume(controller.voiceVolume);
-                          await player.play(DeviceFileSource(path));
+                          await player.play(DeviceFileSource(playbackPath));
                         } on Object catch (error) {
                           RuntimeLog.instance.error('Fish Audio 试音', error);
                           if (context.mounted) {
@@ -2042,6 +2124,7 @@ class SettingsScreenState extends State<SettingsScreen> {
       ),
     );
     await player.dispose();
+    await _deleteTtsPreviewFiles(previewFiles);
     if (result != true) return;
     controller.setTtsProvider(TtsProvider.fishAudio);
     controller.setTtsPreviewText(previewText.text);
@@ -2085,6 +2168,7 @@ class SettingsScreenState extends State<SettingsScreen> {
     Uint8List? referenceAudioBytes;
     var referenceAudioSize = 0;
     final player = AudioPlayer();
+    final previewFiles = <String>{};
     var enabled = controller.fishTtsEnabled;
     var language = controller.dashScopeTtsLanguage;
     var emotionIntensity = controller.ttsEmotionIntensity;
@@ -2437,9 +2521,13 @@ class SettingsScreenState extends State<SettingsScreen> {
                     controller: preview,
                     testing: testing,
                     onTest: () async {
+                      final asmr = controller.asmrModeEnabled;
+                      final stereoEnabled = controller.ttsStereoEnabled;
+                      final stereoPosition = controller.ttsStereoPosition;
                       final apiKey = key.text.trim().isNotEmpty
                           ? key.text.trim()
                           : await const SecretStore().readDashScopeKey();
+                      if (!context.mounted) return;
                       if (apiKey.isEmpty || preview.text.trim().isEmpty) {
                         setDialogState(() => error = '请填写 API Key 和试音文字');
                         return;
@@ -2466,7 +2554,23 @@ class SettingsScreenState extends State<SettingsScreen> {
                                 )
                               : instructions.text,
                         );
-                        await player.play(DeviceFileSource(path));
+                        previewFiles.add(path);
+                        if (!context.mounted) {
+                          await _deleteTtsPreviewFiles(previewFiles);
+                          return;
+                        }
+                        final playbackPath = await balanceSpeechLoudness(
+                          path,
+                          asmr: asmr,
+                          stereoEnabled: stereoEnabled,
+                          stereoPosition: stereoPosition,
+                        );
+                        previewFiles.add(playbackPath);
+                        if (!context.mounted) {
+                          await _deleteTtsPreviewFiles(previewFiles);
+                          return;
+                        }
+                        await player.play(DeviceFileSource(playbackPath));
                       } on Object catch (value) {
                         RuntimeLog.instance.error('Qwen-TTS 试音', value);
                         if (context.mounted) {
@@ -2511,6 +2615,7 @@ class SettingsScreenState extends State<SettingsScreen> {
       ),
     );
     await player.dispose();
+    await _deleteTtsPreviewFiles(previewFiles);
     if (saved != true) return;
     controller.configureTts(
       enabled: enabled,
@@ -2550,6 +2655,7 @@ class SettingsScreenState extends State<SettingsScreen> {
     final preview = TextEditingController(text: controller.ttsPreviewText);
     final key = TextEditingController();
     final player = AudioPlayer();
+    final previewFiles = <String>{};
     var enabled = controller.fishTtsEnabled;
     var format = controller.fishAudioFormat == 'opus'
         ? 'mp3'
@@ -2669,9 +2775,13 @@ class SettingsScreenState extends State<SettingsScreen> {
                     controller: preview,
                     testing: testing,
                     onTest: () async {
+                      final asmr = controller.asmrModeEnabled;
+                      final stereoEnabled = controller.ttsStereoEnabled;
+                      final stereoPosition = controller.ttsStereoPosition;
                       final apiKey = key.text.trim().isNotEmpty
                           ? key.text.trim()
                           : await const SecretStore().readGenericTtsKey();
+                      if (!context.mounted) return;
                       if (apiKey.isEmpty || preview.text.trim().isEmpty) {
                         setDialogState(() => error = '请填写 API Key 和试音文字');
                         return;
@@ -2687,7 +2797,9 @@ class SettingsScreenState extends State<SettingsScreen> {
                           text: preview.text.trim(),
                           model: model.text.trim(),
                           voice: voice.text.trim(),
-                          format: format,
+                          format: stereoEnabled && !Platform.isAndroid
+                              ? 'wav'
+                              : format,
                           speed: speed,
                           instructions:
                               model.text.trim().toLowerCase().contains(
@@ -2696,7 +2808,23 @@ class SettingsScreenState extends State<SettingsScreen> {
                               ? ttsEmotionInstruction(emotionIntensity)
                               : '',
                         );
-                        await player.play(DeviceFileSource(path));
+                        previewFiles.add(path);
+                        if (!context.mounted) {
+                          await _deleteTtsPreviewFiles(previewFiles);
+                          return;
+                        }
+                        final playbackPath = await balanceSpeechLoudness(
+                          path,
+                          asmr: asmr,
+                          stereoEnabled: stereoEnabled,
+                          stereoPosition: stereoPosition,
+                        );
+                        previewFiles.add(playbackPath);
+                        if (!context.mounted) {
+                          await _deleteTtsPreviewFiles(previewFiles);
+                          return;
+                        }
+                        await player.play(DeviceFileSource(playbackPath));
                       } on Object catch (value) {
                         RuntimeLog.instance.error('通用 TTS 试音', value);
                         if (context.mounted) {
@@ -2741,6 +2869,7 @@ class SettingsScreenState extends State<SettingsScreen> {
       ),
     );
     await player.dispose();
+    await _deleteTtsPreviewFiles(previewFiles);
     if (saved != true) return;
     controller.configureTts(
       enabled: enabled,

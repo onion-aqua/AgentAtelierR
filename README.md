@@ -8,13 +8,13 @@ AgentAtelierR 是以 Android 为主要开发平台的 Flutter AI 角色互动项
 
 ## 当前版本与适用范围
 
-当前源码版本为 **AgentAtelierR 1.0.4 正式版**，Android 版本号 `1.0.4+38`；本 APK 更新到 GitHub 的 `AgentAtelierR 1.0.4 正式版` Release。以下功能以当前源码为准；具体效果会受到本地资源、设备、模型和服务能力影响。
+当前源码版本为 **AgentAtelierR 1.0.4 正式版**，Android 版本号 `1.0.4+39`；Android APK 和 Windows ZIP 更新到 GitHub 的 `AgentAtelierR 1.0.4 正式版` Release。以下功能以当前源码为准；具体效果会受到本地资源、设备、模型和服务能力影响。
 
-> beta1 提供使用加密构建脚本生成的 **release APK**，启用 Dart 混淆，作为 GitHub 测试版发布。当前仍沿用 Android 调试签名以兼容已有安装，并非商店正式签名包。旧版 debug 测试包的卡顿与不稳定表现不能代表 release 包。
+> 正式版提供使用加密构建脚本生成的 **release APK**，启用 Dart 混淆。当前仍沿用 Android 调试签名以兼容已有安装，并非商店正式签名包。旧版 debug 测试包的卡顿与不稳定表现不能代表 release 包。
 
 - 莱莎已接入 Spine 动画、地图与场景、商店、背包、炼金、任务和语音闹钟。
 - 苏菲已开放独立的角色设定、对话、记忆、存档和语音配置，目前使用静态立绘；她的地图、炼金、任务、商店和语音闹钟仍待接入。
-- Android 是主要测试平台。Windows 有受保护资源构建入口，但仓库未包含完整 Windows 工程与本地运行时资源，不代表已有可直接分发的 Windows 安装包。
+- Android 是主要测试平台。Windows 版由共用 Flutter 源码受保护构建，Release 提供可解压运行的 ZIP；仓库仍不提供本地人物素材和完整 Spine 运行时依赖。
 - 当前 Android release 模式 APK 仍沿用调试签名以兼容现有测试包的覆盖安装，不适用于应用商店上架。
 
 ## 对话与叙事
@@ -56,6 +56,8 @@ AgentAtelierR 是以 Android 为主要开发平台的 Flutter AI 角色互动项
 | CosyVoice 3（本地） | Android arm64 上的设备内合成与参考音频音色克隆；见[安装与模型许可](docs/LOCAL_TTS_SETUP.md) |
 
 在线语音服务需要用户自行配置；CosyVoice 3 首次安装合成模型约需下载 1.4 GB，手机上创建音色另需约 1.0 GB 扩展包，安装后本地合成不需要 TTS API Key。普通对话和持续 ASMR 的新合成语音会尝试本地响度均衡，减少句内及分段音量差；不支持的音频或解码失败时回退原音频。该处理不修复已经削波的音频，真实听感仍需按服务和设备试听，见[商店与语音实现记录](docs/商店与TTS响度均衡_2026-09-26.md)。
+
+设置中可开启立体声并选择居中、偏左或偏右的固定声音位置；普通语音、持续 ASMR 与试音共用设置，声音不会随台词随机移动。真正立体声保留原声场，详见[立体声说明](docs/tts_stereo.md)。持续 ASMR 会拦截无效音频并有限重试，Android 音源加载失败可使用相同字节备用加载；播放错误及时停止，详见[音频可靠性修复](docs/asmr_audio_reliability.md)。
 
 主页提供普通/ASMR 模式。持续 ASMR 页面先确认主题并在后台准备稿件与语音，点击播放后才进入黑色朗读界面，显示当前文字、译文和语音列表。音色和模型对情绪标签的响应各不相同，演绎效果不保证每次一致。
 
