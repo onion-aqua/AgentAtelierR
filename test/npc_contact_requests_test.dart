@@ -51,6 +51,160 @@ void main() {
     );
   });
 
+  test('a channel alternative requires a preceding contact request', () {
+    const preceding = NpcContactRequest(
+      contactIds: ['serri'],
+      channel: NpcContactChannel.wechat,
+    );
+    for (final (text, channel) in [
+      ('或者SMS也行', NpcContactChannel.sms),
+      ('那换成 QQ 吧', NpcContactChannel.qq),
+      ('LINEでもいい？', NpcContactChannel.line),
+    ]) {
+      expect(
+        NpcContactRequestDetector.detect(
+          text,
+          contacts: contacts,
+          fallbackContactIds: ['serri'],
+        ),
+        isNull,
+        reason: 'An NPC speaker alone does not establish an invitation: $text',
+      );
+      final request = NpcContactRequestDetector.detect(
+        text,
+        contacts: contacts,
+        // A more recent speaker cannot retarget a pending channel change.
+        fallbackContactIds: ['claudia'],
+        precedingRequest: preceding,
+      );
+      expect(request?.contactIds, ['serri'], reason: text);
+      expect(request?.channel, channel, reason: text);
+    }
+  });
+
+  test('a channel alternative cannot silently change its NPC target', () {
+    const preceding = NpcContactRequest(
+      contactIds: ['serri'],
+      channel: NpcContactChannel.wechat,
+    );
+    expect(
+      NpcContactRequestDetector.detect(
+        '科洛蒂娅，或者SMS也行',
+        contacts: contacts,
+        precedingRequest: preceding,
+      ),
+      isNull,
+    );
+    final sameNpc = NpcContactRequestDetector.detect(
+      '赛莉，或者SMS也行',
+      contacts: contacts,
+      precedingRequest: preceding,
+    );
+    expect(sameNpc?.contactIds, ['serri']);
+    expect(sameNpc?.channel, NpcContactChannel.sms);
+  });
+
+  test('a preceding invitation does not turn casual or denied mentions into requests', () {
+    const preceding = NpcContactRequest(
+      contactIds: ['serri'],
+      channel: NpcContactChannel.wechat,
+    );
+    for (final text in [
+      'SMS',
+      '我平时使用SMS。',
+      'LINE好用吗？',
+      '如果SMS也行就好了。',
+      '昨天说SMS也行。',
+      '之前说过那换成 QQ 吧。',
+      '不要换成SMS。',
+      '不想换成QQ。',
+      '“或者SMS也行”是什么意思？',
+    ]) {
+      expect(
+        NpcContactRequestDetector.detect(
+          text,
+          contacts: contacts,
+          fallbackContactIds: ['serri'],
+          precedingRequest: preceding,
+        ),
+        isNull,
+        reason: text,
+      );
+    }
+  });
+
+  test('a channel alternative cannot inherit an unknown contact identity', () {
+    expect(
+      NpcContactRequestDetector.detect(
+        '或者SMS也行',
+        contacts: contacts,
+        precedingRequest: const NpcContactRequest(
+          contactIds: ['missing_npc'],
+          channel: NpcContactChannel.wechat,
+        ),
+      ),
+      isNull,
+    );
+  });
+
+  test(
+    'a contact negotiation continues only for the requested NPC speaking',
+    () {
+      const preceding = NpcContactRequest(
+        contactIds: ['serri', 'claudia'],
+        channel: NpcContactChannel.wechat,
+      );
+      final continued = NpcContactRequestDetector.continuableRequest(
+        '赛莉：WeChat？それはどんなものかしら？\n'
+        '科洛蒂娅：抱歉，我不方便交换联系方式。',
+        preceding,
+        primaryCharacterId: 'ryza',
+        contacts: contacts,
+      );
+      expect(continued?.contactIds, ['serri']);
+      expect(continued?.channel, NpcContactChannel.wechat);
+      // Asking what the platform is permits negotiation, not automatic consent.
+      expect(
+        NpcContactRequestDetector.acceptedContactIds(
+          '赛莉：WeChat？それはどんなものかしら？',
+          continued!,
+          primaryCharacterId: 'ryza',
+          contacts: contacts,
+        ),
+        isEmpty,
+      );
+    },
+  );
+
+  test('refusal, narration, translation and other speakers do not continue an invitation', () {
+    const preceding = NpcContactRequest(
+      contactIds: ['serri'],
+      channel: NpcContactChannel.wechat,
+    );
+    for (final reply in [
+      '角色[serri]：連絡先は、教えません。',
+      '角色[serri]：SMSは無理。',
+      '角色[serri]：',
+      '旁白：赛莉同意交换联系方式。',
+      '译文：赛莉：当然可以。',
+      '译文：\n赛莉：当然可以。',
+      '<think>赛莉：当然可以。</think>',
+      '莱莎：当然可以。',
+      '科洛蒂娅：当然可以。',
+    ]) {
+      expect(
+        NpcContactRequestDetector.continuableRequest(
+          reply,
+          preceding,
+          primaryCharacterId: 'ryza',
+          contacts: contacts,
+        ),
+        isNull,
+        reason: reply,
+      );
+    }
+  });
+
   test(
     'ambiguous names remain selectable instead of silently choosing one',
     () {
@@ -272,6 +426,168 @@ void main() {
       );
     }
   });
+
+  test(
+    'the device Serri replies explicitly accept WeChat and SMS invitations',
+    () {
+      final speakers = NpcContactRequestDetector.speakingContactIds(
+        '旁白：赛莉也在卡菈身旁。\n'
+        '角色[serri]：ええ、ここにいるわ。\n'
+        '译文：嗯，我在这里。\n莱莎：セリさんもいたんだ！',
+        primaryCharacterId: 'ryza',
+        contacts: contacts,
+      );
+      final detected = NpcContactRequestDetector.detect(
+        '我请求塞莉和我交换微信',
+        contacts: contacts,
+        fallbackContactIds: speakers,
+      );
+      expect(detected?.contactIds, ['serri']);
+      expect(detected?.channel, NpcContactChannel.wechat);
+      const request = NpcContactRequest(
+        contactIds: ['serri'],
+        channel: NpcContactChannel.wechat,
+      );
+      for (final words in [
+        'WeChatね。ええ、交換しましょう。ただ、植物の観察中は気づかないことがあるから、返事が遅くても許してね。',
+        'SMSでも構わないわ。そちらのほうが都合がいいなら、交換しましょう。',
+      ]) {
+        expect(
+          NpcContactRequestDetector.looksLikeAgreement(words),
+          isTrue,
+          reason: words,
+        );
+        expect(
+          NpcContactRequestDetector.acceptedContactIds(
+            '角色[serri]：$words',
+            detected!,
+            primaryCharacterId: 'ryza',
+            contacts: contacts,
+          ),
+          ['serri'],
+          reason: words,
+        );
+        expect(
+          NpcContactRequestDetector.acceptedContactIds(
+            '赛莉·古劳斯：$words',
+            request,
+            primaryCharacterId: 'ryza',
+            contacts: contacts,
+          ),
+          ['serri'],
+          reason: words,
+        );
+        expect(
+          NpcContactRequestDetector.continuableRequest(
+            '角色[serri]：$words',
+            request,
+            primaryCharacterId: 'ryza',
+            contacts: contacts,
+          )?.contactIds,
+          ['serri'],
+          reason: words,
+        );
+      }
+    },
+  );
+
+  test(
+    'Japanese reporting and contact refusals cannot masquerade as consent',
+    () {
+      const request = NpcContactRequest(
+        contactIds: ['serri'],
+        channel: NpcContactChannel.sms,
+      );
+      for (final words in [
+        '彼女はSMSでも構わないと言った。',
+        '彼女はSMSでも構わないわ。',
+        '友達ならSMSでも構わないわ。',
+        '友達が交換しましょうと言っていた。',
+        'SMSでも構わないとは言っていない。',
+        '連絡先を交換しましょうとは言っていない。',
+        '交換しましょうと言っていたのは彼女よ。',
+        'SMSでも構わないわ。でもSMSは無理。',
+        'SMSでも構わないわ。でも連絡先は、教えません。',
+        'ええ、交換しましょう。でも連絡先は、教えません。',
+      ]) {
+        expect(
+          NpcContactRequestDetector.looksLikeAgreement(words),
+          isFalse,
+          reason: words,
+        );
+        expect(
+          NpcContactRequestDetector.acceptedContactIds(
+            '角色[serri]：$words',
+            request,
+            primaryCharacterId: 'ryza',
+            contacts: contacts,
+          ),
+          isEmpty,
+          reason: words,
+        );
+      }
+    },
+  );
+
+  test('delayed Japanese replies do not revoke explicit contact consent', () {
+    for (final words in [
+      'SMSの返事はすぐにはできないけど、交換しましょう。',
+      'SMSにはすぐ返事できませんが、交換しましょう。',
+    ]) {
+      expect(
+        NpcContactRequestDetector.looksLikeRefusal(words),
+        isFalse,
+        reason: words,
+      );
+      expect(
+        NpcContactRequestDetector.looksLikeAgreement(words),
+        isTrue,
+        reason: words,
+      );
+    }
+  });
+
+  test(
+    'the device Kala invitation is consent but an invitation denial is not',
+    () {
+      const request = NpcContactRequest(
+        contactIds: ['kala'],
+        channel: NpcContactChannel.sms,
+      );
+      const words = 'SMSか。よいぞ、交換してやろう。ただし、返事が遅くても気にするでないぞ。わしは気まぐれなのじゃ。';
+      expect(NpcContactRequestDetector.looksLikeAgreement(words), isTrue);
+      expect(
+        NpcContactRequestDetector.acceptedContactIds(
+          '角色[kala]：$words',
+          request,
+          primaryCharacterId: 'ryza',
+          contacts: contacts,
+        ),
+        ['kala'],
+      );
+      for (final denial in [
+        '交換してやろうとは言っていない。',
+        'SMSか。よいぞ、交換してやろうとは言っていない。',
+        '連絡先を交換してやろうとは言っていない。',
+      ]) {
+        expect(
+          NpcContactRequestDetector.looksLikeAgreement(denial),
+          isFalse,
+          reason: denial,
+        );
+        expect(
+          NpcContactRequestDetector.acceptedContactIds(
+            '角色[kala]：$denial',
+            request,
+            primaryCharacterId: 'ryza',
+            contacts: contacts,
+          ),
+          isEmpty,
+          reason: denial,
+        );
+      }
+    },
+  );
 
   test('speaker names resolve to the same contact as the explicit npc id', () {
     const request = NpcContactRequest(

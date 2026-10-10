@@ -580,6 +580,13 @@ class _ChatScreenState extends State<ChatScreen> {
 
   int _motionGeneration = 0;
   int _replyGeneration = 0;
+  ({
+    NpcContactRequest request,
+    String replyId,
+    String characterId,
+    int revision,
+  })?
+  _contactFollowUp;
   final _memoryRefreshGate = MemoryRefreshGate();
   Future<void> Function()? _pendingMemoryRefresh;
   String _previousSpeechEmotion = 'relaxed';
@@ -827,6 +834,7 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   void _resetConversationWorkForDataReplacement() {
+    _contactFollowUp = null;
     _recentDialogueActions.clear();
     _recentAmbientGroupIds.clear();
     _lastSemanticActionAt = null;
@@ -3114,6 +3122,49 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
+  NpcContactRequest? _takeContactFollowUp() {
+    final previous = _contactFollowUp;
+    _contactFollowUp = null;
+    if (previous == null ||
+        !_conversationIsCurrent(previous.characterId, previous.revision)) {
+      return null;
+    }
+    final last = widget.controller.messages.lastOrNull;
+    if (last == null ||
+        last.id != previous.replyId ||
+        last.isUser ||
+        last.isFailure) {
+      return null;
+    }
+    return previous.request;
+  }
+
+  void _rememberContactFollowUp(
+    NpcContactRequest request,
+    String reply, {
+    required int revision,
+    required String characterId,
+  }) {
+    if (!_conversationIsCurrent(characterId, revision)) return;
+    final last = widget.controller.messages.lastOrNull;
+    if (last == null || last.isUser || last.isFailure || last.text != reply) {
+      return;
+    }
+    final continued = NpcContactRequestDetector.continuableRequest(
+      reply,
+      request,
+      primaryCharacterId: characterId,
+      contacts: widget.controller.npcChatContacts,
+    );
+    if (continued == null) return;
+    _contactFollowUp = (
+      request: continued,
+      replyId: last.id,
+      characterId: characterId,
+      revision: revision,
+    );
+  }
+
   Future<void> _sendMessage({String? automaticPrompt}) async {
     final rawText = _inputController.text.trim();
     final narration = _narrationInputController.text.trim();
@@ -3139,6 +3190,7 @@ class _ChatScreenState extends State<ChatScreen> {
             '请分析我发送的附件。',
         ].join('\n');
     final isAutomatic = automaticPrompt != null;
+    final precedingContactRequest = _takeContactFollowUp();
     // Keep contact intent with this generation. Cancelled or failed replies
     // must not leave an invitation for a later reply or a different save.
     final contactRequest = isAutomatic
@@ -3147,6 +3199,7 @@ class _ChatScreenState extends State<ChatScreen> {
             [narration, rawText, narrationBottom].join('\n'),
             contacts: widget.controller.npcChatContacts,
             fallbackContactIds: _recentNpcIdsFromMainDialogue(),
+            precedingRequest: precedingContactRequest,
           );
     final contactRequestRevision = widget.controller.dataRevision;
     final contactRequestCharacter = widget.controller.activeCharacterId;
@@ -3193,6 +3246,12 @@ class _ChatScreenState extends State<ChatScreen> {
       }
       _showLatestAssistantFromStartIfOverflow();
       if (contactRequest != null) {
+        _rememberContactFollowUp(
+          contactRequest,
+          reply,
+          revision: contactRequestRevision,
+          characterId: contactRequestCharacter,
+        );
         await _offerNpcContactAddition(
           contactRequest,
           reply,
@@ -3345,6 +3404,12 @@ class _ChatScreenState extends State<ChatScreen> {
       // Contact consent belongs to the completed dialogue, independently of
       // translation, performance planning and optional audio availability.
       if (contactRequest != null) {
+        _rememberContactFollowUp(
+          contactRequest,
+          reply,
+          revision: contactRequestRevision,
+          characterId: contactRequestCharacter,
+        );
         await _offerNpcContactAddition(
           contactRequest,
           reply,
@@ -3593,6 +3658,7 @@ class _ChatScreenState extends State<ChatScreen> {
       if (!mounted || generation != _replyGeneration) return;
     } on Object catch (error, stackTrace) {
       if (generation != _replyGeneration) return;
+      _contactFollowUp = null;
       RuntimeLog.instance.error('AI', error, stackTrace);
       _stopSpeakingAnimation();
       widget.controller.failAssistantStream(error.toString());
@@ -3640,6 +3706,9 @@ class _ChatScreenState extends State<ChatScreen> {
         .where((contact) => !widget.controller.isNpcContactAdded(contact.id))
         .toList();
     if (contacts.isEmpty) return;
+    // An explicit confirmation (including dismissal) consumes this invitation.
+    // A declined dialog must not reopen just because a channel is mentioned.
+    _contactFollowUp = null;
     final language = widget.controller.interfaceLanguage;
     final channel = request.channel.label;
     String? selectedId;
@@ -3909,6 +3978,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
   void _cancelReply() {
     if (!_isReplying) return;
+    _contactFollowUp = null;
     _replyGeneration += 1;
     final iterator = _replyIterator;
     _replyIterator = null;
@@ -3928,6 +3998,7 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   void _undoLastMessage() {
+    _contactFollowUp = null;
     if (_isReplying) _cancelReply();
     _cancelSpeechPlayback();
     if (widget.controller.removeFailedReplies()) return;
