@@ -224,12 +224,12 @@ class UpdateRuntime extends ChangeNotifier {
     if (_busy) {
       return _lastCheck ?? const UpdateCheckResult.throttled();
     }
+    final previousLastCheck = _lastCheck;
+    final previousPhase = _phase;
+    final previousErrorCode = _errorCode;
     _phase = UpdateRuntimePhase.checking;
     _busy = true;
     _errorCode = null;
-    _notes = null;
-    _notesReleaseId = null;
-    _readyApkPath = null;
     _notify();
     try {
       final result = await service.check(
@@ -237,7 +237,17 @@ class UpdateRuntime extends ChangeNotifier {
         trigger: trigger,
         manual: manual,
       );
+      if (result.status == UpdateCheckStatus.throttled &&
+          previousLastCheck != null) {
+        _lastCheck = previousLastCheck;
+        _phase = previousPhase;
+        _errorCode = previousErrorCode;
+        return result;
+      }
       _lastCheck = result;
+      _notes = null;
+      _notesReleaseId = null;
+      _readyApkPath = null;
       switch (result.status) {
         case UpdateCheckStatus.updateAvailable:
         case UpdateCheckStatus.suppressed:

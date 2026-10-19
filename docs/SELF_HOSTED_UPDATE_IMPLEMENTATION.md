@@ -1,6 +1,6 @@
 # 自托管更新：已实现内容与接入
 
-实施日期：2026-10-19。显示版本保持 `1.0.4.1`；正式 `stable` 渠道已发布序号 52，对应受保护安卓 build 50。旧客户端需完整安装一次正式包以启用正式更新渠道。前期隔离渠道真机范围见 [测试记录](update/DEVICE_TEST_2026-10-19.md) 和 [壁纸记录](update/WALLPAPER_DEVICE_TEST_2026-10-19.md)；本次更新内容和用法见 [发布说明](update/RELEASE_1.0.4.1_BUILD50.md)。
+实施日期：2026-10-19。显示版本保持 `1.0.4.1`；正式 `stable` 渠道已发布序号 54，对应受保护安卓 build 51。旧客户端需完整安装一次正式包以启用正式更新渠道。前期隔离渠道真机范围见 [测试记录](update/DEVICE_TEST_2026-10-19.md) 和 [壁纸记录](update/WALLPAPER_DEVICE_TEST_2026-10-19.md)；本次更新内容和用法见 [发布说明](update/RELEASE_1.0.4.1_BUILD50.md)。
 
 ## 用户操作
 
@@ -44,7 +44,7 @@ APK 支持 HTTPS 镜像、Range 续传、下载取消与完整性验证。HTTPS 
 
 角色/服装明文资源继续遵循本项目不上传仓库的规则。远程资源目录应使用保护脚本输出的加密包。保护脚本现在会校验并复用未变化的密文；内容、密钥或格式变化时重新生成随机 nonce，不使用固定 nonce。
 
-发布工具生成本地产物；服务器基础设施已独立部署，正式渠道已切换到签名序号 52。部署与发布步骤见 [服务器说明](update/SERVER_DEPLOYMENT.md)。
+发布工具生成本地产物；服务器基础设施已独立部署，正式渠道已切换到签名序号 54。部署与发布步骤见 [服务器说明](update/SERVER_DEPLOYMENT.md)。
 
 ## 当前边界
 
@@ -52,8 +52,8 @@ APK 支持 HTTPS 镜像、Range 续传、下载取消与完整性验证。HTTPS 
 - 当前 Android 未集成二进制 patch 引擎，平台明确上报不支持差分；代码更新走完整 APK。协议、精确基线选择和发布字段已预留，但不能宣称已完成 APK 增量重建。
 - Windows 更新 helper 尚未实现；Windows 继续使用完整 ZIP 更新。
 - 已构建受保护 release 测试 APK，真机由 build 46 覆盖安装至 build 47，再经应用下载和 Android 安装器升级到 build 48；已安装 APK 与签名目标摘要一致，现有可见存档保留。
-- 已通过 SSH 部署独立 HTTPS 静态更新路径，正式 build 50 已加密注入 stable 渠道配置。Ed25519 签名私钥没有上传，配置位于 Git 忽略目录；本地正式构建必须显式提供对应的 `-UpdateConfig`。
-- 正式签名渠道序号 52 和 Gitee 默认 main 分支的相对更新指针已发布。Gitee Release API 认证仍不可用，Git raw 渠道可正常读取；不能把 Git 指针更新描述为已修改 Gitee Release 页面。
+- 已通过 SSH 部署独立 HTTPS 静态更新路径，正式 build 51 已加密注入 stable 渠道配置。Ed25519 签名私钥没有上传，配置位于 Git 忽略目录；本地正式构建必须显式提供对应的 `-UpdateConfig`。
+- 正式签名渠道序号 54 和 Gitee 默认 main 分支的相对更新指针已发布。Gitee Release API 认证仍不可用，Git raw 渠道可正常读取；不能把 Git 指针更新描述为已修改 Gitee Release 页面。
 - 进程退出后会重新取得并验签清单，再复用已下载的 APK/断点文件；未实现离线恢复安装计划。
 
 ## 验证

@@ -8,7 +8,7 @@ AgentAtelierR 是以 Android 为主要开发平台的 Flutter AI 角色互动项
 
 ## 当前版本与适用范围
 
-当前源码版本为 **AgentAtelierR 1.0.4.1 MCP FishAudio**，Android / Windows 展示版本 `1.0.4.1`，内部 Flutter 构建号 `1.0.4+50`。安卓正式更新渠道 `stable` 已发布序号 52，提供资源更新及完整 APK 更新；本次安卓更新见 [发布说明](docs/update/RELEASE_1.0.4.1_BUILD50.md)。旧客户端需先完整覆盖安装一次本次正式 APK，之后可使用应用内更新。Windows 自动更新尚未接入。Fish Audio MCP OAuth 语音、模型选择与错误诊断详见 [语音更新说明](docs/CHANGELOG_1.0.4.1_MCP_FishAudio.md)。以下功能以当前源码为准；具体效果会受到本地资源、设备、模型和服务能力影响。
+当前源码版本为 **AgentAtelierR 1.0.4.1 MCP FishAudio**，Android / Windows 展示版本 `1.0.4.1`，内部 Flutter 构建号 `1.0.4+51`。安卓正式更新渠道 `stable` 已发布序号 54，提供资源更新及完整 APK 更新；本次安卓更新见 [发布说明](docs/update/RELEASE_1.0.4.1_BUILD50.md)。旧客户端需先完整覆盖安装一次本次正式 APK，之后可使用应用内更新。Windows 自动更新尚未接入。Fish Audio MCP OAuth 语音、模型选择与错误诊断详见 [语音更新说明](docs/CHANGELOG_1.0.4.1_MCP_FishAudio.md)。以下功能以当前源码为准；具体效果会受到本地资源、设备、模型和服务能力影响。
 
 > 正式版提供使用加密构建脚本生成的 **release APK**，启用 Dart 混淆。当前仍沿用 Android 调试签名以兼容已有安装，并非商店正式签名包。旧版 debug 测试包的卡顿与不稳定表现不能代表 release 包。
 
