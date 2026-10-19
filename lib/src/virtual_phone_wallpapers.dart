@@ -8,6 +8,8 @@ import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'virtual_phone_wallpaper_catalog.dart';
+
 @immutable
 class VirtualPhoneWallpaper {
   const VirtualPhoneWallpaper({
@@ -15,14 +17,18 @@ class VirtualPhoneWallpaper {
     required this.name,
     this.assetPath,
     this.filePath,
-  }) : assert((assetPath == null) != (filePath == null));
+    this.fromCatalog = false,
+  }) : assert((assetPath == null) != (filePath == null)),
+       assert(!fromCatalog || assetPath != null);
 
   final String id;
   final String name;
   final String? assetPath;
   final String? filePath;
+  final bool fromCatalog;
 
   bool get isBuiltIn => assetPath != null;
+  bool get canDelete => fromCatalog || filePath != null;
 }
 
 /// Owns independent copies of imported wallpapers; never stores source paths.
@@ -30,10 +36,12 @@ class VirtualPhoneWallpaperStore extends ChangeNotifier {
   VirtualPhoneWallpaperStore({
     required SharedPreferences preferences,
     Future<Directory> Function()? directoryProvider,
+    Future<List<VirtualPhoneWallpaperCatalogEntry>> Function()? catalogProvider,
     // Preserve the public named argument and private storage field.
     // ignore: prefer_initializing_formals
   }) : _preferences = preferences,
-       _directoryProvider = directoryProvider ?? _defaultDirectory;
+       _directoryProvider = directoryProvider ?? _defaultDirectory,
+       _catalogProvider = catalogProvider ?? loadVirtualPhoneWallpaperCatalog;
 
   static const _preferenceKey = 'virtual_phone.wallpapers.v1';
   static const _maxInputBytes = 24 * 1024 * 1024;
@@ -62,12 +70,15 @@ class VirtualPhoneWallpaperStore extends ChangeNotifier {
 
   final SharedPreferences _preferences;
   final Future<Directory> Function() _directoryProvider;
+  final Future<List<VirtualPhoneWallpaperCatalogEntry>> Function()
+  _catalogProvider;
   List<VirtualPhoneWallpaper> _wallpapers = [..._builtIns];
   String _selectedId = _builtIns.first.id;
   Future<void> _operations = Future<void>.value();
   Directory? _directory;
   bool _loaded = false;
   bool _disposed = false;
+  Set<String> _hiddenCatalogIds = const {};
 
   List<VirtualPhoneWallpaper> get wallpapers => List.unmodifiable(_wallpapers);
 
@@ -83,12 +94,12 @@ class VirtualPhoneWallpaperStore extends ChangeNotifier {
     final matches = _wallpapers.where((wallpaper) => wallpaper.id == id);
     if (matches.isEmpty) throw StateError('壁纸不存在，请重新选择。');
     final wallpaper = matches.first;
-    if (!wallpaper.isBuiltIn &&
+    if (wallpaper.filePath != null &&
         !await _isManagedFile(await _managedDirectory(), '$id.png')) {
       throw StateError('壁纸文件已丢失，请重新导入。');
     }
     if (_selectedId == id) return;
-    await _persist(_wallpapers, id);
+    await _persist(_wallpapers, id, _hiddenCatalogIds);
     _selectedId = id;
     _notify();
   });
@@ -118,7 +129,7 @@ class VirtualPhoneWallpaperStore extends ChangeNotifier {
         await temporary.writeAsBytes(normalized, flush: true);
         await temporary.rename(file.path);
         final next = [..._wallpapers, wallpaper];
-        await _persist(next, id);
+        await _persist(next, id, _hiddenCatalogIds);
         _wallpapers = next;
         _selectedId = id;
         _notify();
@@ -131,6 +142,7 @@ class VirtualPhoneWallpaperStore extends ChangeNotifier {
     });
   }
 
+  /// Removes owned imports or locally hides hot-catalogue wallpapers.
   Future<void> deleteImported(Set<String> ids) {
     final requested = Set<String>.of(ids);
     return _enqueue(() async {
@@ -138,7 +150,7 @@ class VirtualPhoneWallpaperStore extends ChangeNotifier {
       final removed = _wallpapers
           .where(
             (wallpaper) =>
-                !wallpaper.isBuiltIn && requested.contains(wallpaper.id),
+                wallpaper.canDelete && requested.contains(wallpaper.id),
           )
           .toList();
       if (removed.isEmpty) return;
@@ -149,14 +161,22 @@ class VirtualPhoneWallpaperStore extends ChangeNotifier {
       final nextSelection = removedIds.contains(_selectedId)
           ? _builtIns.first.id
           : _selectedId;
+      final hiddenCatalogIds = <String>{
+        ..._hiddenCatalogIds,
+        ...removed.where((item) => item.fromCatalog).map((item) => item.id),
+      };
       // Persist first: a failed write must not erase a selected image.
-      await _persist(next, nextSelection);
+      await _persist(next, nextSelection, hiddenCatalogIds);
       _wallpapers = next;
       _selectedId = nextSelection;
+      _hiddenCatalogIds = Set.unmodifiable(hiddenCatalogIds);
       _notify();
-      final directory = await _managedDirectory();
-      for (final wallpaper in removed) {
-        await _removeOwnedFile(directory, '${wallpaper.id}.png');
+      final imported = removed.where((item) => item.filePath != null).toList();
+      if (imported.isNotEmpty) {
+        final directory = await _managedDirectory();
+        for (final wallpaper in imported) {
+          await _removeOwnedFile(directory, '${wallpaper.id}.png');
+        }
       }
     });
   }
@@ -177,10 +197,17 @@ class VirtualPhoneWallpaperStore extends ChangeNotifier {
 
   Future<void> _load() async {
     if (_loaded) return;
+    List<VirtualPhoneWallpaperCatalogEntry> catalogEntries;
+    try {
+      catalogEntries = await _catalogProvider();
+    } on Object {
+      catalogEntries = const [];
+    }
     final storedValue = _preferences.get(_preferenceKey);
     final raw = storedValue is String ? storedValue : null;
     var selectedId = _builtIns.first.id;
     final imports = <VirtualPhoneWallpaper>[];
+    final hiddenCatalogIds = <String>{};
     var canRewrite = true;
     if (raw != null) {
       try {
@@ -188,6 +215,14 @@ class VirtualPhoneWallpaperStore extends ChangeNotifier {
         if (decoded is Map<String, dynamic>) {
           final selected = decoded['selected'];
           if (selected is String) selectedId = selected;
+          final hidden = decoded['hidden_catalog_ids'];
+          if (hidden is List) {
+            for (final value in hidden.take(256)) {
+              if (value is String && isVirtualPhoneWallpaperCatalogId(value)) {
+                hiddenCatalogIds.add(value);
+              }
+            }
+          }
           final items = decoded['imports'];
           if (items is List && items.isNotEmpty) {
             Directory? directory;
@@ -234,19 +269,32 @@ class VirtualPhoneWallpaperStore extends ChangeNotifier {
         canRewrite = false;
       }
     }
-    final next = [..._builtIns, ...imports];
+    final catalog = [
+      for (final entry in catalogEntries)
+        if (!hiddenCatalogIds.contains(entry.id))
+          VirtualPhoneWallpaper(
+            id: entry.id,
+            name: entry.name,
+            assetPath: entry.assetPath,
+            fromCatalog: true,
+          ),
+    ];
+    final next = [..._builtIns, ...catalog, ...imports];
     if (!next.any((wallpaper) => wallpaper.id == selectedId)) {
       selectedId = _builtIns.first.id;
     }
-    if (canRewrite && storedValue != null && raw != _encode(next, selectedId)) {
+    if (canRewrite &&
+        storedValue != null &&
+        raw != _encode(next, selectedId, hiddenCatalogIds)) {
       try {
-        await _persist(next, selectedId);
+        await _persist(next, selectedId, hiddenCatalogIds);
       } catch (_) {
         // A local settings write must not prevent the app from starting.
       }
     }
     _wallpapers = next;
     _selectedId = selectedId;
+    _hiddenCatalogIds = Set.unmodifiable(hiddenCatalogIds);
     _loaded = true;
     _notify();
   }
@@ -394,27 +442,32 @@ class VirtualPhoneWallpaperStore extends ChangeNotifier {
     return name.runes.take(80).map(String.fromCharCode).join();
   }
 
-  String _encode(List<VirtualPhoneWallpaper> wallpapers, String selectedId) =>
-      jsonEncode({
-        'selected': selectedId,
-        'imports': [
-          for (final wallpaper in wallpapers)
-            if (!wallpaper.isBuiltIn)
-              {
-                'id': wallpaper.id,
-                'name': wallpaper.name,
-                'filename': '${wallpaper.id}.png',
-              },
-        ],
-      });
+  String _encode(
+    List<VirtualPhoneWallpaper> wallpapers,
+    String selectedId,
+    Set<String> hiddenCatalogIds,
+  ) => jsonEncode({
+    'selected': selectedId,
+    'hidden_catalog_ids': hiddenCatalogIds.toList()..sort(),
+    'imports': [
+      for (final wallpaper in wallpapers)
+        if (wallpaper.filePath != null)
+          {
+            'id': wallpaper.id,
+            'name': wallpaper.name,
+            'filename': '${wallpaper.id}.png',
+          },
+    ],
+  });
 
   Future<void> _persist(
     List<VirtualPhoneWallpaper> wallpapers,
     String selectedId,
+    Set<String> hiddenCatalogIds,
   ) async {
     if (!await _preferences.setString(
       _preferenceKey,
-      _encode(wallpapers, selectedId),
+      _encode(wallpapers, selectedId, hiddenCatalogIds),
     )) {
       throw StateError('壁纸设置保存失败，请重试。');
     }

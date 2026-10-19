@@ -3,7 +3,6 @@ import 'dart:math';
 import 'dart:ui' show ImageFilter;
 
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 
 import 'app_controller.dart';
 import 'app_localization.dart';
@@ -11,6 +10,7 @@ import 'character_catalog.dart';
 import 'glass_ui.dart';
 import 'ryza_loading_indicator.dart';
 import 'world_map_localization.dart';
+import 'update/resource_resolver.dart';
 
 const Size worldMapLogicalSize = Size(2048, 1152);
 
@@ -402,8 +402,12 @@ class WorldMapScreen extends StatefulWidget {
 
   static Future<WorldMapData> _loadData() async {
     final files = await Future.wait([
-      rootBundle.loadString('assets/world_map/world_hierarchy.json'),
-      rootBundle.loadString('assets/world_map/npc_placement.json'),
+      ResourceAssetResolver.instance.loadString(
+        'assets/world_map/world_hierarchy.json',
+      ),
+      ResourceAssetResolver.instance.loadString(
+        'assets/world_map/npc_placement.json',
+      ),
     ]);
     final worldJson = jsonDecode(files[0]) as Map<String, dynamic>;
     final npcJson = jsonDecode(files[1]) as Map<String, dynamic>;

@@ -4,6 +4,7 @@ import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:ryza_chat_mvp/src/protected_asset_format.dart';
+import 'package:ryza_chat_mvp/src/protected_asset_cache.dart';
 import 'package:ryza_chat_mvp/src/character_idle_behavior.dart';
 
 Future<void> main(List<String> arguments) async {
@@ -87,7 +88,11 @@ Future<void> main(List<String> arguments) async {
       sourceBytes += bytes.length;
       files[_assetPath(project, file)] = bytes;
     }
-    final encrypted = await encryptProtectedAssetFiles(
+    final output = File(
+      '${outputRoot.path}${Platform.pathSeparator}$name.aarpack',
+    );
+    final encrypted = await prepareCachedProtectedAsset(
+      output: output,
       files: files,
       key: key,
       packId: 'character/$name',
@@ -98,10 +103,6 @@ Future<void> main(List<String> arguments) async {
       key: key,
       packId: 'character/$name',
     );
-    final output = File(
-      '${outputRoot.path}${Platform.pathSeparator}$name.aarpack',
-    );
-    await output.writeAsBytes(encrypted, flush: true);
     expectedOutputs.add(output.absolute.path.toLowerCase());
     encryptedBytes += encrypted.length;
 
@@ -113,7 +114,11 @@ Future<void> main(List<String> arguments) async {
       final texture = files['assets/character/ryza/$name/$name.png']!;
       if (!_sameBytes(previewBytes, texture)) {
         sourceBytes += previewBytes.length;
-        final protectedPreview = await encryptProtectedAssetFiles(
+        final previewTarget = File(
+          '${previewOutput.path}${Platform.pathSeparator}$name.aarpreview',
+        );
+        final protectedPreview = await prepareCachedProtectedAsset(
+          output: previewTarget,
           files: {_assetPath(project, preview): previewBytes},
           key: key,
           packId: 'preview/$name',
@@ -124,10 +129,6 @@ Future<void> main(List<String> arguments) async {
           key: key,
           packId: 'preview/$name',
         );
-        final previewTarget = File(
-          '${previewOutput.path}${Platform.pathSeparator}$name.aarpreview',
-        );
-        await previewTarget.writeAsBytes(protectedPreview, flush: true);
         expectedOutputs.add(previewTarget.absolute.path.toLowerCase());
         encryptedBytes += protectedPreview.length;
       } else {

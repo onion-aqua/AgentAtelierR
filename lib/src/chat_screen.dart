@@ -13,12 +13,12 @@ import 'android_companion_runtime.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart' show compute;
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart' show rootBundle;
 import 'package:image_picker/image_picker.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:spine_flutter/spine_flutter.dart' hide Color;
 
 import 'ai_services.dart';
+import 'qwen_tts_config.dart';
 import 'fish_mcp_protocol.dart';
 import 'fish_mcp_service.dart';
 import 'continuous_asmr_page.dart';
@@ -43,6 +43,12 @@ import 'app_localization.dart';
 import 'dialogue_language_guard.dart';
 import 'attachment_thumbnail_store.dart';
 import 'image_food_invitation.dart';
+import 'image_generation_intent.dart';
+import 'image_generation_prompt.dart';
+import 'image_generation_config.dart';
+import 'image_generation_manager_page.dart';
+import 'image_generation_service.dart';
+import 'image_generation_store.dart';
 import 'audio_envelope.dart';
 import 'speech_envelope_loader.dart';
 import 'speech_media_probe.dart';
@@ -101,6 +107,9 @@ import 'character_face_pull_rig.dart';
 import 'character_touch_physics_rig.dart';
 import 'virtual_phone.dart';
 import 'virtual_phone_wallpaper_page.dart';
+import 'update/update_runtime.dart';
+import 'update/resource_resolver.dart';
+import 'update/resource_audio.dart';
 
 extension SceneTimeIcon on SceneTime {
   IconData get icon => switch (this) {
@@ -208,6 +217,12 @@ class ChatScreen extends StatefulWidget {
     this.onFullscreenChanged,
     this.onCharacterReady,
     this.onCharacterLoadFailed,
+    this.imageGenerationService,
+    this.imageGenerationStore,
+    this.aiClient,
+    this.secretStore,
+    this.imageThumbnailer,
+    this.updateRuntime,
   });
 
   final AppController controller;
@@ -218,6 +233,15 @@ class ChatScreen extends StatefulWidget {
   final ValueChanged<bool>? onFullscreenChanged;
   final VoidCallback? onCharacterReady;
   final VoidCallback? onCharacterLoadFailed;
+
+  /// Optional image dependencies keep widget tests offline. Production callers
+  /// use the controller-owned store and the default network service.
+  final ImageGenerationService? imageGenerationService;
+  final ImageGenerationStore? imageGenerationStore;
+  final OpenAiCompatibleClient? aiClient;
+  final SecretStore? secretStore;
+  final Future<Uint8List?> Function(Uint8List bytes)? imageThumbnailer;
+  final UpdateRuntime? updateRuntime;
   final bool pageActive;
   final bool pauseCharacterAnimation;
 
@@ -291,17 +315,25 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   final _effectPlayer = AppAudioPlayer();
   final _companionRuntime = AndroidCompanionRuntime.instance;
   bool _companionStopped = false;
-  late final _aiClient = OpenAiCompatibleClient(
-    contextToolExecutor: (name, args) async =>
-        widget.controller.queryContextTool(name, args),
-    agentToolExecutor: const DeviceAgentTools().execute,
-  );
+  late final _aiClient =
+      widget.aiClient ??
+      OpenAiCompatibleClient(
+        contextToolExecutor: (name, args) async =>
+            widget.controller.queryContextTool(name, args),
+        agentToolExecutor: const DeviceAgentTools().execute,
+      );
   final _fishAudioClient = FishAudioClient();
+  late final _imageGenerationService =
+      widget.imageGenerationService ?? ImageGenerationService();
+  final Map<String, ImageGenerationCancellationToken>
+  _imageGenerationCancellations = {};
   final _fishMcpService = FishMcpService.instance;
   final _dashScopeTtsClient = DashScopeTtsClient();
   final _genericTtsClient = GenericTtsClient();
   final _mimoTtsClient = MimoTtsClient();
-  final _secretStore = const SecretStore();
+  late final _secretStore = widget.secretStore ?? const SecretStore();
+  ImageGenerationStore get _imageGenerationStore =>
+      widget.imageGenerationStore ?? widget.controller.imageGenerationStore;
   final _inputController = TextEditingController();
   final _narrationInputController = TextEditingController();
   final _narrationBottomInputController = TextEditingController();
@@ -692,6 +724,13 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     _narrationInputController.addListener(_recordUserActivity);
     _narrationBottomInputController.addListener(_recordUserActivity);
     widget.controller.addListener(_handleControllerChange);
+    unawaited(() async {
+      try {
+        await _imageGenerationStore.load();
+      } on Object catch (error, stackTrace) {
+        RuntimeLog.instance.error('ImageGenerationStore', error, stackTrace);
+      }
+    }());
     widget.controller.frameRate.addListener(_handleFrameRateChange);
     _scrollController.addListener(_handleConversationScroll);
     _suggestionQuotaTimer = Timer.periodic(const Duration(seconds: 1), (_) {
@@ -992,13 +1031,17 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   Future<List<MotionRecipe>> _loadMotionRecipes() async {
     final builtIn = await compute(
       MotionRecipe.parse,
-      await rootBundle.loadString('assets/data/motion_recipes.json'),
+      await ResourceAssetResolver.instance.loadString(
+        'assets/data/motion_recipes.json',
+      ),
     );
     final catalogues = <Iterable<MotionRecipe>>[builtIn];
     try {
       final extension = await compute(
         MotionRecipe.parse,
-        await rootBundle.loadString('assets/data/motion_recipes_extra.json'),
+        await ResourceAssetResolver.instance.loadString(
+          'assets/data/motion_recipes_extra.json',
+        ),
       );
       catalogues.add(extension);
       RuntimeLog.instance.infoRateLimited(
@@ -1021,7 +1064,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
   Future<void> _playSkinChangeEffect() async {
     await _effectPlayer.stop();
-    await _effectPlayer.play(AssetSource('audio/se/se_skin_change.m4a'));
+    await _effectPlayer.play(
+      await resourceAudioSource('audio/se/se_skin_change.m4a'),
+    );
   }
 
   void _scheduleIdleChange() {
@@ -3100,6 +3145,11 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     _playerStateSubscription?.cancel();
     _audioPlayer.dispose();
     _mimoTtsClient.close();
+    for (final token in _imageGenerationCancellations.values) {
+      token.cancel();
+    }
+    _imageGenerationCancellations.clear();
+    _imageGenerationService.close();
     _effectPlayer.dispose();
     _idleTimer?.cancel();
     _tapReactionTimer?.cancel();
@@ -3185,7 +3235,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     await _audioPlayer.setVolume(widget.controller.voiceVolume);
     try {
       await _audioPlayer.play(
-        AssetSource(
+        await resourceAudioSource(
           reaction.localizedVoiceAsset(
             widget.controller.characterReplyLanguage,
             _random.nextInt(3) + 1,
@@ -3195,7 +3245,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       );
     } on Object {
       await _audioPlayer.play(
-        AssetSource(
+        await resourceAudioSource(
           reaction.voiceAsset(
             _random.nextInt(3) + 1,
             asmr: widget.controller.asmrModeEnabled,
@@ -3377,6 +3427,16 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     }
     final contactRequestRevision = widget.controller.dataRevision;
     final contactRequestCharacter = widget.controller.activeCharacterId;
+    final imageIntent = isAutomatic
+        ? null
+        : detectImageGenerationIntent(
+            [narration, rawText, narrationBottom].join('\n'),
+          );
+    // Capture this save's scene and dialogue before the ordinary reply starts
+    // streaming, or the user switches character, location or save slots.
+    final imagePrompt = imageIntent == null
+        ? null
+        : _imagePromptForIntent(imageIntent);
     if (!isAutomatic) _recordUserActivity();
     widget.controller.removeFailedReplies();
 
@@ -3385,7 +3445,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     if (!isAutomatic) _narrationInputController.clear();
     if (!isAutomatic) _narrationBottomInputController.clear();
     if (!isAutomatic) {
-      widget.controller.addUserMessage(
+      final userMessageId = widget.controller.addUserMessage(
         text,
         attachments: attachments,
         imageFoodInvitation: hasCurrentImageFoodInvitation(
@@ -3395,6 +3455,11 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           ),
         ),
       );
+      if (imagePrompt != null) {
+        unawaited(
+          _startImageGeneration(imagePrompt, userMessageId: userMessageId),
+        );
+      }
     }
     setState(() {
       if (!isAutomatic) _pendingAttachments.clear();
@@ -4974,16 +5039,18 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         model: widget.controller.dashScopeTtsModel,
         voice: widget.controller.activeDashScopeTtsVoice,
         language: widget.controller.dashScopeTtsLanguage,
+        options: widget.controller.dashScopeTtsOptions,
         instructions:
-            widget.controller.dashScopeTtsModel.toLowerCase().contains(
-              'instruct',
+            QwenTtsConfig.supportsInstructions(
+              widget.controller.dashScopeTtsModel,
+              voice: widget.controller.activeDashScopeTtsVoice,
             )
             ? mergeTtsInstructions(
                 '${widget.controller.dashScopeTtsInstructions} $voiceDirection'
                     .trim(),
                 emotionIntensity,
               )
-            : widget.controller.dashScopeTtsInstructions,
+            : '',
         text: plainText,
       ),
       TtsProvider.generic => _genericTtsClient.synthesize(
@@ -5085,11 +5152,16 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                       ? 'zh'
                       : 'en',
                   asmr: asmr,
-                  effectiveSpeed:
-                      actualProvider == TtsProvider.fishAudio ||
-                          actualProvider == TtsProvider.generic
-                      ? requestedSpeed
-                      : 1,
+                  effectiveSpeed: switch (actualProvider) {
+                    TtsProvider.dashScope
+                        when QwenTtsConfig.isModernModel(
+                          widget.controller.dashScopeTtsModel,
+                        ) =>
+                      widget.controller.dashScopeTtsOptions.rate,
+                    TtsProvider.fishAudio ||
+                    TtsProvider.generic => requestedSpeed,
+                    _ => 1,
+                  },
                 ),
                 actualDuration,
               );
@@ -6129,25 +6201,6 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         body: LocalSavePage(controller: widget.controller),
       );
 
-  Widget _buildVirtualPhoneShortcutPicker(BuildContext context) =>
-      SettingsShortcutPicker(
-        controller: widget.controller,
-        includePcAgent: widget.relayService != null,
-        onSelected: (_) => VirtualPhoneScope.of(context).goHome(),
-      );
-
-  Widget _buildVirtualPhoneShortcutPage(BuildContext context) {
-    final section = widget.controller.virtualPhoneSettingsShortcut;
-    if (section == null) return _buildVirtualPhoneShortcutPicker(context);
-    return SettingsScreen(
-      controller: widget.controller,
-      relayService: widget.relayService,
-      onMenuPressed: () {},
-      embedded: true,
-      initialSection: section,
-    );
-  }
-
   Future<void> _openFullscreenComposer() async {
     if (!widget.controller.splitNarrationComposer) return;
     FocusManager.instance.primaryFocus?.unfocus();
@@ -6437,6 +6490,220 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     }
   }
 
+  String _imagePromptForIntent(ImageGenerationIntent intent) {
+    final controller = widget.controller;
+    final profile = controller.activeCharacterProfile;
+    if (!intent.requiresConversationContext) {
+      return buildImageGenerationPrompt(
+        intent: intent,
+        context: ImageGenerationPromptContext(
+          characterName: profile.names.chinese,
+        ),
+      );
+    }
+    final home = _virtualPhoneHomeInfo();
+    final ryzaContext =
+        controller.activeCharacterId == CharacterRuntimeIds.ryza;
+    return buildImageGenerationPrompt(
+      intent: intent,
+      context: ImageGenerationPromptContext(
+        characterName: '${profile.names.chinese}（${profile.names.japanese}）',
+        characterProfile:
+            ryzaContext && controller.characterPersonaInjectionEnabled
+            ? controller.editableCharacterPersona
+            : '',
+        worldBackground: controller.worldSettingInjectionEnabled
+            ? controller.editableWorldSetting
+            : '',
+        location:
+            '${controller.selectedAreaName} / ${controller.selectedStageName}',
+        storyTime: controller.storyClockEnabled
+            ? '第${controller.storyClock.day}天 ${controller.storyClock.timeLabel}，${controller.sceneTime.label}'
+            : controller.sceneTime.label,
+        weather: '${home.weatherLabel}，${home.temperatureLabel}',
+        // A bare image command defaults to Ryza even in another character's
+        // conversation. Never apply that character's persona or outfit to her.
+        appearance: ryzaContext
+            ? '${_appearance.label}。${_appearance.promptDescription}'
+            : '',
+        history: controller.messages.map(
+          (message) => ImageGenerationPromptMessage(
+            text: message.text,
+            isUser: message.isUser,
+            isFailure: message.isFailure,
+            isGeneratedImageRecord: message.attachments.any(
+              (attachment) => attachment.generatedImageTaskId != null,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _startImageGeneration(
+    String prompt, {
+    String? userMessageId,
+    ImageGenerationTask? retryTask,
+  }) async {
+    final store = _imageGenerationStore;
+    final config = widget.controller.imageGeneration;
+    final targetCharacterId = widget.controller.activeCharacterId;
+    final targetRevision = widget.controller.dataRevision;
+    ImageGenerationTask? task = retryTask;
+    var receivedGeneratedImage = false;
+    try {
+      if (!config.enabled) {
+        throw const ImageGenerationException(
+          code: 'disabled',
+          stage: 'configuration',
+          message: '请先在“设置 → AI 接口 → 生图接口配置”中启用生图服务。',
+        );
+      }
+      if (task == null) {
+        task = await store.createTask(
+          prompt: prompt,
+          protocol: config.protocol.storageName,
+          model: config.model,
+          messageId: userMessageId,
+        );
+      } else {
+        task = await store.retry(task.id);
+      }
+      await store.markGenerating(
+        task.id,
+        protocol: config.resolvedProtocol.storageName,
+        model: config.model,
+      );
+      final cancellation = ImageGenerationCancellationToken();
+      _imageGenerationCancellations[task.id] = cancellation;
+      final needsApiKey = config.resolvedProtocol.requiresApiKey;
+      final apiKey = await _secretStore.readImageGenerationKey();
+      if (needsApiKey && apiKey.trim().isEmpty) {
+        throw const ImageGenerationException(
+          code: 'missing_api_key',
+          stage: 'configuration',
+          message: '生图 API Key 为空，请先完成接口配置。',
+        );
+      }
+      final result = await _imageGenerationService.generate(
+        config: config,
+        apiKey: apiKey,
+        prompt: prompt,
+        cancellationToken: cancellation,
+      );
+      receivedGeneratedImage = true;
+      final completed = await store.complete(
+        task.id,
+        bytes: result.bytes,
+        mimeType: result.mimeType,
+        protocol: result.protocol.storageName,
+        model: result.model,
+      );
+      final thumbnail = await (widget.imageThumbnailer == null
+          ? _createImageThumbnail(result.bytes)
+          : widget.imageThumbnailer!(result.bytes));
+      final thumbnailKey = thumbnail == null
+          ? null
+          : await AttachmentThumbnailStore.write(thumbnail);
+      await _appendGeneratedImageWhenSafe(
+        prompt: prompt,
+        taskId: completed.id,
+        attachment: ChatAttachment(
+          name:
+              'generated_${completed.id}.${_extensionForImageMime(result.mimeType)}',
+          mimeType: result.mimeType,
+          size: result.bytes.length,
+          bytes: result.bytes,
+          thumbnailBytes: thumbnail,
+          thumbnailKey: thumbnailKey,
+          generatedImageTaskId: completed.id,
+        ),
+        characterId: targetCharacterId,
+        revision: targetRevision,
+      );
+    } on Object catch (error, stackTrace) {
+      RuntimeLog.instance.error('ImageGeneration', error, stackTrace);
+      final message = _imageGenerationErrorText(error);
+      if (task != null && store.taskById(task.id)?.isActive == true) {
+        await store.fail(
+          task.id,
+          message,
+          outcomeUnknown:
+              receivedGeneratedImage ||
+              error is ImageGenerationException && error.outcomeUnknown,
+        );
+      }
+      await _appendImageNoticeWhenSafe(
+        task == null ? '图片生成未开始：$message' : '图片生成失败：$message',
+        characterId: targetCharacterId,
+        revision: targetRevision,
+      );
+    } finally {
+      if (task != null) _imageGenerationCancellations.remove(task.id);
+    }
+  }
+
+  Future<void> _appendGeneratedImageWhenSafe({
+    required String prompt,
+    required String taskId,
+    required ChatAttachment attachment,
+    required String characterId,
+    required int revision,
+  }) async {
+    // The dialogue streamer owns the last assistant message. Insert the image
+    // only after it has finished so an early image response cannot steal its
+    // text deltas or attachments.
+    while (mounted && _isReplying) {
+      await Future<void>.delayed(const Duration(milliseconds: 120));
+    }
+    if (!_conversationIsCurrent(characterId, revision)) return;
+    widget.controller.addAssistantMessage(
+      '图片已生成：${imageGenerationPromptCaption(prompt)}',
+      attachments: [attachment],
+    );
+    await _imageGenerationStore.linkMessage(
+      taskId,
+      widget.controller.messages.last.id,
+    );
+    if (mounted) _scrollToBottom();
+  }
+
+  Future<void> _appendImageNoticeWhenSafe(
+    String message, {
+    required String characterId,
+    required int revision,
+  }) async {
+    while (mounted && _isReplying) {
+      await Future<void>.delayed(const Duration(milliseconds: 120));
+    }
+    if (!_conversationIsCurrent(characterId, revision)) return;
+    widget.controller.addAssistantMessage(message);
+    if (mounted) _scrollToBottom();
+  }
+
+  String _extensionForImageMime(String mimeType) => switch (mimeType) {
+    'image/jpeg' => 'jpg',
+    'image/webp' => 'webp',
+    'image/gif' => 'gif',
+    'image/avif' => 'avif',
+    _ => 'png',
+  };
+
+  String _imageGenerationErrorText(Object error) =>
+      error is ImageGenerationException ? error.message : '图片生成失败，请打开生图管理查看记录。';
+
+  Widget _buildVirtualPhoneImagePage(BuildContext context) =>
+      ImageGenerationManagerPage(
+        store: _imageGenerationStore,
+        language: widget.controller.interfaceLanguage,
+        liquidGlass: widget.controller.liquidGlassChatUi,
+        onRetry: (task) => _startImageGeneration(
+          task.prompt,
+          userMessageId: task.messageId,
+          retryTask: task,
+        ),
+      );
+
   Widget _buildVirtualPhoneMotionPage(BuildContext context) {
     return AnimatedBuilder(
       animation: widget.controller,
@@ -6700,20 +6967,15 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                 homeInfoBuilder: _virtualPhoneHomeInfo,
                 statusInfo: _virtualPhoneStatusInfo(),
                 statusInfoBuilder: _virtualPhoneStatusInfo,
-                shortcutLabel: () =>
-                    widget.controller.virtualPhoneSettingsShortcut?.title(
-                      widget.controller.interfaceLanguage,
-                    ) ??
-                    widget.controller.interfaceLanguage.text(
-                      '自定义',
-                      'Shortcut',
-                      'カスタム',
-                    ),
-                shortcutIcon: () =>
-                    widget.controller.virtualPhoneSettingsShortcut?.icon ??
-                    Icons.dashboard_customize_outlined,
-                shortcutPicker: _buildVirtualPhoneShortcutPicker,
-                pageManagedBackApps: const {VirtualPhoneApp.pcAgent},
+                imageGenerationUpdates: _imageGenerationStore,
+                imageGenerationActiveBuilder: () =>
+                    _imageGenerationStore.activeCount > 0,
+                imageGenerationUnreadBuilder: () =>
+                    _imageGenerationStore.hasUnseenCompleted,
+                pageManagedBackApps: const {
+                  VirtualPhoneApp.pcAgent,
+                  VirtualPhoneApp.imageGeneration,
+                },
                 fullBleedApps: <VirtualPhoneApp>{
                   VirtualPhoneApp.shop,
                   VirtualPhoneApp.pcAgent,
@@ -6725,6 +6987,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                   VirtualPhoneApp.settings,
                   VirtualPhoneApp.runtimeLogs,
                   VirtualPhoneApp.wallpaper,
+                  VirtualPhoneApp.imageGeneration,
                 },
                 pages: <VirtualPhoneApp, VirtualPhonePageBuilder>{
                   VirtualPhoneApp.status: _buildVirtualPhoneStatusPage,
@@ -6732,7 +6995,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                       NpcMessagesPage(controller: widget.controller),
                   VirtualPhoneApp.outfit: _buildVirtualPhoneAppearancePage,
                   VirtualPhoneApp.motion: _buildVirtualPhoneMotionPage,
-                  VirtualPhoneApp.shortcut: _buildVirtualPhoneShortcutPage,
+                  VirtualPhoneApp.imageGeneration: _buildVirtualPhoneImagePage,
                   VirtualPhoneApp.wallpaper: (_) => VirtualPhoneWallpaperPage(
                     store: widget.controller.virtualPhoneWallpapers,
                     language: widget.controller.interfaceLanguage,
@@ -6765,6 +7028,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                   VirtualPhoneApp.settings: (_) => SettingsScreen(
                     controller: widget.controller,
                     relayService: widget.relayService,
+                    updateRuntime: widget.updateRuntime,
                     backHandledByShell: false,
                     onMenuPressed: () {},
                     embedded: true,

@@ -96,7 +96,7 @@ class _VirtualPhoneWallpaperPageState extends State<VirtualPhoneWallpaperPage> {
   Future<void> _choose(VirtualPhoneWallpaper wallpaper) async {
     if (_working) return;
     if (_deleteMode) {
-      if (wallpaper.isBuiltIn) return;
+      if (!wallpaper.canDelete) return;
       setState(() {
         if (!_toDelete.add(wallpaper.id)) _toDelete.remove(wallpaper.id);
       });
@@ -209,9 +209,9 @@ class _VirtualPhoneWallpaperPageState extends State<VirtualPhoneWallpaperPage> {
           ),
           content: Text(
             _language.text(
-              '将删除 ${ids.length} 张导入壁纸。正在使用的壁纸被删除后会恢复第一张默认壁纸。',
-              '${ids.length} imported wallpaper(s) will be deleted. Deleting the current wallpaper restores the first default wallpaper.',
-              '追加した壁紙 ${ids.length} 枚を削除します。使用中の壁紙を削除すると、最初の標準壁紙に戻ります。',
+              '将删除 ${ids.length} 张壁纸。正在使用的壁纸被删除后会恢复第一张默认壁纸。',
+              '${ids.length} wallpaper(s) will be deleted. Deleting the current wallpaper restores the first default wallpaper.',
+              '壁紙 ${ids.length} 枚を削除します。使用中の壁紙を削除すると、最初の標準壁紙に戻ります。',
             ),
           ),
           actions: [
@@ -356,9 +356,9 @@ class _VirtualPhoneWallpaperPageState extends State<VirtualPhoneWallpaperPage> {
                           padding: const EdgeInsets.fromLTRB(14, 4, 14, 10),
                           child: Text(
                             _language.text(
-                              '选择要删除的导入壁纸，默认三张壁纸无法删除。',
-                              'Select imported wallpapers to delete. The three default wallpapers are protected.',
-                              '追加した壁紙を選んで削除できます。標準の3枚は削除できません。',
+                              '选择要删除的壁纸，默认三张壁纸无法删除。',
+                              'Select wallpapers to delete. The three default wallpapers are protected.',
+                              '削除する壁紙を選べます。標準の3枚は削除できません。',
                             ),
                             style: TextStyle(
                               color: colors.onSurfaceVariant,
@@ -506,7 +506,7 @@ class _VirtualPhoneWallpaperPageState extends State<VirtualPhoneWallpaperPage> {
     final selected = _deleteMode
         ? _toDelete.contains(wallpaper.id)
         : widget.store.selected.id == wallpaper.id;
-    final protected = _deleteMode && wallpaper.isBuiltIn;
+    final protected = _deleteMode && !wallpaper.canDelete;
     return Semantics(
       label: wallpaper.name,
       selected: selected,

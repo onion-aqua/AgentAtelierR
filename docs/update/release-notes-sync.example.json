@@ -1,0 +1,5 @@
+{
+  "expected_tag": "v1.0.4.2",
+  "gitee_release_api_url": "https://gitee.example.invalid/api/v5/repos/example/agentatelier/releases/tags/v1.0.4.2",
+  "github_release_api_url": "https://github.example.invalid/repos/example/agentatelier/releases/tags/v1.0.4.2"
+}

@@ -1,0 +1,116 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/agentatelier/schemas/update-publish-config-v1.json",
+  "title": "AgentAtelierR local update publication config v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "release_seq", "display_version", "channel", "platform",
+    "updater_protocol_version", "runtime_compat_id", "resource_api_version",
+    "apk_deltas", "notes"
+  ],
+  "anyOf": [
+    { "required": ["target_apk"] },
+    { "required": ["resource_snapshot"] }
+  ],
+  "allOf": [
+    {
+      "if": { "not": { "required": ["target_apk"] } },
+      "then": { "properties": { "apk_deltas": { "maxItems": 0 } } }
+    }
+  ],
+  "properties": {
+    "release_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]{7,127}$"
+    },
+    "release_seq": { "type": "integer", "minimum": 1, "maximum": 9223372036854775807 },
+    "display_version": { "type": "string", "minLength": 1 },
+    "channel": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,31}$"
+    },
+    "platform": { "const": "android" },
+    "updater_protocol_version": { "type": "integer", "minimum": 1, "maximum": 9223372036854775807 },
+    "published_at": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$"
+    },
+    "runtime_compat_id": { "type": "string", "minLength": 1 },
+    "resource_api_version": { "type": "integer", "minimum": 1, "maximum": 9223372036854775807 },
+    "target_apk": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version_code", "package_name", "abis", "certificate_sha256", "urls"],
+      "properties": {
+        "version_code": { "type": "integer", "minimum": 1, "maximum": 2100000000 },
+        "package_name": { "type": "string", "minLength": 3 },
+        "abis": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "certificate_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-fA-F]{64}$"
+        },
+        "urls": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "pattern": "^https://" }
+        }
+      }
+    },
+    "apk_deltas": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["base_sha256", "patch_path", "format", "patch_protocol_version", "urls"],
+        "properties": {
+          "base_sha256": { "type": "string", "pattern": "^[0-9a-fA-F]{64}$" },
+          "patch_path": { "type": "string", "minLength": 1 },
+          "format": { "type": "string", "minLength": 1 },
+          "patch_protocol_version": { "type": "integer", "minimum": 1, "maximum": 9223372036854775807 },
+          "urls": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "type": "string", "pattern": "^https://" }
+          }
+        }
+      }
+    },
+    "resource_snapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id", "schema_version", "compatible_runtime_ids", "asset_key_id",
+        "manifest_path", "manifest_url"
+      ],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "schema_version": { "type": "integer", "minimum": 1, "maximum": 9223372036854775807 },
+        "compatible_runtime_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "asset_key_id": { "type": "string", "minLength": 1 },
+        "manifest_path": { "type": "string", "minLength": 1 },
+        "manifest_url": { "type": "string", "pattern": "^https://" }
+      }
+    },
+    "notes": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "gitee_url": { "type": "string", "pattern": "^https://" },
+        "github_url": { "type": "string", "pattern": "^https://" },
+        "cached_markdown_url": { "type": "string", "pattern": "^https://" }
+      }
+    }
+  }
+}

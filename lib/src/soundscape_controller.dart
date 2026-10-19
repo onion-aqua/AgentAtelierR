@@ -8,6 +8,8 @@ import 'package:flutter/services.dart';
 import 'app_controller.dart';
 import 'runtime_log.dart';
 import 'stage_environment_catalog.dart';
+import 'update/resource_audio.dart';
+import 'update/resource_resolver.dart';
 
 class SoundscapeController {
   final _bgmPlayer = AppAudioPlayer();
@@ -71,7 +73,7 @@ class SoundscapeController {
       if (controller.bgmEnabled) {
         await _bgmPlayer.setReleaseMode(ReleaseMode.loop);
         await _bgmPlayer.play(
-          AssetSource(nextBgmAsset),
+          await resourceAudioSource(nextBgmAsset),
           volume: controller.bgmVolume,
         );
       }
@@ -94,7 +96,7 @@ class SoundscapeController {
       if (controller.ambientEnabled && nextAmbientAsset != null) {
         await _ambientPlayer.setReleaseMode(ReleaseMode.loop);
         await _ambientPlayer.play(
-          AssetSource(nextAmbientAsset),
+          await resourceAudioSource(nextAmbientAsset),
           volume: controller.ambientVolume,
         );
       }
@@ -115,7 +117,12 @@ class SoundscapeController {
       for (final candidate in StageEnvironmentCatalog.chatBgmCandidatesFor(
         stageId,
       )) {
-        if (availableAssets.contains('assets/$candidate')) return candidate;
+        if (availableAssets.contains('assets/$candidate') ||
+            await ResourceAssetResolver.instance.isOverridden(
+              'assets/$candidate',
+            )) {
+          return candidate;
+        }
       }
     } catch (_) {
       // Asset manifest failures should not prevent the default music playing.

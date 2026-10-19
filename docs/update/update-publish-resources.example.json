@@ -1,0 +1,23 @@
+{
+  "release_seq": 48,
+  "display_version": "1.0.4.2",
+  "channel": "stable",
+  "platform": "android",
+  "updater_protocol_version": 1,
+  "runtime_compat_id": "android-runtime-v1",
+  "resource_api_version": 1,
+  "apk_deltas": [],
+  "resource_snapshot": {
+    "id": "resources-000048",
+    "schema_version": 1,
+    "compatible_runtime_ids": ["android-runtime-v1"],
+    "asset_key_id": "character-assets-v1",
+    "manifest_path": "C:/secure-release/resources/snapshots/resources-000048/manifest.json",
+    "manifest_url": "https://updates.example.invalid/agentatelier/resources/snapshots/resources-000048/manifest.json"
+  },
+  "notes": {
+    "gitee_url": "https://gitee.example.invalid/agentatelier/releases/tag/resources-000048",
+    "github_url": "https://github.example.invalid/agentatelier/releases/tag/resources-000048",
+    "cached_markdown_url": "https://updates.example.invalid/agentatelier/notes/resources-000048.md"
+  }
+}

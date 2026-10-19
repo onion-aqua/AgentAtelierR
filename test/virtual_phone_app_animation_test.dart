@@ -160,6 +160,7 @@ void main() {
         VirtualPhoneApp.status,
         VirtualPhoneApp.motion,
         VirtualPhoneApp.phone,
+        VirtualPhoneApp.imageGeneration,
       ]) {
         final origin = tester.getRect(_glyph(app));
         expect(origin.size, const Size(58, 58));

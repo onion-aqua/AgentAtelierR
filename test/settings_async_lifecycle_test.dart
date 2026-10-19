@@ -87,10 +87,18 @@ void main() {
     await tester.pump(const Duration(milliseconds: 350));
   }
 
-  Future<void> openQwen(WidgetTester tester) async {
+  Future<void> openQwen(WidgetTester tester, {bool legacyClone = false}) async {
     await setup(tester, SettingsSection.audio);
     await tapVisible(tester, find.text('百炼 Qwen-TTS'));
-    await tester.ensureVisible(find.text('选择音频'));
+    if (legacyClone) {
+      // Explicit custom targets retain the former file-based compatibility UI.
+      await tester.enterText(
+        find.byKey(const ValueKey('qwen-clone-model')),
+        'legacy-custom-vc',
+      );
+      await tester.pump();
+      await tester.ensureVisible(find.text('选择音频'));
+    }
     await tester.pumpAndSettle();
   }
 
@@ -104,7 +112,7 @@ void main() {
     testWidgets('Qwen reference $stage completion after returning is ignored', (
       tester,
     ) async {
-      await openQwen(tester);
+      await openQwen(tester, legacyClone: true);
       final picked = Completer<List<PlatformFile>>();
       final bytes = Completer<Uint8List>();
       final fake = _FilePicker(pickMany: () => picked.future);
@@ -138,17 +146,27 @@ void main() {
       'Qwen clone ${success ? 'success' : 'error'} after Cancel leaves category intact',
       (tester) async {
         await openQwen(tester);
-        final original = FilePickerPlatform.instance;
-        FilePickerPlatform.instance = _FilePicker(
-          pickMany: () async => [_MemoryFile('voice.wav')],
+        await tester.enterText(
+          find.byKey(const ValueKey('qwen-endpoint')),
+          'https://test-workspace.cn-beijing.maas.aliyuncs.com/api/v1/services/audio/tts/SpeechSynthesizer',
         );
-        addTearDown(() => FilePickerPlatform.instance = original);
-        await invokeButton(tester, find.widgetWithText(OutlinedButton, '选择音频'));
+        await tester.enterText(
+          find.byKey(const ValueKey('qwen-reference-url')),
+          'https://audio.example/reference.wav',
+        );
         await tester.pump();
         final response = Completer<http.Response>();
         var requests = 0;
         final client = MockClient((request) {
           requests++;
+          expect(
+            request.url.toString(),
+            'https://test-workspace.cn-beijing.maas.aliyuncs.com/api/v1/services/audio/tts/customization',
+          );
+          expect(
+            (jsonDecode(request.body) as Map)['model'],
+            'voice-enrollment',
+          );
           return response.future;
         });
         addTearDown(client.close);
@@ -165,7 +183,7 @@ void main() {
         await tester.pumpAndSettle();
         response.complete(
           success
-              ? http.Response('{"output":{"voice":"test-clone"}}', 200)
+              ? http.Response('{"output":{"voice_id":"test-clone"}}', 200)
               : http.Response('{"message":"test rejection"}', 400),
         );
         await action;

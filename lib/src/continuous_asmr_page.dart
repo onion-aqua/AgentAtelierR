@@ -13,6 +13,7 @@ import 'android_companion_runtime.dart';
 import 'app_controller.dart';
 import 'app_localization.dart';
 import 'ai_services.dart';
+import 'qwen_tts_config.dart';
 import 'fish_mcp_protocol.dart';
 import 'fish_mcp_service.dart';
 import 'chat_segments.dart';
@@ -967,17 +968,22 @@ class _ContinuousAsmrPageState extends State<ContinuousAsmrPage> {
         baseUrl: c.dashScopeTtsBaseUrl,
         model: c.dashScopeTtsModel,
         voice: c.activeDashScopeTtsVoice,
+        options: c.dashScopeTtsOptions,
         language: switch (language) {
           AppLanguage.chinese => 'Chinese',
           AppLanguage.japanese => 'Japanese',
           AppLanguage.english => 'English',
         },
-        instructions: c.dashScopeTtsModel.toLowerCase().contains('instruct')
+        instructions:
+            QwenTtsConfig.supportsInstructions(
+              c.dashScopeTtsModel,
+              voice: c.activeDashScopeTtsVoice,
+            )
             ? mergeTtsInstructions(
                 '${c.dashScopeTtsInstructions} $voiceDirection'.trim(),
                 emotionIntensity,
               )
-            : c.dashScopeTtsInstructions,
+            : '',
         text: plainText,
       ),
       TtsProvider.generic => GenericTtsClient().synthesize(
@@ -1062,11 +1068,13 @@ class _ContinuousAsmrPageState extends State<ContinuousAsmrPage> {
                 ? 'zh'
                 : 'en',
             asmr: true,
-            effectiveSpeed:
-                actualProvider == TtsProvider.fishAudio ||
-                    actualProvider == TtsProvider.generic
-                ? requestedSpeed
-                : 1,
+            effectiveSpeed: switch (actualProvider) {
+              TtsProvider.dashScope
+                  when QwenTtsConfig.isModernModel(c.dashScopeTtsModel) =>
+                c.dashScopeTtsOptions.rate,
+              TtsProvider.fishAudio || TtsProvider.generic => requestedSpeed,
+              _ => 1,
+            },
           ),
           actualDuration,
         );

@@ -29,6 +29,7 @@ enum VirtualPhoneApp {
   phone,
   messages,
   wallpaper,
+  imageGeneration,
   shortcut,
 }
 
@@ -49,6 +50,7 @@ extension VirtualPhoneAppData on VirtualPhoneApp {
     VirtualPhoneApp.phone => Icons.phone_rounded,
     VirtualPhoneApp.messages => Icons.message_rounded,
     VirtualPhoneApp.wallpaper => Icons.wallpaper_rounded,
+    VirtualPhoneApp.imageGeneration => Icons.image_outlined,
     VirtualPhoneApp.shortcut => Icons.dashboard_customize_outlined,
   };
 
@@ -76,6 +78,11 @@ extension VirtualPhoneAppData on VirtualPhoneApp {
     VirtualPhoneApp.phone => language.text('电话', 'Phone', '電話'),
     VirtualPhoneApp.messages => language.text('信息', 'Messages', 'メッセージ'),
     VirtualPhoneApp.wallpaper => language.text('手机壁纸', 'Wallpaper', '壁紙'),
+    VirtualPhoneApp.imageGeneration => language.text(
+      '生图管理',
+      'Image gallery',
+      '画像管理',
+    ),
     VirtualPhoneApp.shortcut => language.text('自定义', 'Shortcut', 'カスタム'),
   };
 }
@@ -275,6 +282,9 @@ class VirtualPhoneLauncher extends StatelessWidget {
     this.wallpapers,
     this.liquidGlassBuilder,
     this.languageBuilder,
+    this.imageGenerationUpdates,
+    this.imageGenerationActiveBuilder,
+    this.imageGenerationUnreadBuilder,
   });
 
   final AppLanguage language;
@@ -303,6 +313,9 @@ class VirtualPhoneLauncher extends StatelessWidget {
   final VirtualPhoneWallpaperStore? wallpapers;
   final bool Function()? liquidGlassBuilder;
   final AppLanguage Function()? languageBuilder;
+  final Listenable? imageGenerationUpdates;
+  final bool Function()? imageGenerationActiveBuilder;
+  final bool Function()? imageGenerationUnreadBuilder;
 
   VoidCallback? _callbackFor(VirtualPhoneApp app) => switch (app) {
     VirtualPhoneApp.status => onStatusPressed,
@@ -320,6 +333,7 @@ class VirtualPhoneLauncher extends StatelessWidget {
     VirtualPhoneApp.phone ||
     VirtualPhoneApp.messages ||
     VirtualPhoneApp.wallpaper ||
+    VirtualPhoneApp.imageGeneration ||
     VirtualPhoneApp.shortcut => null,
   };
 
@@ -353,6 +367,9 @@ class VirtualPhoneLauncher extends StatelessWidget {
             wallpapers: wallpapers,
             liquidGlassBuilder: liquidGlassBuilder,
             languageBuilder: languageBuilder,
+            imageGenerationUpdates: imageGenerationUpdates,
+            imageGenerationActiveBuilder: imageGenerationActiveBuilder,
+            imageGenerationUnreadBuilder: imageGenerationUnreadBuilder,
           ),
         ),
       ),
@@ -400,6 +417,9 @@ class _VirtualPhoneCard extends StatefulWidget {
     required this.wallpapers,
     required this.liquidGlassBuilder,
     required this.languageBuilder,
+    required this.imageGenerationUpdates,
+    required this.imageGenerationActiveBuilder,
+    required this.imageGenerationUnreadBuilder,
   });
 
   final AppLanguage language;
@@ -419,6 +439,9 @@ class _VirtualPhoneCard extends StatefulWidget {
   final VirtualPhoneWallpaperStore? wallpapers;
   final bool Function()? liquidGlassBuilder;
   final AppLanguage Function()? languageBuilder;
+  final Listenable? imageGenerationUpdates;
+  final bool Function()? imageGenerationActiveBuilder;
+  final bool Function()? imageGenerationUnreadBuilder;
 
   @override
   State<_VirtualPhoneCard> createState() => _VirtualPhoneCardState();
@@ -496,7 +519,7 @@ class _VirtualPhoneCardState extends State<_VirtualPhoneCard> {
     VirtualPhoneApp.phone,
     VirtualPhoneApp.messages,
     VirtualPhoneApp.wallpaper,
-    VirtualPhoneApp.shortcut,
+    VirtualPhoneApp.imageGeneration,
   ];
 
   VirtualPhoneHomeInfo get _homeInfo =>
@@ -852,12 +875,14 @@ class _VirtualPhoneCardState extends State<_VirtualPhoneCard> {
   );
 
   Widget _buildLiveHome(BuildContext context) {
-    return widget.updates == null
-        ? _buildHome(context)
-        : AnimatedBuilder(
-            animation: widget.updates!,
-            builder: (_, _) => _buildHome(context),
-          );
+    return AnimatedBuilder(
+      animation: Listenable.merge([
+        if (widget.updates != null) widget.updates!,
+        if (widget.imageGenerationUpdates != null)
+          widget.imageGenerationUpdates!,
+      ]),
+      builder: (_, _) => _buildHome(context),
+    );
   }
 
   Widget _buildLiveStatusBar() => LayoutBuilder(
@@ -1101,24 +1126,19 @@ class _VirtualPhoneCardState extends State<_VirtualPhoneCard> {
                             iconKey: _iconKeys[app]!,
                             size: iconSize,
                             liquidGlass: _liquidGlass,
-                            icon: app == VirtualPhoneApp.shortcut
-                                ? widget.shortcutIcon?.call() ?? app.icon
-                                : app.icon,
-                            label: app == VirtualPhoneApp.shortcut
-                                ? widget.shortcutLabel?.call() ??
-                                      app.label(_language)
-                                : app.label(_language),
+                            icon: app.icon,
+                            label: app.label(_language),
                             enabled: true,
                             showLabel: false,
+                            showProgress:
+                                app == VirtualPhoneApp.imageGeneration &&
+                                (widget.imageGenerationActiveBuilder?.call() ??
+                                    false),
+                            showUnread:
+                                app == VirtualPhoneApp.imageGeneration &&
+                                (widget.imageGenerationUnreadBuilder?.call() ??
+                                    false),
                             onPressed: () => _openApp(app),
-                            onLongPress:
-                                app == VirtualPhoneApp.shortcut &&
-                                    widget.shortcutPicker != null
-                                ? () => _openApp(
-                                    app,
-                                    builder: widget.shortcutPicker,
-                                  )
-                                : null,
                           ),
                         ),
                     ],
@@ -1353,8 +1373,9 @@ class _PhoneAppIcon extends StatefulWidget {
     required this.label,
     required this.enabled,
     required this.onPressed,
-    this.onLongPress,
     this.showLabel = true,
+    this.showProgress = false,
+    this.showUnread = false,
     this.size = 58,
   });
 
@@ -1365,8 +1386,9 @@ class _PhoneAppIcon extends StatefulWidget {
   final String label;
   final bool enabled;
   final VoidCallback? onPressed;
-  final VoidCallback? onLongPress;
   final bool showLabel;
+  final bool showProgress;
+  final bool showUnread;
   final double size;
 
   @override
@@ -1390,7 +1412,6 @@ class _PhoneAppIconState extends State<_PhoneAppIcon> {
       child: InkWell(
         borderRadius: BorderRadius.circular(16),
         onTap: widget.onPressed,
-        onLongPress: widget.onLongPress,
         onHighlightChanged: _setPressed,
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -1407,14 +1428,58 @@ class _PhoneAppIconState extends State<_PhoneAppIcon> {
                   key: widget.iconKey,
                   width: widget.size,
                   height: widget.size,
-                  child: GlassSurface(
-                    liquidGlass: widget.liquidGlass,
-                    backdropBlur: false,
-                    fallbackColor: widget.enabled
-                        ? const Color(0xFF26292D)
-                        : const Color(0xFF111214),
-                    borderRadius: BorderRadius.circular(16),
-                    child: Icon(widget.icon, color: foreground, size: 29),
+                  child: Stack(
+                    clipBehavior: Clip.none,
+                    fit: StackFit.expand,
+                    children: [
+                      GlassSurface(
+                        liquidGlass: widget.liquidGlass,
+                        backdropBlur: false,
+                        fallbackColor: widget.enabled
+                            ? const Color(0xFF26292D)
+                            : const Color(0xFF111214),
+                        borderRadius: BorderRadius.circular(16),
+                        child: Icon(widget.icon, color: foreground, size: 29),
+                      ),
+                      if (widget.showProgress)
+                        const Positioned.fill(
+                          left: -3,
+                          right: -3,
+                          top: -3,
+                          bottom: -3,
+                          child: IgnorePointer(
+                            child: CircularProgressIndicator(
+                              key: ValueKey(
+                                'image-generation-toolbar-progress',
+                              ),
+                              strokeWidth: 2.5,
+                              color: Colors.white,
+                            ),
+                          ),
+                        ),
+                      if (widget.showUnread)
+                        Positioned(
+                          top: -2,
+                          right: -2,
+                          child: IgnorePointer(
+                            child: Container(
+                              key: const ValueKey(
+                                'image-generation-unread-dot',
+                              ),
+                              width: 11,
+                              height: 11,
+                              decoration: BoxDecoration(
+                                shape: BoxShape.circle,
+                                color: Colors.redAccent,
+                                border: Border.all(
+                                  color: const Color(0xFF26292D),
+                                  width: 1.5,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                    ],
                   ),
                 ),
               ),

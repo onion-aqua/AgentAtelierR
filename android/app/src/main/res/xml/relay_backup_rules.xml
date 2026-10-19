@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <full-backup-content>
+    <exclude domain="file" path="agent_atelier_updates_v1/" />
+    <exclude domain="file" path="agent_atelier_resource_updates_v1/" />
     <exclude domain="sharedpref" path="pc_agent_relay_v1.xml" />
     <exclude domain="sharedpref" path="FlutterSecureKeyStorage:pc_agent_relay_v1.xml" />
 </full-backup-content>

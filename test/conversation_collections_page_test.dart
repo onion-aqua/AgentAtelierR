@@ -20,6 +20,7 @@ void main() {
   const audioChannels = [
     'xyz.luan/audioplayers',
     'xyz.luan/audioplayers.global',
+    'agent_atelier_r/companion_runtime/events',
   ];
   const pathChannel = MethodChannel('plugins.flutter.io/path_provider');
   final playerEventChannels = <String>{};

@@ -8,7 +8,7 @@ AgentAtelierR 是以 Android 为主要开发平台的 Flutter AI 角色互动项
 
 ## 当前版本与适用范围
 
-当前源码版本为 **AgentAtelierR 1.0.4.1 MCP FishAudio**，Android / Windows 展示版本 `1.0.4.1`，内部 Flutter 构建号 `1.0.4+45`；Android APK 和 Windows ZIP 发布到 GitHub 的 `AgentAtelierR 1.0.4.1 MCP FishAudio` Release。新增 Fish Audio MCP OAuth 语音、模型下拉选择与错误诊断，详见 [本版更新说明](docs/CHANGELOG_1.0.4.1_MCP_FishAudio.md)。以下功能以当前源码为准；具体效果会受到本地资源、设备、模型和服务能力影响。
+当前源码版本为 **AgentAtelierR 1.0.4.1 MCP FishAudio**，Android / Windows 展示版本 `1.0.4.1`，内部 Flutter 构建号 `1.0.4+50`。安卓正式更新渠道 `stable` 已发布序号 52，提供资源更新及完整 APK 更新；本次安卓更新见 [发布说明](docs/update/RELEASE_1.0.4.1_BUILD50.md)。旧客户端需先完整覆盖安装一次本次正式 APK，之后可使用应用内更新。Windows 自动更新尚未接入。Fish Audio MCP OAuth 语音、模型选择与错误诊断详见 [语音更新说明](docs/CHANGELOG_1.0.4.1_MCP_FishAudio.md)。以下功能以当前源码为准；具体效果会受到本地资源、设备、模型和服务能力影响。
 
 > 正式版提供使用加密构建脚本生成的 **release APK**，启用 Dart 混淆。当前仍沿用 Android 调试签名以兼容已有安装，并非商店正式签名包。旧版 debug 测试包的卡顿与不稳定表现不能代表 release 包。
 
@@ -121,6 +121,7 @@ APK 输出位于 `build/app/outputs/flutter-apk/`。Windows 目标还需 Visual 
 | `lib/src/local_skin_store.dart`、`lib/src/appearance_picker_page.dart` | 本地服装导入与切换 |
 | `lib/src/memory_ledger.dart`、`lib/src/memory_timeline.dart`、`lib/src/manual_memory_consolidation.dart` | 追加式记忆账本、可解释召回与手动整理 |
 | `tool/build_protected.ps1`、`tool/run_protected.ps1` | 受保护资源构建与运行入口 |
+| `lib/src/update/`、`tool/update/` | 自托管资源更新、Android 安装确认与签名发布工具；见[实施说明](docs/SELF_HOSTED_UPDATE_IMPLEMENTATION.md) |
 
 更多记录：[人物表现映射](docs/CHARACTER_PERFORMANCE_MAPPING.md) · [动画运行时对照](docs/APK_RUNTIME_RECHECK_2026-09-26.md) · [DX 更新记录](docs/CHANGELOG_1.0.0-DX.md) · [提交历史](https://github.com/onion-aqua/AgentAtelierR/commits/main/)。历史文档描述的是各阶段实现，遇到差异以当前源码和版本记录为准。
 

@@ -1,0 +1,181 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/agentatelier/schemas/update-manifest-v1.json",
+  "title": "AgentAtelierR signed Android update manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["payload", "signature"],
+  "properties": {
+    "payload": { "$ref": "#/$defs/payload" },
+    "signature": { "$ref": "#/$defs/signature" }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "httpsUrl": {
+      "type": "string",
+      "format": "uri",
+      "pattern": "^https://"
+    },
+    "identifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+    },
+    "urlList": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/httpsUrl" }
+    },
+    "targetApk": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version_code", "package_name", "abis", "sha256",
+        "certificate_sha256", "urls", "size"
+      ],
+      "properties": {
+        "version_code": { "type": "integer", "minimum": 1, "maximum": 2100000000 },
+        "package_name": {
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9_]*(?:\\.[A-Za-z][A-Za-z0-9_]*)+$"
+        },
+        "abis": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/identifier" }
+        },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "certificate_sha256": { "$ref": "#/$defs/sha256" },
+        "urls": { "$ref": "#/$defs/urlList" },
+        "size": { "type": "integer", "minimum": 1, "maximum": 9223372036854775807 }
+      }
+    },
+    "apkDelta": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "base_sha256", "target_sha256", "format", "patch_protocol_version",
+        "patch_sha256", "urls", "size"
+      ],
+      "properties": {
+        "base_sha256": { "$ref": "#/$defs/sha256" },
+        "target_sha256": { "$ref": "#/$defs/sha256" },
+        "format": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,31}$"
+        },
+        "patch_protocol_version": { "type": "integer", "minimum": 1, "maximum": 9223372036854775807 },
+        "patch_sha256": { "$ref": "#/$defs/sha256" },
+        "urls": { "$ref": "#/$defs/urlList" },
+        "size": { "type": "integer", "minimum": 1, "maximum": 9223372036854775807 }
+      }
+    },
+    "resourceSnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id", "schema_version", "compatible_runtime_ids", "asset_key_id",
+        "manifest_sha256", "manifest_url", "size"
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/identifier" },
+        "schema_version": { "type": "integer", "minimum": 1, "maximum": 9223372036854775807 },
+        "compatible_runtime_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/identifier" }
+        },
+        "asset_key_id": { "$ref": "#/$defs/identifier" },
+        "manifest_sha256": { "$ref": "#/$defs/sha256" },
+        "manifest_url": { "$ref": "#/$defs/httpsUrl" },
+        "size": { "type": "integer", "minimum": 1, "maximum": 9223372036854775807 }
+      }
+    },
+    "notes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["release_id"],
+      "properties": {
+        "release_id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9._-]{7,127}$"
+        },
+        "gitee_url": { "$ref": "#/$defs/httpsUrl" },
+        "github_url": { "$ref": "#/$defs/httpsUrl" },
+        "cached_markdown_url": { "$ref": "#/$defs/httpsUrl" }
+      }
+    },
+    "payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "anyOf": [
+        { "required": ["target_apk"] },
+        { "required": ["resource_snapshot"] }
+      ],
+      "allOf": [
+        {
+          "if": { "not": { "required": ["target_apk"] } },
+          "then": { "properties": { "apk_deltas": { "maxItems": 0 } } }
+        }
+      ],
+      "required": [
+        "schema_version", "canonicalization", "release_id", "release_seq",
+        "display_version", "channel", "platform", "updater_protocol_version",
+        "published_at", "runtime_compat_id", "resource_api_version",
+        "apk_deltas", "notes"
+      ],
+      "properties": {
+        "schema_version": { "const": 1 },
+        "canonicalization": { "const": "aar-cjson-v1" },
+        "release_id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9._-]{7,127}$"
+        },
+        "release_seq": { "type": "integer", "minimum": 1, "maximum": 9223372036854775807 },
+        "display_version": { "type": "string", "minLength": 1 },
+        "channel": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,31}$"
+        },
+        "platform": { "const": "android" },
+        "updater_protocol_version": { "type": "integer", "minimum": 1, "maximum": 9223372036854775807 },
+        "published_at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$"
+        },
+        "runtime_compat_id": { "$ref": "#/$defs/identifier" },
+        "resource_api_version": { "type": "integer", "minimum": 1, "maximum": 9223372036854775807 },
+        "target_apk": { "$ref": "#/$defs/targetApk" },
+        "apk_deltas": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/apkDelta" }
+        },
+        "resource_snapshot": { "$ref": "#/$defs/resourceSnapshot" },
+        "notes": { "$ref": "#/$defs/notes" }
+      }
+    },
+    "signature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "key_id", "algorithm", "signed_object", "canonicalization", "value_base64"
+      ],
+      "properties": {
+        "key_id": { "$ref": "#/$defs/identifier" },
+        "algorithm": { "const": "Ed25519" },
+        "signed_object": { "const": "payload" },
+        "canonicalization": { "const": "aar-cjson-v1" },
+        "value_base64": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9+/]{86}==$"
+        }
+      }
+    }
+  }
+}

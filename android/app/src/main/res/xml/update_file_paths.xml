@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <files-path
+        name="downloaded_update_apks"
+        path="agent_atelier_updates_v1/" />
+    <cache-path
+        name="verified_update_apks"
+        path="updates/install/" />
+</paths>

@@ -2,9 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ryza_chat_mvp/src/app_localization.dart';
 import 'package:ryza_chat_mvp/src/virtual_phone.dart';
-import 'package:ryza_chat_mvp/src/app_controller.dart';
-import 'package:ryza_chat_mvp/src/settings_screen.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
   testWidgets('status assets stay visible and update inside a phone app', (
@@ -99,7 +96,7 @@ void main() {
       expect(secondRow.dy - firstRow.dy, greaterThan(100));
       expect(find.text('莱莎手机'), findsNothing);
       expect(find.text('冒险工具'), findsNothing);
-      for (final app in ['phone', 'messages', 'wallpaper', 'shortcut']) {
+      for (final app in ['phone', 'messages', 'wallpaper', 'imageGeneration']) {
         expect(
           find.byKey(ValueKey('virtual-phone-app-$app')).hitTestable(),
           findsOneWidget,
@@ -177,72 +174,113 @@ void main() {
     expect(find.byKey(const ValueKey('virtual-phone-screen')), findsNothing);
   });
 
-  testWidgets('custom dock picks a saved setting and reconfigures on hold', (
+  testWidgets('image gallery replaces the rightmost dock shortcut', (
     tester,
   ) async {
-    SharedPreferences.setMockInitialValues({});
-    final controller = (await tester.runAsync(() => AppController.load()))!;
-    addTearDown(controller.dispose);
-    Widget picker(BuildContext context) => SettingsShortcutPicker(
-      controller: controller,
-      onSelected: (_) => VirtualPhoneScope.of(context).goHome(),
-    );
+    var shortcutOpened = false;
     await tester.pumpWidget(
       MaterialApp(
         theme: ThemeData.dark(),
         home: VirtualPhoneLauncher(
           language: AppLanguage.chinese,
           liquidGlass: false,
-          updates: controller,
-          shortcutLabel: () =>
-              controller.virtualPhoneSettingsShortcut?.title(
-                AppLanguage.chinese,
-              ) ??
-              '自定义',
-          shortcutIcon: () =>
-              controller.virtualPhoneSettingsShortcut?.icon ??
-              Icons.dashboard_customize_outlined,
-          shortcutPicker: picker,
+          shortcutPicker: (_) {
+            shortcutOpened = true;
+            return const Text('legacy-shortcut-picker');
+          },
           pages: {
-            VirtualPhoneApp.shortcut: (context) =>
-                controller.virtualPhoneSettingsShortcut == null
-                ? picker(context)
-                : SettingsScreen(
-                    controller: controller,
-                    onMenuPressed: () {},
-                    embedded: true,
-                    initialSection: controller.virtualPhoneSettingsShortcut,
-                  ),
+            VirtualPhoneApp.imageGeneration: (_) =>
+                const Scaffold(body: Center(child: Text('image-gallery-page'))),
           },
         ),
       ),
     );
     await tester.tap(find.byIcon(Icons.smartphone_rounded));
     await tester.pumpAndSettle();
-    final shortcut = find.byKey(const ValueKey('virtual-phone-app-shortcut'));
-    await tester.tap(shortcut);
-    await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const ValueKey('settings-shortcut-audio')));
-    await tester.pumpAndSettle();
-    expect(controller.virtualPhoneSettingsShortcut, SettingsSection.audio);
-    final shortcutSemantics = tester.widget<Semantics>(
-      find.descendant(of: shortcut, matching: find.byType(Semantics)).first,
+    final gallery = find.byKey(
+      const ValueKey('virtual-phone-app-imageGeneration'),
     );
-    expect(shortcutSemantics.properties.label, '声音与语音');
+    final dock = find.byKey(const ValueKey('virtual-phone-dock'));
+    final wallpaper = find.byKey(const ValueKey('virtual-phone-app-wallpaper'));
     expect(
-      find.descendant(of: shortcut, matching: find.byType(Text)),
+      find.byKey(const ValueKey('virtual-phone-app-shortcut')),
       findsNothing,
     );
-    await tester.tap(shortcut);
+    expect(find.byIcon(Icons.dashboard_customize_outlined), findsNothing);
+    expect(find.descendant(of: dock, matching: gallery), findsOneWidget);
+    expect(
+      tester.getCenter(gallery).dx,
+      greaterThan(tester.getCenter(wallpaper).dx),
+    );
+    expect(
+      find.descendant(of: gallery, matching: find.byType(Text)),
+      findsNothing,
+    );
+    final interaction = tester.widget<InkWell>(
+      find.descendant(of: gallery, matching: find.byType(InkWell)).first,
+    );
+    expect(interaction.onLongPress, isNull);
+    expect(shortcutOpened, isFalse);
+    await tester.tap(gallery);
     await tester.pumpAndSettle();
-    expect(find.byKey(const ValueKey('settings-shortcut-audio')), findsNothing);
-    expect(find.byType(SettingsScreen), findsOneWidget);
+    expect(find.text('image-gallery-page'), findsOneWidget);
     await tester.binding.handlePopRoute();
     await tester.pumpAndSettle();
-    expect(shortcut, findsOneWidget);
-    await tester.longPress(shortcut);
+    expect(gallery.hitTestable(), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('image gallery activity updates while the phone stays open', (
+    tester,
+  ) async {
+    final activity = ValueNotifier((active: false, unread: false));
+    addTearDown(activity.dispose);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: VirtualPhoneLauncher(
+          language: AppLanguage.chinese,
+          liquidGlass: false,
+          imageGenerationUpdates: activity,
+          imageGenerationActiveBuilder: () => activity.value.active,
+          imageGenerationUnreadBuilder: () => activity.value.unread,
+          pages: {
+            VirtualPhoneApp.imageGeneration: (_) =>
+                const Scaffold(body: Center(child: Text('image-gallery-page'))),
+          },
+        ),
+      ),
+    );
+    await tester.tap(find.byIcon(Icons.smartphone_rounded));
     await tester.pumpAndSettle();
-    expect(find.byKey(const ValueKey('settings-shortcut-ai')), findsOneWidget);
+    final gallery = find.byKey(
+      const ValueKey('virtual-phone-app-imageGeneration'),
+    );
+    final progress = find.byKey(
+      const ValueKey('image-generation-toolbar-progress'),
+    );
+    final unread = find.byKey(const ValueKey('image-generation-unread-dot'));
+    final originalRect = tester.getRect(gallery);
+    expect(progress, findsNothing);
+    expect(unread, findsNothing);
+    activity.value = (active: true, unread: false);
+    await tester.pump();
+    expect(find.descendant(of: gallery, matching: progress), findsOneWidget);
+    expect(unread, findsNothing);
+    expect(tester.getRect(gallery), originalRect);
+    activity.value = (active: false, unread: true);
+    await tester.pump();
+    expect(progress, findsNothing);
+    expect(find.descendant(of: gallery, matching: unread), findsOneWidget);
+    expect(tester.getRect(gallery), originalRect);
+    await tester.tap(gallery);
+    await tester.pumpAndSettle();
+    expect(find.text('image-gallery-page'), findsOneWidget);
+    activity.value = (active: false, unread: false);
+    await tester.pump();
+    await tester.binding.handlePopRoute();
+    await tester.pumpAndSettle();
+    expect(gallery.hitTestable(), findsOneWidget);
+    expect(unread, findsNothing);
     expect(tester.takeException(), isNull);
   });
 

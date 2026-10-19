@@ -16,6 +16,7 @@ import 'character_appearance.dart';
 import 'local_skin_store.dart';
 import 'llm_dialogue_signal.dart';
 import 'mimo_tts_config.dart';
+import 'qwen_tts_config.dart';
 import 'fish_drama3_tags.dart';
 import 'memory_timeline.dart';
 import 'memory_ledger.dart';
@@ -27,6 +28,8 @@ import 'character_prompt_defaults.dart';
 import 'character_runtime_profile.dart';
 import 'frame_rate_controller.dart';
 import 'image_food_invitation.dart';
+import 'image_generation_config.dart';
+import 'image_generation_store.dart';
 import 'quest_models.dart';
 import 'chat_segments.dart'
     show
@@ -223,6 +226,7 @@ class ChatAttachment {
     this.bytes,
     this.thumbnailBytes,
     this.thumbnailKey,
+    this.generatedImageTaskId,
   });
 
   factory ChatAttachment.fromJson(Map<String, dynamic> json) => ChatAttachment(
@@ -231,6 +235,7 @@ class ChatAttachment {
     size: json['size'] as int? ?? 0,
     thumbnailBytes: _decodeThumbnail(json['thumbnailBase64']),
     thumbnailKey: json['thumbnailKey'] as String?,
+    generatedImageTaskId: json['generatedImageTaskId'] as String?,
   );
 
   final String name;
@@ -239,6 +244,7 @@ class ChatAttachment {
   final Uint8List? bytes;
   final Uint8List? thumbnailBytes;
   final String? thumbnailKey;
+  final String? generatedImageTaskId;
 
   bool get isImage => mimeType.startsWith('image/');
   Uint8List? get previewBytes => thumbnailBytes ?? bytes;
@@ -258,6 +264,8 @@ class ChatAttachment {
     'mimeType': mimeType,
     'size': size,
     if (thumbnailKey != null) 'thumbnailKey': thumbnailKey,
+    if (generatedImageTaskId != null)
+      'generatedImageTaskId': generatedImageTaskId,
     if (includeThumbnailBytes && thumbnailBytes != null)
       'thumbnailBase64': base64Encode(thumbnailBytes!),
   };
@@ -266,6 +274,7 @@ class ChatAttachment {
     Uint8List? thumbnailBytes,
     String? thumbnailKey,
     bool replaceThumbnailKey = false,
+    String? generatedImageTaskId,
   }) => ChatAttachment(
     name: name,
     mimeType: mimeType,
@@ -275,6 +284,7 @@ class ChatAttachment {
     thumbnailKey: replaceThumbnailKey
         ? thumbnailKey
         : thumbnailKey ?? this.thumbnailKey,
+    generatedImageTaskId: generatedImageTaskId ?? this.generatedImageTaskId,
   );
 }
 
@@ -568,6 +578,7 @@ class AppController extends ChangeNotifier {
   final SharedPreferences _preferences;
   late final VirtualPhoneWallpaperStore virtualPhoneWallpapers =
       VirtualPhoneWallpaperStore(preferences: _preferences);
+  final ImageGenerationStore imageGenerationStore = ImageGenerationStore();
   static const _virtualPhoneShortcutKey = 'virtual_phone.settings_shortcut.v1';
   SettingsSection? _virtualPhoneSettingsShortcut;
   VirtualPhoneCarrier? _virtualPhoneCarrier;
@@ -906,6 +917,7 @@ class AppController extends ChangeNotifier {
   String geminiBaseUrl =
       'https://generativelanguage.googleapis.com/v1beta/interactions';
   String geminiModel = 'gemini-3.8-flash';
+  ImageGenerationConfig imageGeneration = const ImageGenerationConfig();
   bool openAiAdvancedEnabled = false;
   ReasoningEffort openAiReasoningEffort = ReasoningEffort.medium;
   double openAiOutputMultiplier = 1.0;
@@ -1071,6 +1083,7 @@ class AppController extends ChangeNotifier {
   String dashScopeTtsAsmrVoice = '';
   String dashScopeTtsLanguage = 'Chinese';
   String dashScopeTtsInstructions = '';
+  QwenTtsOptions dashScopeTtsOptions = const QwenTtsOptions();
   String genericTtsBaseUrl = 'https://api.openai.com/v1';
   String genericTtsModel = 'gpt-4o-mini-tts';
   String genericTtsVoice = 'alloy';
@@ -1298,6 +1311,15 @@ class AppController extends ChangeNotifier {
     }
     geminiBaseUrl = _preferences.getString('gemini_base_url') ?? geminiBaseUrl;
     geminiModel = _preferences.getString('gemini_model') ?? geminiModel;
+    try {
+      imageGeneration = ImageGenerationConfig.fromJson(
+        jsonDecode(
+          _preferences.getString('image_generation_config_v1') ?? '{}',
+        ),
+      );
+    } on FormatException {
+      imageGeneration = const ImageGenerationConfig();
+    }
     openAiAdvancedEnabled =
         _preferences.getBool('openai_advanced_enabled') ?? false;
     final reasoningEffortName =
@@ -1371,6 +1393,13 @@ class AppController extends ChangeNotifier {
         dashScopeTtsLanguage;
     dashScopeTtsInstructions =
         _preferences.getString('dashscope_tts_instructions') ?? '';
+    try {
+      dashScopeTtsOptions = QwenTtsOptions.fromJson(
+        jsonDecode(_preferences.getString('dashscope_tts_options') ?? '{}'),
+      );
+    } on FormatException {
+      dashScopeTtsOptions = const QwenTtsOptions();
+    }
     genericTtsBaseUrl =
         _preferences.getString('generic_tts_base_url') ?? genericTtsBaseUrl;
     try {
@@ -1647,6 +1676,7 @@ class AppController extends ChangeNotifier {
     'openAiConfigurations': _openAiConfigurations.copy(),
     'geminiBaseUrl': geminiBaseUrl,
     'geminiModel': geminiModel,
+    'imageGeneration': imageGeneration,
     'openAiAdvancedEnabled': openAiAdvancedEnabled,
     'openAiReasoningEffort': openAiReasoningEffort,
     'openAiOutputMultiplier': openAiOutputMultiplier,
@@ -1662,6 +1692,7 @@ class AppController extends ChangeNotifier {
         values['openAiConfigurations'] as OpenAiConfigurationSlots;
     geminiBaseUrl = values['geminiBaseUrl'] as String;
     geminiModel = values['geminiModel'] as String;
+    imageGeneration = values['imageGeneration'] as ImageGenerationConfig;
     openAiAdvancedEnabled = values['openAiAdvancedEnabled'] as bool;
     openAiReasoningEffort = values['openAiReasoningEffort'] as ReasoningEffort;
     openAiOutputMultiplier = values['openAiOutputMultiplier'] as double;
@@ -1777,7 +1808,7 @@ class AppController extends ChangeNotifier {
     return quests;
   }
 
-  void addUserMessage(
+  String addUserMessage(
     String text, {
     List<ChatAttachment> attachments = const [],
     bool imageFoodInvitation = false,
@@ -1806,14 +1837,19 @@ class AppController extends ChangeNotifier {
     relationshipPoints += 1;
     characterMood = _moodFromText(text);
     _changed();
+    return id;
   }
 
-  void addAssistantMessage(String text) {
+  void addAssistantMessage(
+    String text, {
+    List<ChatAttachment> attachments = const [],
+  }) {
     messages.add(
       ChatMessage(
         id: 'assistant_${DateTime.now().microsecondsSinceEpoch}',
         text: text,
         isUser: false,
+        attachments: attachments,
       ),
     );
     if (messages.length > 60) messages.removeRange(0, messages.length - 60);
@@ -3547,6 +3583,20 @@ $japanesePunctuationRule
     _changed();
   }
 
+  void configureImageGeneration(ImageGenerationConfig value) {
+    final error = value.validationError;
+    if (error != null) {
+      throw ArgumentError.value(value.baseUrl, 'value', error);
+    }
+    imageGeneration = value.copyWith(
+      baseUrl: value.baseUrl.trim(),
+      model: value.model.trim(),
+      aspectRatio: value.aspectRatio.trim(),
+      outputFormat: value.outputFormat.trim().toLowerCase(),
+    );
+    _changed();
+  }
+
   void setLlmProvider(LlmProvider provider) {
     llmProvider = provider;
     _changed();
@@ -3678,6 +3728,7 @@ $japanesePunctuationRule
     required String dashScopeAsmrVoice,
     required String dashScopeLanguage,
     required String dashInstructions,
+    QwenTtsOptions? dashScopeOptions,
     required String genericBaseUrl,
     required String genericModel,
     required String genericVoice,
@@ -3701,14 +3752,18 @@ $japanesePunctuationRule
     dashScopeTtsModel = dashScopeModel.trim().isEmpty
         ? 'qwen3-tts-flash'
         : dashScopeModel.trim();
+    final systemVoices = QwenTtsConfig.voicesForModel(dashScopeTtsModel);
     dashScopeTtsVoice = dashScopeVoice.trim().isEmpty
-        ? 'Cherry'
+        ? (QwenTtsConfig.isModernModel(dashScopeTtsModel)
+              ? (systemVoices.isEmpty ? '' : systemVoices.first)
+              : 'Cherry')
         : dashScopeVoice.trim();
     dashScopeTtsAsmrVoice = dashScopeAsmrVoice.trim();
     dashScopeTtsLanguage = dashScopeLanguage.trim().isEmpty
         ? 'Chinese'
         : dashScopeLanguage.trim();
     dashScopeTtsInstructions = dashInstructions.trim();
+    if (dashScopeOptions != null) dashScopeTtsOptions = dashScopeOptions;
     genericTtsBaseUrl = genericBaseUrl.trim();
     genericTtsModel = genericModel.trim().isEmpty
         ? 'gpt-4o-mini-tts'
@@ -3968,6 +4023,7 @@ $japanesePunctuationRule
       'openAiConfigurations': openAiConfigurations.toJson(),
       'geminiBaseUrl': geminiBaseUrl,
       'geminiModel': geminiModel,
+      'imageGeneration': imageGeneration.toJson(),
       'openAiAdvancedEnabled': openAiAdvancedEnabled,
       'openAiReasoningEffort': openAiReasoningEffort.name,
       'openAiOutputMultiplier': openAiOutputMultiplier,
@@ -4001,6 +4057,7 @@ $japanesePunctuationRule
       'dashScopeTtsAsmrVoice': dashScopeTtsAsmrVoice,
       'dashScopeTtsLanguage': dashScopeTtsLanguage,
       'dashScopeTtsInstructions': dashScopeTtsInstructions,
+      'dashscope_tts_options': dashScopeTtsOptions.toJson(),
       'genericTtsBaseUrl': genericTtsBaseUrl,
       'genericTtsModel': genericTtsModel,
       'genericTtsVoice': genericTtsVoice,
@@ -4808,6 +4865,11 @@ $japanesePunctuationRule
     }
     geminiBaseUrl = preferences['geminiBaseUrl'] as String? ?? geminiBaseUrl;
     geminiModel = preferences['geminiModel'] as String? ?? geminiModel;
+    if (preferences.containsKey('imageGeneration')) {
+      imageGeneration = ImageGenerationConfig.fromJson(
+        preferences['imageGeneration'],
+      );
+    }
     openAiAdvancedEnabled =
         preferences['openAiAdvancedEnabled'] as bool? ?? false;
     openAiReasoningEffort = ReasoningEffort.values.firstWhere(
@@ -4870,6 +4932,11 @@ $japanesePunctuationRule
         preferences['dashScopeTtsLanguage'] as String? ?? dashScopeTtsLanguage;
     dashScopeTtsInstructions =
         preferences['dashScopeTtsInstructions'] as String? ?? '';
+    if (preferences.containsKey('dashscope_tts_options')) {
+      dashScopeTtsOptions = QwenTtsOptions.fromJson(
+        preferences['dashscope_tts_options'],
+      );
+    }
     genericTtsBaseUrl =
         preferences['genericTtsBaseUrl'] as String? ?? genericTtsBaseUrl;
     genericTtsModel =
@@ -6158,6 +6225,10 @@ $japanesePunctuationRule
       ),
       _preferences.setString('gemini_base_url', geminiBaseUrl),
       _preferences.setString('gemini_model', geminiModel),
+      _preferences.setString(
+        'image_generation_config_v1',
+        jsonEncode(imageGeneration.toJson()),
+      ),
       _preferences.setBool('openai_advanced_enabled', openAiAdvancedEnabled),
       _preferences.setString(
         'openai_reasoning_effort',
@@ -6216,6 +6287,10 @@ $japanesePunctuationRule
       _preferences.setString(
         'dashscope_tts_instructions',
         dashScopeTtsInstructions,
+      ),
+      _preferences.setString(
+        'dashscope_tts_options',
+        jsonEncode(dashScopeTtsOptions.toJson()),
       ),
       _preferences.setString('generic_tts_base_url', genericTtsBaseUrl),
       _preferences.setString('generic_tts_model', genericTtsModel),
@@ -6355,6 +6430,7 @@ $japanesePunctuationRule
   @override
   void dispose() {
     _npcMessaging?.dispose();
+    imageGenerationStore.dispose();
     virtualPhoneWallpapers.dispose();
     frameRate.dispose();
     super.dispose();

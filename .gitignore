@@ -42,6 +42,9 @@ Thumbs.db
 # Private PC Agent endpoints and generated encrypted build definitions stay local.
 **/relay_server.local.json
 **/relay_server.defines.json
+**/update_server.local.json
+**/update_server.json
+**/update_server.defines.json
 *.key
 *.symbols
 *.map.json
@@ -82,6 +85,7 @@ assets/**/*
 # shipped with the application even though other proprietary assets stay out.
 !assets/data/
 !assets/data/motion_recipes_extra.json
+!assets/data/virtual_phone_wallpapers.json
 
 # User-provided branding explicitly approved for public distribution.
 !assets/branding/
@@ -100,6 +104,7 @@ assets/**/*
 !assets/images/virtual_phone/battery_[0-5].png
 !assets/images/virtual_phone/dynamic_island.png
 !assets/images/virtual_phone/bg[1-3].png
+!assets/images/virtual_phone/wallpapers/png1.png
 !android/app/src/main/res/drawable-*/launch_logo.png
 !android/app/src/main/res/drawable-*/ic_launcher_foreground.png
 !android/app/src/main/res/drawable-nodpi/launch_logo_android12.png

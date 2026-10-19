@@ -26,12 +26,18 @@ class MainActivity : FlutterActivity() {
     private var hasFrameRateRequest = false
     private var cosyVoiceBridge: CosyVoiceFlutterBridge? = null
     private var companionRuntimeBridge: CompanionRuntimeBridge? = null
+    private var apkUpdateBridge: ApkUpdateBridge? = null
     private var companionStartedForActivity = false
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         companionRuntimeBridge?.dispose()
         companionRuntimeBridge = CompanionRuntimeBridge(
+            this,
+            flutterEngine.dartExecutor.binaryMessenger,
+        )
+        apkUpdateBridge?.dispose()
+        apkUpdateBridge = ApkUpdateBridge(
             this,
             flutterEngine.dartExecutor.binaryMessenger,
         )
@@ -89,6 +95,8 @@ class MainActivity : FlutterActivity() {
     override fun onDestroy() {
         companionRuntimeBridge?.dispose()
         companionRuntimeBridge = null
+        apkUpdateBridge?.dispose()
+        apkUpdateBridge = null
         cosyVoiceBridge?.dispose()
         cosyVoiceBridge = null
         super.onDestroy()

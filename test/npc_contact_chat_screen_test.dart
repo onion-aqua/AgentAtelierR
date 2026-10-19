@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
@@ -23,8 +24,9 @@ void main() {
     'xyz.luan/audioplayers.global',
     'xyz.luan/audioplayers.global/events',
     'xyz.luan/audioplayers',
+    'agent_atelier_r/companion_runtime/events',
   };
-  setUpAll(() {
+  setUpAll(() async {
     for (final name in audioChannels) {
       messenger.setMockMethodCallHandler(
         MethodChannel(name),
@@ -46,6 +48,7 @@ void main() {
         return null;
       },
     );
+    await AudioPlayer.global.ensureInitialized();
   });
   tearDownAll(() {
     for (final name in audioChannels) {

@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'protected_asset_format.dart';
 import 'local_skin_store.dart';
 import 'character_idle_behavior.dart';
+import 'update/resource_resolver.dart';
 
 class ProtectedCharacterAssetBundle extends CachingAssetBundle {
   ProtectedCharacterAssetBundle(this._files);
@@ -148,8 +149,7 @@ class ProtectedCharacterAssets {
   }
 
   static Future<Uint8List> _loadRootBytes(String path) async {
-    final data = await rootBundle.load(path);
-    return data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes);
+    return ResourceAssetResolver.instance.loadBytes(path, fallback: rootBundle);
   }
 
   static void clearCache() {

@@ -1,0 +1,42 @@
+{
+  "release_seq": 47,
+  "display_version": "1.0.4.2",
+  "channel": "stable",
+  "platform": "android",
+  "updater_protocol_version": 1,
+  "runtime_compat_id": "android-runtime-v1",
+  "resource_api_version": 1,
+  "target_apk": {
+    "version_code": 47,
+    "package_name": "com.example.agentatelier",
+    "abis": ["arm64-v8a", "armeabi-v7a"],
+    "certificate_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+    "urls": [
+      "https://updates.example.invalid/agentatelier/apk/target-release.apk"
+    ]
+  },
+  "apk_deltas": [
+    {
+      "base_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+      "patch_path": "C:/release-input/delta/base-to-target.patch",
+      "format": "hdiffpatch",
+      "patch_protocol_version": 1,
+      "urls": [
+        "https://updates.example.invalid/agentatelier/delta/base-to-target.patch"
+      ]
+    }
+  ],
+  "resource_snapshot": {
+    "id": "resources-000047",
+    "schema_version": 1,
+    "compatible_runtime_ids": ["android-runtime-v1"],
+    "asset_key_id": "character-assets-v1",
+    "manifest_path": "C:/release-input/resources/snapshot.json",
+    "manifest_url": "https://updates.example.invalid/agentatelier/resources/snapshot.json"
+  },
+  "notes": {
+    "gitee_url": "https://gitee.example.invalid/agentatelier/releases/tag/v1.0.4.2",
+    "github_url": "https://github.example.invalid/agentatelier/releases/tag/v1.0.4.2",
+    "cached_markdown_url": "https://updates.example.invalid/agentatelier/notes/release-47.md"
+  }
+}

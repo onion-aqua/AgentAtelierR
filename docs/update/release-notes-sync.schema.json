@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/agentatelier/schemas/release-notes-sync-v1.json",
+  "title": "AgentAtelierR local public release notes synchronization config",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["expected_tag"],
+  "anyOf": [
+    { "required": ["gitee_release_api_url"] },
+    { "required": ["github_release_api_url"] }
+  ],
+  "dependentRequired": {
+    "gitee_token_environment": ["gitee_release_api_url"],
+    "github_token_environment": ["github_release_api_url"]
+  },
+  "properties": {
+    "expected_tag": { "type": "string", "minLength": 1 },
+    "gitee_release_api_url": { "$ref": "#/$defs/apiUrl" },
+    "github_release_api_url": { "$ref": "#/$defs/apiUrl" },
+    "gitee_token_environment": { "$ref": "#/$defs/environmentName" },
+    "github_token_environment": { "$ref": "#/$defs/environmentName" }
+  },
+  "$defs": {
+    "apiUrl": { "type": "string", "format": "uri", "pattern": "^https://[^?#]+$" },
+    "environmentName": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,127}$" }
+  }
+}

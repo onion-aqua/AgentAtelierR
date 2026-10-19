@@ -409,7 +409,7 @@ void main() {
         VirtualPhoneApp.phone,
         VirtualPhoneApp.messages,
         VirtualPhoneApp.wallpaper,
-        VirtualPhoneApp.shortcut,
+        VirtualPhoneApp.imageGeneration,
       ]) {
         expect(_app(app).hitTestable(), findsOneWidget);
       }

@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 
+import '../foreground_dialog_coordinator.dart';
 import '../glass_ui.dart';
 import 'relay_protocol.dart';
 import 'relay_service.dart';
@@ -835,26 +836,35 @@ class _RelayTaskDialogState extends State<RelayTaskDialog> {
 
 /// Mounted once by AppShell, so requests can appear above every app page.
 class RelayForegroundHost extends StatefulWidget {
-  const RelayForegroundHost({super.key, required this.service});
+  const RelayForegroundHost({
+    super.key,
+    required this.service,
+    this.dialogCoordinator,
+  });
   final RelayService service;
+  final ForegroundDialogCoordinator? dialogCoordinator;
   @override
   State<RelayForegroundHost> createState() => _RelayForegroundHostState();
 }
 
 class _RelayForegroundHostState extends State<RelayForegroundHost> {
   DialogRoute<void>? route;
+  ForegroundDialogLease? dialogLease;
   String? currentProfile, currentRequest;
   bool scheduled = false, opening = false;
   @override
   void initState() {
     super.initState();
     widget.service.addListener(changed);
+    widget.dialogCoordinator?.addListener(changed);
     changed();
   }
 
   @override
   void dispose() {
     widget.service.removeListener(changed);
+    widget.dialogCoordinator?.removeListener(changed);
+    dialogLease?.release();
     super.dispose();
   }
 
@@ -887,6 +897,8 @@ class _RelayForegroundHostState extends State<RelayForegroundHost> {
           !isPending(request, s.now())) {
         final old = route!;
         route = null;
+        dialogLease?.release();
+        dialogLease = null;
         if (old.isActive) {
           Navigator.of(context, rootNavigator: true).removeRoute(old);
         }
@@ -924,8 +936,20 @@ class _RelayForegroundHostState extends State<RelayForegroundHost> {
       }
       opening = true;
       try {
+        final coordinator = widget.dialogCoordinator;
+        if (coordinator != null) {
+          dialogLease = coordinator.tryAcquire(
+            kind: ForegroundDialogKind.relayQuestion,
+            onPreempt: () {},
+          );
+          if (dialogLease == null) return;
+        }
         await s.markPresented(id, requestKey(request));
-        if (!mounted || !s.foreground) return;
+        if (!mounted || !s.foreground) {
+          dialogLease?.release();
+          dialogLease = null;
+          return;
+        }
         currentProfile = id;
         currentRequest = request['request_id'] as String;
         s.clearFocus();
@@ -942,10 +966,14 @@ class _RelayForegroundHostState extends State<RelayForegroundHost> {
         unawaited(
           Navigator.of(context, rootNavigator: true).push(next).then((_) {
             if (route == next) route = null;
+            dialogLease?.release();
+            dialogLease = null;
             changed();
           }),
         );
       } on Object {
+        dialogLease?.release();
+        dialogLease = null;
         /* Secure storage failed: never display an untracked prompt. */
       } finally {
         opening = false;

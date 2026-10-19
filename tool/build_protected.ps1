@@ -15,6 +15,8 @@ param(
 
     [string]$RelayServerConfig = '',
 
+    [string]$UpdateConfig = '',
+
     [string]$EntryPoint = ''
 )
 
@@ -77,6 +79,20 @@ try {
         Write-Host 'No private PC Agent configuration found; building the public configurable variant.'
     }
 
+    $privateUpdateDefines = ''
+    $privateUpdateSource = Join-Path $projectRoot '.asset_protection\update_server.json'
+    if ($UpdateConfig) {
+        $privateUpdateSource = (Resolve-Path -LiteralPath $UpdateConfig).Path
+    }
+    if (Test-Path -LiteralPath $privateUpdateSource) {
+        $privateUpdateDefines = Join-Path $projectRoot '.asset_protection\update_server.defines.json'
+        & dart run tool/protect_update_config.dart --config-file $privateUpdateSource --output-file $privateUpdateDefines --check-public-files
+        if ($LASTEXITCODE -ne 0) { throw 'Private update configuration preparation failed.' }
+    }
+    else {
+        Write-Host 'No private update configuration found; self-hosted update checks will stay disabled.'
+    }
+
     & dart run tool/protect_character_assets.dart --key-file $keyFile
     if ($LASTEXITCODE -ne 0) { throw "Character asset protection failed." }
 
@@ -92,6 +108,9 @@ try {
     }
     if ($privateRelayDefines) {
         $flutterArgs += "--dart-define-from-file=$privateRelayDefines"
+    }
+    if ($privateUpdateDefines) {
+        $flutterArgs += "--dart-define-from-file=$privateUpdateDefines"
     }
     if ($RelayPushConfig) {
         $resolvedPushConfig = (Resolve-Path -LiteralPath $RelayPushConfig).Path

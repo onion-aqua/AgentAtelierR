@@ -23,6 +23,8 @@ import 'src/character_runtime_profile.dart';
 import 'src/ryza_loading_indicator.dart';
 import 'src/glass_ui.dart';
 import 'src/fish_mcp_service.dart';
+import 'src/update/update_runtime.dart';
+import 'src/update/resource_resolver.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -66,6 +68,8 @@ class _BootstrapApp extends StatefulWidget {
 
 class _BootstrapAppState extends State<_BootstrapApp> {
   AppController? _controller;
+  UpdateRuntime? _updates;
+  final _resourceBundle = ResourceOverlayAssetBundle();
   Object? _error;
   Timer? _logoTimer;
   StreamSubscription<Uri>? _appLinksSubscription;
@@ -92,6 +96,7 @@ class _BootstrapAppState extends State<_BootstrapApp> {
     _logoTimer?.cancel();
     _appLinksSubscription?.cancel();
     _controller?.removeListener(_handleControllerChanged);
+    _updates?.dispose();
     super.dispose();
   }
 
@@ -127,6 +132,15 @@ class _BootstrapAppState extends State<_BootstrapApp> {
           ),
         ),
       );
+      // Recover/activate verified resources before catalogues and prompts are
+      // read. This avoids mixing old startup data with the new snapshot.
+      final updates = await UpdateRuntime.production();
+      if (!mounted) {
+        updates.dispose();
+        return;
+      }
+      _updates?.dispose();
+      _updates = updates;
       final controller = await AppController.load();
       await controller.initializeAlarmRuntime();
       if (controller.activeCharacterId == CharacterRuntimeIds.ryza) {
@@ -164,9 +178,12 @@ class _BootstrapAppState extends State<_BootstrapApp> {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
       title: 'AgentAtelierR',
-      builder: (context, child) => GlassStyleScope(
-        enabled: controller?.liquidGlassChatUi ?? false,
-        child: child!,
+      builder: (context, child) => DefaultAssetBundle(
+        bundle: _resourceBundle,
+        child: GlassStyleScope(
+          enabled: controller?.liquidGlassChatUi ?? false,
+          child: child!,
+        ),
       ),
       theme: controller == null
           ? ThemeData.light()
@@ -199,6 +216,8 @@ class _BootstrapAppState extends State<_BootstrapApp> {
           if (controller != null)
             AppShell(
               controller: controller,
+              updateRuntime: _updates,
+              startupUpdateCheckReady: _characterReady && !_showLogo,
               onCharacterReady: _handleCharacterReady,
               onCharacterLoadFailed: _handleCharacterLoadFailed,
             )

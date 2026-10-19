@@ -1,0 +1,8 @@
+{
+  "zeta": "莱莎",
+  "alpha": [3, true, null, "line\n\"quoted\""],
+  "nested": {
+    "b": "😀",
+    "a": "\\slash"
+  }
+}

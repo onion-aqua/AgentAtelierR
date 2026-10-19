@@ -11,6 +11,7 @@ import 'alarm_screen.dart';
 import 'alchemy_screen.dart';
 import 'chat_screen.dart';
 import 'frame_rate_controller.dart';
+import 'foreground_dialog_coordinator.dart';
 import 'glass_ui.dart';
 import 'mission_screen.dart';
 import 'page_navigation.dart';
@@ -24,6 +25,9 @@ import 'shop_catalog.dart';
 import 'shop_screen.dart';
 import 'soundscape_controller.dart';
 import 'world_map_screen.dart';
+import 'update/update_dialog.dart';
+import 'update/update_runtime.dart';
+import 'update/update_models.dart';
 
 enum AppDestination {
   chat,
@@ -67,12 +71,16 @@ class AppShell extends StatefulWidget {
     this.onCharacterReady,
     this.relayService,
     this.onCharacterLoadFailed,
+    this.updateRuntime,
+    this.startupUpdateCheckReady = true,
   });
 
   final AppController controller;
   final RelayService? relayService;
   final VoidCallback? onCharacterReady;
   final VoidCallback? onCharacterLoadFailed;
+  final UpdateRuntime? updateRuntime;
+  final bool startupUpdateCheckReady;
 
   @override
   State<AppShell> createState() => _AppShellState();
@@ -81,6 +89,11 @@ class AppShell extends StatefulWidget {
 class _AppShellState extends State<AppShell>
     with WidgetsBindingObserver, TickerProviderStateMixin {
   late final RelayService _relay;
+  late final ForegroundDialogCoordinator _dialogCoordinator;
+  UpdateRuntime? _updates;
+  bool _ownsUpdates = false;
+  bool _startupUpdateCheckScheduled = false;
+  bool _disposed = false;
   final _scaffoldKey = GlobalKey<ScaffoldState>();
   final _soundscape = SoundscapeController();
   final _companionRuntime = AndroidCompanionRuntime.instance;
@@ -108,6 +121,8 @@ class _AppShellState extends State<AppShell>
   @override
   void initState() {
     super.initState();
+    _dialogCoordinator = ForegroundDialogCoordinator();
+    _updates = widget.updateRuntime;
     _pageTransition = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 220),
@@ -129,6 +144,43 @@ class _AppShellState extends State<AppShell>
         ),
       ),
     );
+    if (_updates == null) {
+      unawaited(_initializeUpdates());
+    } else {
+      _maybeScheduleStartupUpdateCheck();
+    }
+  }
+
+  @override
+  void didUpdateWidget(AppShell oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!oldWidget.startupUpdateCheckReady && widget.startupUpdateCheckReady) {
+      _maybeScheduleStartupUpdateCheck();
+    }
+  }
+
+  Future<void> _initializeUpdates() async {
+    final runtime = await UpdateRuntime.production();
+    if (_disposed) {
+      runtime.dispose();
+      return;
+    }
+    _ownsUpdates = true;
+    setState(() => _updates = runtime);
+    _maybeScheduleStartupUpdateCheck();
+  }
+
+  void _maybeScheduleStartupUpdateCheck() {
+    if (!widget.startupUpdateCheckReady ||
+        _updates == null ||
+        _startupUpdateCheckScheduled) {
+      return;
+    }
+    _startupUpdateCheckScheduled = true;
+    Future<void>.delayed(const Duration(milliseconds: 700), () async {
+      if (_disposed || !widget.startupUpdateCheckReady) return;
+      await _updates?.check(trigger: UpdateCheckTrigger.startup);
+    });
   }
 
   @override
@@ -138,6 +190,9 @@ class _AppShellState extends State<AppShell>
       _activePointers.clear();
       widget.controller.frameRate.setActivity(FrameRateActivity.touch, false);
       return;
+    }
+    if (widget.startupUpdateCheckReady) {
+      unawaited(_updates?.check(trigger: UpdateCheckTrigger.foreground));
     }
     widget.controller.frameRate.setMode(
       widget.controller.frameRateMode,
@@ -162,6 +217,7 @@ class _AppShellState extends State<AppShell>
 
   @override
   void dispose() {
+    _disposed = true;
     _companionRuntime.removeListener(_handleCompanionRuntimeChange);
     WidgetsBinding.instance.removeObserver(this);
     if (widget.relayService == null) _relay.dispose();
@@ -169,6 +225,8 @@ class _AppShellState extends State<AppShell>
     _pageReveal.dispose();
     widget.controller.frameRate.setActivity(FrameRateActivity.touch, false);
     unawaited(_soundscape.dispose());
+    if (_ownsUpdates) _updates?.dispose();
+    _dialogCoordinator.dispose();
     super.dispose();
   }
 
@@ -353,6 +411,7 @@ class _AppShellState extends State<AppShell>
         backHandledByShell: true,
         controller: widget.controller,
         onMenuPressed: _openMenu,
+        updateRuntime: _updates,
       ),
       AppDestination.alchemy => AlchemyScreen(
         key: _alchemyKey,
@@ -449,6 +508,7 @@ class _AppShellState extends State<AppShell>
           pauseCharacterAnimation: pauseCharacterAnimation,
           controller: widget.controller,
           relayService: _relay,
+          updateRuntime: _updates,
           onMenuPressed: _openMenu,
           onShopPressed: () => _selectDestination(AppDestination.shop),
           onCharacterReady: widget.onCharacterReady,
@@ -467,7 +527,16 @@ class _AppShellState extends State<AppShell>
         final content = Stack(
           children: [
             chat,
-            RelayForegroundHost(service: _relay),
+            RelayForegroundHost(
+              service: _relay,
+              dialogCoordinator: _dialogCoordinator,
+            ),
+            if (_updates case final updates?)
+              UpdateForegroundHost(
+                runtime: updates,
+                dialogCoordinator: _dialogCoordinator,
+                language: widget.controller.interfaceLanguage,
+              ),
             if (displayedDestination != AppDestination.chat)
               Positioned.fill(
                 child: _outgoingDestination != null

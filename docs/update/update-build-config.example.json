@@ -1,0 +1,17 @@
+{
+  "v": 1,
+  "gitee_latest_url": "https://gitee.example.invalid/agent-atelier-r/android/stable.json",
+  "cache_latest_url": "https://updates.example.invalid/android/stable.json",
+  "github_latest_url": "https://github.example.invalid/owner/repository/releases/latest/download/stable.json",
+  "trusted_keys": {
+    "release-key-2026-01": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+  },
+  "resource_asset_key_ids": [
+    "character-assets-2026-01"
+  ],
+  "release_seq": 46,
+  "channel": "stable",
+  "runtime_compat_id": "android-bootstrap-v1",
+  "resource_api_version": 1,
+  "updater_protocol_version": 1
+}
