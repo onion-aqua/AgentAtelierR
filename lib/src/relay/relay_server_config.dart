@@ -22,6 +22,10 @@ class RelayServerConfig {
 
   bool get isPinned => _origin != null;
 
+  /// The protected build value is the default. Explicit user configuration is
+  /// handled by RelayService and never rewrites an existing device identity.
+  Uri? get defaultOrigin => _origin;
+
   bool allows(Uri origin) => _origin == null || origin == _origin;
 
   Uri requireAllowed(Uri requested) {

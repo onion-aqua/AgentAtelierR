@@ -12,7 +12,8 @@ import 'relay_history_codec.dart';
 import 'relay_server_config.dart';
 
 /// Separate from role chat and its exports. All network mutations originate in
-/// explicit user interaction; the role LLM has no reference to this service.
+/// explicit user interaction or retries of those durable operations; the role
+/// LLM has no reference to this service.
 class RelayService extends ChangeNotifier {
   RelayService({
     required this.store,
@@ -44,6 +45,16 @@ class RelayService extends ChangeNotifier {
   RelayServerConfig get serverConfig => _serverConfig;
   List<Json> _profiles = [];
   List<Json> get profiles => List.unmodifiable(_profiles);
+  String? _serverOverride;
+  List<Json> _pendingRevocations = [];
+  bool _revocationScheduled = false;
+  Future<void>? _revocationRun;
+  int get pendingRevocationCount => _pendingRevocations.length;
+  String? get serverOverride => _serverOverride;
+  Uri? get configuredServerOrigin => _serverOverride == null
+      ? _serverConfig.defaultOrigin
+      : secureOrigin(_serverOverride!);
+  bool isDefaultServer(Uri origin) => _serverConfig.defaultOrigin == origin;
   final Map<String, String> connections = {};
   final Map<String, String> errors = {};
   final Set<String> ready = {};
@@ -54,6 +65,10 @@ class RelayService extends ChangeNotifier {
   final Set<String> _scheduled = {};
   final List<StreamSubscription<dynamic>> _pushListeners = [];
   Future<void> _tail = Future.value();
+  // Only secure-storage transactions use this queue. Network operations may
+  // remain pending while an explicit local unpair commits immediately.
+  Future<void> _storeTail = Future.value();
+  final Set<String> _claimsInFlight = {};
   Timer? _timer;
   bool foreground = false;
   bool initialized = false;
@@ -68,13 +83,31 @@ class RelayService extends ChangeNotifier {
 
   Json? profile(String id) =>
       _profiles.where((p) => p['device_id'] == id).firstOrNull;
-  Uri verifyPairingServer(PairingQr qr) => _allowedOrigin(qr.origin);
+  Uri verifyPairingServer(PairingQr qr) {
+    final origin = _allowedOrigin(qr.origin);
+    final configured = configuredServerOrigin;
+    if (configured != null && configured != origin) {
+      throw const FormatException('二维码与当前中继地址不一致，请先在“云中继设置”中修改地址后重新扫码。');
+    }
+    return origin;
+  }
+
+  /// Selecting a server affects future scans only. Every saved profile and
+  /// deferred revocation continues to use its own original origin and token.
+  Future<void> configureServer(String input) async {
+    if (!initialized || !_serverConfigReady) {
+      throw const RelayFailure('UNTRUSTED_SERVER');
+    }
+    final trimmed = input.trim();
+    final next = trimmed.isEmpty ? null : secureOrigin(trimmed).toString();
+    await _commit(serverOverride: next, updateServerOverride: true);
+  }
 
   Uri _allowedOrigin(Uri origin) {
     if (!_serverConfigReady) {
       throw const FormatException('联动服务器配置未能安全载入，已停用联网。');
     }
-    return _serverConfig.requireAllowed(origin);
+    return secureOrigin(origin.toString());
   }
 
   Uri _origin(Json p) =>
@@ -94,7 +127,7 @@ class RelayService extends ChangeNotifier {
     _disconnect(id);
     ready.remove(id);
     connections[id] = 'server_disabled';
-    errors[id] = '此绑定的服务器不属于当前固定版本，已停用连接。';
+    errors[id] = '此绑定的服务器配置无法安全载入，已停用连接。';
   }
 
   String _token(Json p) => p['device_token'] as String;
@@ -129,21 +162,70 @@ class RelayService extends ChangeNotifier {
     return result;
   }
 
-  Future<void> _commit(List<Json> value) async {
+  Future<T> _storeSerial<T>(Future<T> Function() fn) {
+    final result = _storeTail.then((_) {
+      if (_disposed) throw const RelayFailure('CLOSED');
+      return fn();
+    });
+    _storeTail = result.then<void>(
+      (_) {},
+      onError: (Object _, StackTrace _) {},
+    );
+    return result;
+  }
+
+  Future<void> _commit({
+    String? serverOverride,
+    bool updateServerOverride = false,
+  }) => _storeSerial(
+    () => _writeRegistry(
+      _profiles,
+      serverOverride: serverOverride,
+      updateServerOverride: updateServerOverride,
+    ),
+  );
+
+  /// Call only inside a short _storeSerial transaction. Read-modify-write must
+  /// use the latest registry, never a profile list captured before a network
+  /// await; otherwise a late response could restore a locally removed profile.
+  Future<void> _writeRegistry(
+    List<Json> value, {
+    List<Json>? pendingRevocations,
+    String? serverOverride,
+    bool updateServerOverride = false,
+  }) async {
     // A failed secure write must not advance the in-memory cursor either.
     await store.write(
-      jsonEncode({'v': 1, 'profiles': value, 'push_enabled': pushEnabled}),
+      jsonEncode({
+        'v': 1,
+        'profiles': value,
+        'push_enabled': pushEnabled,
+        'server_override': updateServerOverride
+            ? serverOverride
+            : _serverOverride,
+        'pending_revocations': pendingRevocations ?? _pendingRevocations,
+      }),
     );
     _profiles = value;
+    _pendingRevocations = pendingRevocations ?? _pendingRevocations;
+    if (updateServerOverride) _serverOverride = serverOverride;
     _notify();
   }
 
-  Future<void> _replace(Json value) async {
+  Future<void> _replace(Json value) => _storeSerial(() async {
     final id = value['device_id'];
-    await _commit([
+    if (profile(id as String) == null) return;
+    await _writeRegistry([
       for (final p in _profiles)
         if (p['device_id'] != id) p else value,
     ]);
+  });
+
+  bool _isCurrent(Json p) {
+    final current = profile(p['device_id'] as String);
+    return current != null &&
+        current['device_token'] == p['device_token'] &&
+        current['server_base_url'] == p['server_base_url'];
   }
 
   Json _copy(Json p) => object(jsonDecode(jsonEncode(p)));
@@ -180,10 +262,26 @@ class RelayService extends ChangeNotifier {
         final data = object(jsonDecode(saved));
         if (data['v'] != 1) throw const FormatException('Unsupported registry');
         _profiles = objects(data['profiles']);
+        _pendingRevocations = objects(data['pending_revocations'] ?? []);
+        final customServer = data['server_override'];
+        _serverOverride = customServer == null
+            ? null
+            : secureOrigin(customServer as String).toString();
+        for (final revocation in _pendingRevocations) {
+          secureOrigin(revocation['server_base_url'] as String);
+          if (!uuidPattern.hasMatch(revocation['device_id'] as String) ||
+              revocation['device_token'] is! String ||
+              (revocation['claim_guard_until'] != null &&
+                  DateTime.tryParse(
+                        revocation['claim_guard_until'].toString(),
+                      ) ==
+                      null)) {
+            throw const FormatException('Invalid deferred revocation');
+          }
+        }
         pushEnabled = data['push_enabled'] == true;
         for (final p in _profiles) {
-          // Corrupt persisted origins remain storage errors; only a valid old
-          // server that differs from the pinned build is retained as disabled.
+          // Each saved identity remains tied to its original trusted origin.
           secureOrigin(p['server_base_url'] as String);
           _cache(p);
           if (!_profileCanConnect(p)) _markServerDisabled(p);
@@ -193,8 +291,14 @@ class RelayService extends ChangeNotifier {
       initialized = true;
       _timer = Timer.periodic(const Duration(seconds: 1), (_) {
         _notify(); // expiration countdown / closing expired questions
+        for (final p in profiles) {
+          if (p['state'] == 'confirmed' && bindingExpired(p)) {
+            _scheduleSync(p['device_id'] as String);
+          }
+        }
         if (!foreground) return;
         _tick++;
+        if (_tick % 15 == 0) _scheduleRevocations();
         for (final p in profiles) {
           final id = p['device_id'] as String;
           if (p['device_token'] == null || !_profileCanConnect(p)) continue;
@@ -236,6 +340,7 @@ class RelayService extends ChangeNotifier {
       return;
     }
     if (!initialized) return;
+    _scheduleRevocations();
     for (final p in profiles) {
       if (p['device_token'] != null && _profileCanConnect(p)) {
         await sync(p['device_id'] as String, snapshot: true);
@@ -277,10 +382,26 @@ class RelayService extends ChangeNotifier {
         'pc_id': null,
         'capabilities': <String>[],
         'cache': emptyCache(),
+        // QR validity is at most 300 seconds. Persist this conservative local
+        // deadline before claim so an unpair/restart cannot mistake an unknown
+        // identity for a completed revocation while its claim is still arriving.
+        'claim_guard_until': relayTimestamp(
+          now().add(const Duration(minutes: 5)),
+        ),
       };
-      await _commit([..._profiles, p]); // BEFORE claim; never store qr.secret
+      // BEFORE claim; never store qr.secret. Build from the latest registry
+      // inside the storage transaction so concurrent local removals stay gone.
+      await _storeSerial(() => _writeRegistry([..._profiles, p!]));
+    } else if (p['claim_guard_until'] == null) {
+      p = _copy(p)
+        ..['claim_guard_until'] = relayTimestamp(
+          now().add(const Duration(minutes: 5)),
+        );
+      await _replace(p);
     }
     final id = p['device_id'] as String;
+    if (!_isCurrent(p)) return id;
+    _claimsInFlight.add(id);
     try {
       final response = await transport.request(
         origin,
@@ -294,10 +415,18 @@ class RelayService extends ChangeNotifier {
           'device_token_hash': await tokenDigest(_token(p)),
         },
       );
-      final next = _copy(p)..['expires_at'] = response['expires_at'];
+      if (!_isCurrent(p)) return id;
+      final next = _copy(p)
+        ..remove('claim_guard_until')
+        ..['expires_at'] = response['expires_at'];
+      if (response.containsKey('binding_expires_at')) {
+        next['binding_expires_at'] = _bindingExpiry(response);
+      }
       await _replace(next);
+      if (!_isCurrent(p)) return id;
       await _pairStatus(id);
     } on RelayFailure catch (e) {
+      if (!_isCurrent(p)) return id;
       if ({
         'PAIRING_USED',
         'PAIRING_EXPIRED',
@@ -311,20 +440,28 @@ class RelayService extends ChangeNotifier {
       }
       errors[id] = e.toString();
       rethrow;
+    } finally {
+      _claimsInFlight.remove(id);
+      // If a user removed this profile while claim was outstanding, only now
+      // attempt DELETE. A premature NOT_FOUND must not discard the revocation
+      // before the late claim has had a chance to create its server identity.
+      _scheduleRevocations();
     }
     return id;
   });
 
   Future<void> _pairStatus(String id) async {
-    final p = profile(id)!;
+    final p = profile(id);
+    if (p == null || p['device_token'] == null) return;
     final response = await transport.request(
       _origin(p),
       'GET',
       '/v1/pairings/${Uri.encodeComponent(p['pairing_id'] as String)}/status',
       token: _token(p),
     );
+    if (!_isCurrent(p)) return;
     final state = response['state'];
-    if (state == 'rejected' || state == 'expired') {
+    if (state == 'rejected' || state == 'expired' || state == 'revoked') {
       await _terminal(id, state as String);
       return;
     }
@@ -341,9 +478,13 @@ class RelayService extends ChangeNotifier {
     }
     final capabilities = relayCapabilities(response['capabilities']);
     final historyRead = response['history_read'] == true;
+    final bindingExpiresAt = response.containsKey('binding_expires_at')
+        ? _bindingExpiry(response)
+        : p['binding_expires_at'];
     if (p['state'] == state &&
         p['pc_id'] == response['pc_id'] &&
         p['expires_at'] == response['expires_at'] &&
+        p['binding_expires_at'] == bindingExpiresAt &&
         jsonEncode(p['capabilities']) == jsonEncode(capabilities) &&
         p['history_read'] == historyRead &&
         (historyRead || collection(p, 'history').isEmpty)) {
@@ -353,12 +494,30 @@ class RelayService extends ChangeNotifier {
       ..['state'] = state
       ..['pc_id'] = response['pc_id']
       ..['expires_at'] = response['expires_at']
+      ..['binding_expires_at'] = bindingExpiresAt
       ..['capabilities'] = capabilities
       ..['history_read'] = historyRead;
     if (next['history_read'] != true) {
       next['cache'] = object(next['cache'])..['history'] = <Json>[];
     }
     await _replace(next);
+    if (state == 'confirmed' && bindingExpired(next)) {
+      await _terminal(id, 'expired');
+    }
+  }
+
+  String? _bindingExpiry(Json response) {
+    final raw = response['binding_expires_at'];
+    if (raw == null) return null; // Legacy permanent bindings remain readable.
+    if (raw is! String || DateTime.tryParse(raw) == null) {
+      throw const FormatException('绑定有效期无效');
+    }
+    return raw;
+  }
+
+  bool bindingExpired(Json p) {
+    final raw = p['binding_expires_at'];
+    return raw is String && !(DateTime.tryParse(raw)?.isAfter(now()) ?? false);
   }
 
   Future<void> _terminal(String id, String state) async {
@@ -373,35 +532,115 @@ class RelayService extends ChangeNotifier {
       ..['state'] = state
       ..['cache'] = emptyCache();
     await _replace(next);
-    connections[id] = state;
+    if (profile(id) != null) connections[id] = state;
   }
 
-  Future<void> unpair(String id) => _serial(() async {
+  Future<void> unpair(String id) => _storeSerial(() async {
     final p = profile(id);
     if (p == null) return;
-    _origin(p); // A fixed build cannot remotely revoke a different server.
-    if (p['device_token'] != null) {
-      // Pending profiles cannot access DELETE devices; they may be forgotten
-      // locally and approved accidentally later, so require PC rejection first.
-      if (p['state'] != 'confirmed') {
-        throw const FormatException('请先在 PC 拒绝此待确认配对，或等待二维码过期后同步');
-      }
-      try {
-        await _unregisterPush(p);
-        await transport.request(
-          _origin(p),
-          'DELETE',
-          '/v1/devices/$id',
-          token: _token(p),
-        );
-      } on RelayFailure catch (e) {
-        if (e.code != 'DEVICE_REVOKED' && e.code != 'UNAUTHORIZED') rethrow;
-      }
+    // Commit removal and the minimal server revocation together. Offline or
+    // pending devices can be unbound immediately without the other device.
+    // The retained token is encrypted by RelayStore and used only for DELETE
+    // against its ORIGINAL origin, never for tasks, reconnects or a new server.
+    final revocations = [..._pendingRevocations];
+    if (p['device_token'] is String &&
+        !revocations.any((r) => r['device_id'] == id)) {
+      revocations.add({
+        'device_id': id,
+        'device_token': p['device_token'],
+        'server_base_url': p['server_base_url'],
+        'queued_at': relayTimestamp(now()),
+        if (p['claim_guard_until'] != null)
+          'claim_guard_until': p['claim_guard_until'],
+      });
     }
+    await _writeRegistry(
+      _profiles.where((p) => p['device_id'] != id).toList(),
+      pendingRevocations: revocations,
+    );
     _disconnect(id);
     ready.remove(id);
-    await _commit(_profiles.where((p) => p['device_id'] != id).toList());
+    connections.remove(id);
+    errors.remove(id);
+    if (focusProfile == id) clearFocus();
+    _scheduleRevocations();
   });
+
+  void _scheduleRevocations() {
+    if (_disposed ||
+        !initialized ||
+        _pendingRevocations.isEmpty ||
+        _revocationScheduled) {
+      return;
+    }
+    _revocationScheduled = true;
+    unawaited(
+      retryPendingRevocations()
+          .catchError((Object _) {})
+          .whenComplete(() => _revocationScheduled = false),
+    );
+  }
+
+  /// Safe to retry after a lost response or process restart: DELETE is
+  /// idempotent, and an unknown/revoked credential is already unusable.
+  Future<void> retryPendingRevocations() {
+    final current = _revocationRun;
+    if (current != null) return current;
+    late final Future<void> run;
+    run = _retryPendingRevocations().whenComplete(() {
+      if (identical(_revocationRun, run)) _revocationRun = null;
+    });
+    _revocationRun = run;
+    return run;
+  }
+
+  Future<void> _retryPendingRevocations() async {
+    if (!initialized || !_serverConfigReady) return;
+    for (final revocation in [..._pendingRevocations]) {
+      if (_disposed) return;
+      if (_claimsInFlight.contains(revocation['device_id'])) continue;
+      try {
+        await transport.request(
+          secureOrigin(revocation['server_base_url'] as String),
+          'DELETE',
+          '/v1/devices/${Uri.encodeComponent(revocation['device_id'] as String)}',
+          token: revocation['device_token'] as String,
+        );
+      } on RelayFailure catch (e) {
+        if (!{
+          'DEVICE_REVOKED',
+          'UNAUTHORIZED',
+          'DEVICE_NOT_FOUND',
+          'NOT_FOUND',
+        }.contains(e.code)) {
+          continue;
+        }
+        final guard = DateTime.tryParse(
+          revocation['claim_guard_until']?.toString() ?? '',
+        );
+        if (e.code != 'DEVICE_REVOKED' &&
+            guard != null &&
+            now().isBefore(guard)) {
+          // An unacknowledged claim can outlive the original process/request.
+          // A successful DELETE is definitive, but an unknown identity is not
+          // definitive until the one-time claim can no longer become valid.
+          continue;
+        }
+      } on Object {
+        continue;
+      }
+      // Network retries must not occupy the profile mutation queue: a second
+      // offline unpair or a new scan remains usable while DELETE is waiting.
+      await _storeSerial(
+        () => _writeRegistry(
+          _profiles,
+          pendingRevocations: _pendingRevocations
+              .where((r) => r['device_id'] != revocation['device_id'])
+              .toList(),
+        ),
+      );
+    }
+  }
 
   void _scheduleSync(String id) {
     final p = profile(id);
@@ -418,6 +657,10 @@ class RelayService extends ChangeNotifier {
   Future<void> sync(String id, {bool snapshot = false}) => _serial(() async {
     var p = profile(id);
     if (p == null || p['device_token'] == null) return;
+    if (p['state'] == 'confirmed' && bindingExpired(p)) {
+      await _terminal(id, 'expired');
+      return;
+    }
     if (!_profileCanConnect(p)) {
       _markServerDisabled(p);
       _notify();
@@ -427,10 +670,11 @@ class RelayService extends ChangeNotifier {
       // PC approval may narrow capabilities after pairing. Refresh the server
       // authority before presenting questions or retrying any queued action.
       await _pairStatus(id);
-      p = profile(id)!;
-      if (p['state'] != 'confirmed') return;
+      p = profile(id);
+      if (p == null || p['state'] != 'confirmed') return;
       connections[id] = 'connecting';
       if (snapshot || _cache(p)['cursor'] == 0) await _snapshot(id);
+      if (profile(id)?['device_token'] == null) return;
       try {
         await _pull(id);
       } on RelayFailure catch (e) {
@@ -438,10 +682,16 @@ class RelayService extends ChangeNotifier {
         await _snapshot(id);
         await _pull(id);
       }
-      p = profile(id)!;
-      if (p['device_token'] == null) return;
+      p = profile(id);
+      if (p == null || p['device_token'] == null) return;
+      if (bindingExpired(p)) {
+        await _terminal(id, 'expired');
+        return;
+      }
       await _reconcileActions(id);
+      if (profile(id)?['device_token'] == null) return;
       await _refreshHistoryAccess(id);
+      if (profile(id)?['device_token'] == null) return;
       final historyFeature = object(
         _cache(profile(id)!)['history_feature'] ?? {},
       );
@@ -454,12 +704,14 @@ class RelayService extends ChangeNotifier {
           // History list availability must not block questions or task actions.
         }
       }
+      if (profile(id)?['device_token'] == null) return;
       try {
         await _registerPush(id);
       } on RelayFailure catch (e) {
         if (e.code == 'DEVICE_REVOKED' || e.code == 'UNAUTHORIZED') rethrow;
         pushStatus = '推送注册失败；前台同步可用';
       }
+      if (profile(id)?['device_token'] == null) return;
       if (foreground) ready.add(id);
       connections[id] = 'online';
       errors.remove(id);
@@ -470,8 +722,9 @@ class RelayService extends ChangeNotifier {
       }
     } on RelayFailure catch (e) {
       p = profile(id);
+      if (p == null) return;
       if (e.code == 'DEVICE_REVOKED' ||
-          (e.code == 'UNAUTHORIZED' && p?['state'] == 'confirmed')) {
+          (e.code == 'UNAUTHORIZED' && p['state'] == 'confirmed')) {
         await _terminal(id, 'revoked');
       } else if (e.code == 'PAIRING_NOT_FOUND') {
         await _terminal(id, 'expired');
@@ -481,6 +734,7 @@ class RelayService extends ChangeNotifier {
       ready.remove(id);
       errors[id] = e.toString();
     } on Object {
+      if (profile(id) == null) return;
       ready.remove(id);
       connections[id] = 'offline';
       errors[id] = '同步失败，已保留本地游标和待发送操作；稍后重试';
@@ -489,13 +743,15 @@ class RelayService extends ChangeNotifier {
   });
 
   Future<void> _snapshot(String id) async {
-    final p = profile(id)!;
+    final p = profile(id);
+    if (p == null || p['device_token'] == null) return;
     final data = await transport.request(
       _origin(p),
       'GET',
       '/v1/state',
       token: _token(p),
     );
+    if (!_isCurrent(p)) return;
     if (data['snapshot_seq'] is! int || (data['snapshot_seq'] as int) < 0) {
       throw const FormatException('无效快照游标');
     }
@@ -528,6 +784,9 @@ class RelayService extends ChangeNotifier {
     if (ownDevice != null) {
       next['capabilities'] = relayCapabilities(ownDevice['capabilities']);
       next['history_read'] = ownDevice['history_read'] == true;
+      if (ownDevice.containsKey('binding_expires_at')) {
+        next['binding_expires_at'] = _bindingExpiry(ownDevice);
+      }
     }
     _pruneHistory(next, cache);
     cache['cursor'] = data['snapshot_seq'];
@@ -538,8 +797,8 @@ class RelayService extends ChangeNotifier {
   }
 
   Future<void> _ack(String id) async {
-    final p = profile(id)!;
-    if (p['device_token'] == null) return;
+    final p = profile(id);
+    if (p == null || p['device_token'] == null) return;
     final seq = _cache(p)['cursor'];
     await transport.request(
       _origin(p),
@@ -557,7 +816,8 @@ class RelayService extends ChangeNotifier {
 
   Future<void> _pull(String id) async {
     for (var page = 0; page < 100; page++) {
-      final p = profile(id)!;
+      final p = profile(id);
+      if (p == null || p['device_token'] == null) return;
       final cursor = _cache(p)['cursor'] as int;
       final data = await transport.request(
         _origin(p),
@@ -565,6 +825,7 @@ class RelayService extends ChangeNotifier {
         '/v1/events?after_seq=$cursor&limit=100',
         token: _token(p),
       );
+      if (!_isCurrent(p)) return;
       final events = objects(data['events']).map(validateEvent).toList()
         ..sort((a, b) => (a['seq'] as int).compareTo(b['seq'] as int));
       final next = _copy(p);
@@ -739,7 +1000,8 @@ class RelayService extends ChangeNotifier {
   /// Feature discovery is backward compatible. A missing old endpoint never
   /// disables the existing question/task transport.
   Future<void> _refreshHistoryAccess(String id) async {
-    final p = profile(id)!;
+    final p = profile(id);
+    if (p == null || p['device_token'] == null) return;
     _origin(p);
     Json feature;
     try {
@@ -788,6 +1050,7 @@ class RelayService extends ChangeNotifier {
         'state': 'unsupported',
       };
     }
+    if (!_isCurrent(p)) return;
     if (p['history_read'] == (feature['permission'] == true) &&
         jsonEncode(_cache(p)['history_feature']) == jsonEncode(feature) &&
         (p['history_read'] == true || collection(p, 'history').isEmpty)) {
@@ -804,7 +1067,8 @@ class RelayService extends ChangeNotifier {
   }
 
   Future<void> _refreshSessionList(String id) async {
-    final p = profile(id)!;
+    final p = profile(id);
+    if (p == null || p['device_token'] == null) return;
     final sessions = <Json>[];
     final cursors = <String>{};
     String? cursor;
@@ -823,6 +1087,7 @@ class RelayService extends ChangeNotifier {
         path,
         token: _token(p),
       );
+      if (!_isCurrent(p)) return;
       if (response['pc_id'] != p['pc_id'] ||
           response['snapshot_seq'] is! int ||
           (response['snapshot_seq'] as int) < 0 ||
@@ -899,7 +1164,8 @@ class RelayService extends ChangeNotifier {
       if (session == null) {
         // An accepted new action can precede pc.state.updated in the inbox.
         await _serial(() => _refreshSessionList(id));
-        p = profile(id)!;
+        p = profile(id);
+        if (p == null || p['device_token'] == null) return;
         session = collection(p, 'sessions')
             .where(
               (s) => s['session_id'] == sessionId && s['pc_id'] == p!['pc_id'],
@@ -1055,10 +1321,11 @@ class RelayService extends ChangeNotifier {
   });
 
   Future<void> _connect(String id) async {
-    final p = profile(id)!;
+    final p = profile(id);
+    if (p == null || p['device_token'] == null) return;
     try {
       final socket = await transport.connect(_origin(p), _token(p));
-      if (!foreground || _disposed) {
+      if (!foreground || _disposed || !_isCurrent(p)) {
         await socket.close();
         return;
       }
@@ -1120,7 +1387,9 @@ class RelayService extends ChangeNotifier {
     final capability = request['kind'] == 'approval'
         ? 'approval.respond'
         : 'question.answer';
-    if (!relayCapabilities(p['capabilities']).contains(capability) ||
+    if (p['state'] != 'confirmed' ||
+        bindingExpired(p) ||
+        !relayCapabilities(p['capabilities']).contains(capability) ||
         !ready.contains(p['device_id']) ||
         !isPending(request, now())) {
       return false;
@@ -1131,7 +1400,9 @@ class RelayService extends ChangeNotifier {
   }
 
   Future<void> markPresented(String id, String key) => _serial(() async {
-    final next = _copy(profile(id)!);
+    final p = profile(id);
+    if (p == null) return;
+    final next = _copy(p);
     final cache = object(next['cache']);
     cache['presented'] = {
       ...List<String>.from(cache['presented'] as List),
@@ -1148,7 +1419,8 @@ class RelayService extends ChangeNotifier {
     String text = '',
     String? decision,
   }) => _serial(() async {
-    final p = profile(id)!;
+    final p = profile(id);
+    if (p == null) throw const RelayFailure('DEVICE_REVOKED');
     final request = collection(
       p,
       'requests',
@@ -1205,7 +1477,8 @@ class RelayService extends ChangeNotifier {
     String? sessionId,
     String? workspaceId,
   }) => _serial(() async {
-    final p = profile(id)!;
+    final p = profile(id);
+    if (p == null) throw const RelayFailure('DEVICE_REVOKED');
     if (prompt.trim().isEmpty || prompt.length > 20000) {
       throw const FormatException('请填写有效任务内容');
     }
@@ -1236,7 +1509,8 @@ class RelayService extends ChangeNotifier {
     );
   });
   Future<String> cancelTask(String id, String taskId) => _serial(() async {
-    final p = profile(id)!;
+    final p = profile(id);
+    if (p == null) throw const RelayFailure('DEVICE_REVOKED');
     final task = collection(
       p,
       'tasks',
@@ -1268,6 +1542,7 @@ class RelayService extends ChangeNotifier {
   ) async {
     _origin(p);
     if (p['state'] != 'confirmed' ||
+        bindingExpired(p) ||
         !ready.contains(p['device_id']) ||
         !relayCapabilities(p['capabilities']).contains(type)) {
       throw const RelayFailure('FORBIDDEN');
@@ -1336,13 +1611,15 @@ class RelayService extends ChangeNotifier {
   });
 
   Future<bool> _refreshAction(String id, String actionId) async {
-    final p = profile(id)!;
+    final p = profile(id);
+    if (p == null || p['device_token'] == null) return false;
     final result = await transport.request(
       _origin(p),
       'GET',
       '/v1/actions/$actionId',
       token: _token(p),
     );
+    if (!_isCurrent(p)) return false;
     final raw = result['action'] is Map ? result['action'] : result;
     final summary = mobileActionSummary(raw);
     final returnedId = summary['action_id'];
@@ -1367,7 +1644,8 @@ class RelayService extends ChangeNotifier {
   }
 
   Future<void> _sendAction(String id, String actionId) async {
-    final p = profile(id)!;
+    final p = profile(id);
+    if (p == null || p['device_token'] == null) return;
     final action = collection(
       p,
       'outbox',
@@ -1376,6 +1654,7 @@ class RelayService extends ChangeNotifier {
     String status;
     try {
       if (p['state'] != 'confirmed' ||
+          bindingExpired(p) ||
           !relayCapabilities(p['capabilities'])
               .contains(object(action['body'])['type'])) {
         throw const RelayFailure('FORBIDDEN');
@@ -1387,6 +1666,7 @@ class RelayService extends ChangeNotifier {
         token: _token(p),
         body: object(action['body']),
       );
+      if (!_isCurrent(p)) return;
       // A transport timeout can happen after the relay has durably accepted
       // an action. A retry with the same action_id is idempotent and may
       // therefore return the current action status (for example `accepted`
@@ -1417,6 +1697,7 @@ class RelayService extends ChangeNotifier {
       errors.remove(id);
       return;
     } on RelayFailure catch (e) {
+      if (!_isCurrent(p)) return;
       if (e.code == 'DEVICE_REVOKED' || e.code == 'UNAUTHORIZED') {
         await _terminal(id, 'revoked');
         return;
@@ -1440,7 +1721,10 @@ class RelayService extends ChangeNotifier {
   }
 
   Future<void> _reconcileActions(String id) async {
-    for (final local in collection(profile(id)!, 'outbox')) {
+    final p = profile(id);
+    if (p == null || p['device_token'] == null) return;
+    for (final local in collection(p, 'outbox')) {
+      if (!_isCurrent(p)) return;
       final aid = local['action_id'] as String;
       final authoritative = collection(
         profile(id)!,
@@ -1504,7 +1788,7 @@ class RelayService extends ChangeNotifier {
     try {
       await _serial(() async {
         pushEnabled = true;
-        await _commit(_profiles);
+        await _commit();
       });
       pushToken = await push.initialize();
       if (_pushListeners.isEmpty) {
@@ -1537,7 +1821,8 @@ class RelayService extends ChangeNotifier {
   }
 
   Future<void> _registerPush(String id) async {
-    final p = profile(id)!;
+    final p = profile(id);
+    if (p == null || p['device_token'] == null) return;
     _origin(p);
     if (!pushEnabled ||
         pushToken == null ||
@@ -1546,10 +1831,12 @@ class RelayService extends ChangeNotifier {
       return;
     }
     await _unregisterPush(p);
+    if (!_isCurrent(p)) return;
     final cleared = _copy(p)
       ..remove('push_subscription_id')
       ..remove('push_registration_token');
     await _replace(cleared);
+    if (!_isCurrent(p)) return;
     final result = await transport.request(
       _origin(p),
       'POST',
@@ -1557,6 +1844,7 @@ class RelayService extends ChangeNotifier {
       token: _token(p),
       body: {'provider': push.name, 'registration_token': pushToken},
     );
+    if (!_isCurrent(p)) return;
     // v1 omits the subscription response schema; require subscription_id rather
     // than inventing a deletion path. Deployment must confirm this field.
     if (result['subscription_id'] is! String) {
@@ -1571,7 +1859,7 @@ class RelayService extends ChangeNotifier {
   }
 
   Future<void> _unregisterPush(Json p) async {
-    if (p['push_subscription_id'] is String) {
+    if (_isCurrent(p) && p['push_subscription_id'] is String) {
       await transport.request(
         _origin(p),
         'DELETE',
@@ -1591,7 +1879,7 @@ class RelayService extends ChangeNotifier {
       await _replace(next);
     }
     pushEnabled = false;
-    await _commit(_profiles);
+    await _commit();
     await push.deleteToken();
     pushToken = null;
     pushStatus = '已解绑推送';
@@ -1619,6 +1907,7 @@ class RelayService extends ChangeNotifier {
             '/v1/events/${hint.eventId}',
             token: _token(p),
           );
+          if (!_isCurrent(p)) return;
           final event = validateEvent(response['event']);
           if (event['event_id'] != hint.eventId ||
               event['pc_id'] != p['pc_id']) {

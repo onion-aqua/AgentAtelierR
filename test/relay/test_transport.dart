@@ -139,6 +139,9 @@ class TestTransport implements RelayTransport {
   ];
   Json? singleEventResponse;
   String? claimError;
+  String? deleteError;
+  String? bindingExpiresAt;
+  bool claimReturnsConfirmed = false;
   bool failActionOnce = false;
   String actionResponseStatus = 'queued';
   bool revoked = false;
@@ -170,8 +173,9 @@ class TestTransport implements RelayTransport {
       if (claimError != null) throw RelayFailure(claimError!, retryable: true);
       return {
         'pairing_id': body!['pairing_id'],
-        'state': 'pending_confirmation',
+        'state': claimReturnsConfirmed ? pairingState : 'pending_confirmation',
         'expires_at': '2026-10-04T11:00:00Z',
+        if (bindingExpiresAt != null) 'binding_expires_at': bindingExpiresAt,
       };
     }
     if (path.endsWith('/status')) {
@@ -181,6 +185,7 @@ class TestTransport implements RelayTransport {
         'device_id': null,
         'expires_at': '2026-10-04T11:00:00Z',
         'capabilities': capabilities,
+        if (bindingExpiresAt != null) 'binding_expires_at': bindingExpiresAt,
       };
     }
     if (revoked) throw const RelayFailure('DEVICE_REVOKED');
@@ -222,7 +227,12 @@ class TestTransport implements RelayTransport {
       };
     }
     if (path == '/v1/push/subscriptions') return {'subscription_id': 'sub-1'};
-    if (method == 'DELETE') return {};
+    if (method == 'DELETE') {
+      if (deleteError != null) {
+        throw RelayFailure(deleteError!, retryable: true);
+      }
+      return {};
+    }
     throw StateError('Unexpected test request $path');
   }
 

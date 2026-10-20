@@ -79,7 +79,7 @@ void main() {
       expect(find.text('确认配对此 PC'), findsOneWidget);
       expect(find.textContaining('内置联动服务配对'), findsOneWidget);
       expect(find.textContaining('relay.example.test'), findsNothing);
-      expect(find.text('申请配对'), findsOneWidget);
+      expect(find.text('配对连接'), findsOneWidget);
       expect(transport.calls, isEmpty);
       expect(service.profiles, isEmpty);
       await tester.tap(find.text('取消'));
@@ -99,7 +99,7 @@ void main() {
     await tester.tap(find.text('扫码绑定 / 重新配对'));
     await _pumpConfirmation(tester);
     expect(transport.calls, isEmpty);
-    await tester.tap(find.text('申请配对'));
+    await tester.tap(find.text('配对连接'));
     await tester.pumpAndSettle();
     final claims = transport.calls
         .where((call) => call['path'] == '/v1/pairings/claim')
@@ -121,7 +121,7 @@ void main() {
       await tester.tap(find.text('扫码绑定 / 重新配对'));
       await tester.pumpAndSettle();
       expect(find.byType(AlertDialog), findsNothing);
-      expect(find.textContaining('此版本只支持内置联动服务'), findsOneWidget);
+      expect(find.textContaining('二维码与当前中继地址不一致'), findsOneWidget);
       expect(find.textContaining('other.example.test'), findsNothing);
       expect(find.textContaining('relay.example.test'), findsNothing);
       expect(transport.calls, isEmpty);
@@ -161,9 +161,9 @@ void main() {
       await _pumpConfirmation(tester);
       expect(find.text('确认信任此联动服务器'), findsOneWidget);
       expect(find.textContaining(_otherOrigin), findsOneWidget);
-      expect(find.text('信任并申请配对'), findsOneWidget);
+      expect(find.text('信任并配对连接'), findsOneWidget);
       expect(transport.calls, isEmpty);
-      await tester.tap(find.text('信任并申请配对'));
+      await tester.tap(find.text('信任并配对连接'));
       await tester.pumpAndSettle();
       expect(transport.calls.first['origin'], _otherOrigin);
       expect(find.text(_otherOrigin), findsOneWidget);

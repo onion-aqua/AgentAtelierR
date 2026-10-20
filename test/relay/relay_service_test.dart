@@ -698,96 +698,97 @@ void main() {
     );
   });
 
-  test('fixed builds preserve blocked profiles while matching bindings still connect', () async {
-    final matching = _policyProfile(origin: 'https://relay.example.test');
-    final blocked = _policyProfile(origin: 'https://old.example.test');
-    store.data = jsonEncode({
-      'v': 1,
-      'profiles': [matching, blocked],
-      'push_enabled': false,
-    });
-    final fixed = RelayService(
-      store: store,
-      transport: transport,
-      push: TestPush(),
-      now: () => testNow,
-      serverConfig: RelayServerConfig.pinned('https://relay.example.test'),
-    );
-    addTearDown(fixed.dispose);
-    await fixed.initialize();
-    expect(fixed.initialized, true);
-    expect(fixed.startupError, isNull);
-    final blockedId = blocked['device_id'] as String;
-    final matchingId = matching['device_id'] as String;
-    expect(fixed.connections[blockedId], 'server_disabled');
-    expect(fixed.errors[blockedId], isNot(contains('old.example.test')));
-    expect(fixed.profile(blockedId), blocked);
-    await fixed.setForeground(true);
-    await fixed.sync(blockedId, snapshot: true);
-    await fixed.handlePush(
-      const PushHint(eventId, pcId, 'question', opened: true),
-    );
-    await fixed.enablePush();
-    await fixed.disablePush();
-    expect(fixed.ready, contains(matchingId));
-    expect(fixed.ready, isNot(contains(blockedId)));
-    expect(
-      fixed.profile(matchingId)!['device_token'],
-      matching['device_token'],
-    );
-    expect(fixed.profile(blockedId), blocked);
-    expect(transport.sockets, isNotEmpty);
-    expect(
-      transport.calls.every(
-        (call) => call['origin'] == 'https://relay.example.test',
-      ),
-      true,
-    );
-    await expectLater(fixed.unpair(blockedId), throwsFormatException);
-    expect(fixed.profile(blockedId), blocked);
-  });
-
-  test('history reads, actions and re-pairing cannot bypass a pinned profile origin', () async {
-    final blocked = _policyProfile(origin: 'https://old.example.test');
-    store.data = jsonEncode({
-      'v': 1,
-      'profiles': [blocked],
-      'push_enabled': false,
-    });
-    final original = store.data;
-    final fixed = RelayService(
-      store: store,
-      transport: transport,
-      now: () => testNow,
-      serverConfig: RelayServerConfig.pinned('https://relay.example.test'),
-    );
-    addTearDown(fixed.dispose);
-    await fixed.initialize();
-    await fixed.setForeground(true);
-    final id = blocked['device_id'] as String;
-    await expectLater(
-      fixed.refreshSessionHistory(id, 'session-1'),
-      throwsFormatException,
-    );
-    // A stale UI readiness flag is not sufficient authority to enqueue a task.
-    fixed.ready.add(id);
-    await expectLater(
-      fixed.startTask(id, prompt: 'blocked task', workspaceId: 'workspace-1'),
-      throwsFormatException,
-    );
-    await expectLater(fixed.retryAction(id, 'action-1'), throwsFormatException);
-    await expectLater(
-      fixed.pair(
-        PairingQr.parse(qrText(origin: 'https://old.example.test')),
-        '手机',
+  test(
+    'server changes preserve identities and never migrate credentials',
+    () async {
+      final matching = _policyProfile(origin: 'https://relay.example.test');
+      final older = _policyProfile(origin: 'https://old.example.test');
+      store.data = jsonEncode({
+        'v': 1,
+        'profiles': [matching, older],
+        'push_enabled': false,
+      });
+      final fixed = RelayService(
+        store: store,
+        transport: transport,
+        now: () => testNow,
+        serverConfig: RelayServerConfig.pinned('https://relay.example.test'),
+      );
+      addTearDown(fixed.dispose);
+      await fixed.initialize();
+      await fixed.configureServer('https://new.example.test/');
+      expect(
+        fixed.configuredServerOrigin.toString(),
+        'https://new.example.test',
+      );
+      expect(fixed.profiles, [matching, older]);
+      expect(transport.calls, isEmpty);
+      expect(
+        () => fixed.verifyPairingServer(PairingQr.parse(qrText())),
+        throwsFormatException,
+      );
+      await fixed.setForeground(true);
+      for (final call in transport.calls.where((c) => c['token'] != null)) {
+        final owner = call['token'] == matching['device_token']
+            ? matching
+            : older;
+        expect(call['origin'], owner['server_base_url']);
+      }
+      transport.calls.clear();
+      final newId = await fixed.pair(
+        PairingQr.parse(qrText(origin: 'https://new.example.test')),
+        'new phone',
         trustedByUser: true,
-      ),
-      throwsFormatException,
-    );
-    expect(transport.calls, isEmpty);
-    expect(transport.sockets, isEmpty);
-    expect(store.data, original);
-  });
+      );
+      final newToken = fixed.profile(newId)!['device_token'];
+      expect(newToken, isNot(matching['device_token']));
+      expect(newToken, isNot(older['device_token']));
+      expect(
+        transport.calls.every((c) => c['origin'] == 'https://new.example.test'),
+        true,
+      );
+      await fixed.configureServer('');
+      expect(
+        fixed.configuredServerOrigin.toString(),
+        'https://relay.example.test',
+      );
+      expect(fixed.profiles, hasLength(3));
+      final restored = RelayService(
+        store: store,
+        transport: TestTransport(),
+        serverConfig: RelayServerConfig.pinned('https://relay.example.test'),
+      );
+      addTearDown(restored.dispose);
+      await restored.initialize();
+      expect(restored.serverOverride, isNull);
+      expect(restored.profiles, fixed.profiles);
+    },
+  );
+
+  test(
+    'invalid custom origins cannot change saved settings or credentials',
+    () async {
+      await s.initialize();
+      await s.configureServer('https://custom.example.test');
+      final saved = store.data;
+      for (final origin in [
+        'http://bad.test',
+        'https://bad.test/path',
+        'https://user:pw@bad.test',
+        'https://bad.test?token=secret',
+      ]) {
+        await expectLater(s.configureServer(origin), throwsFormatException);
+        expect(store.data, saved);
+      }
+      expect(transport.calls, isEmpty);
+      store.failWrite = true;
+      await expectLater(
+        s.configureServer('https://different.example.test'),
+        throwsStateError,
+      );
+      expect(s.serverOverride, 'https://custom.example.test');
+    },
+  );
 
   test('encrypted configuration failures stop before reading storage and cannot fall back to unrestricted networking', () async {
     final registry = _ObservedStore();
@@ -862,12 +863,12 @@ void main() {
   });
 
   testWidgets(
-    'timer and push wakeups never connect retained foreign profiles',
+    'timer and push use the saved profile origin after changing defaults',
     (tester) async {
-      final blocked = _policyProfile(origin: 'https://old.example.test');
+      final saved = _policyProfile(origin: 'https://old.example.test');
       store.data = jsonEncode({
         'v': 1,
-        'profiles': [blocked],
+        'profiles': [saved],
         'push_enabled': false,
       });
       final fixed = RelayService(
@@ -877,14 +878,21 @@ void main() {
         serverConfig: RelayServerConfig.pinned('https://relay.example.test'),
       );
       await fixed.initialize();
+      await fixed.configureServer('https://new.example.test');
       await fixed.setForeground(true);
       await tester.pump(const Duration(seconds: 21));
       await fixed.handlePush(
         const PushHint(eventId, pcId, 'question', opened: true),
       );
-      expect(transport.calls, isEmpty);
-      expect(transport.sockets, isEmpty);
-      expect(fixed.profile(blocked['device_id'] as String), blocked);
+      expect(transport.calls, isNotEmpty);
+      expect(
+        transport.calls.every((c) => c['origin'] == 'https://old.example.test'),
+        true,
+      );
+      expect(
+        fixed.profile(saved['device_id'] as String)!['device_token'],
+        saved['device_token'],
+      );
       fixed.dispose();
     },
   );

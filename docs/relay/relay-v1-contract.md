@@ -11,7 +11,7 @@
 - REST 路径前缀 `/v1`，WebSocket 路径 `/v1/ws`，WSS 地址由 HTTPS origin 转换。
 - 已登记的设备使用 `Authorization: Bearer <device_token>`，包括原生客户端的 WSS 握手；不把长期 token 放 URL。
 - 每设备 token 使用安全随机 32 字节编码为无填充 base64url。客户端先安全保存，服务端存 `SHA256(UTF8(device_token))` 的小写 hex 摘要；不保存或记录长期 token 明文。
-- 服务端根据凭证决定 device_id、角色、绑定与 capability，不能信任请求正文中的身份声明。个人单用户服务使用受保护的 bootstrap 登记，不引入不必要的公开账号系统。
+- 服务端根据凭证决定 device_id、角色、绑定与 capability，不能信任请求正文中的身份声明。默认使用受保护的 bootstrap 登记；所有者可明确开启下述可选公开 PC 登记扩展，不引入共享管理员凭证或公开账号系统。
 - 第一版鉴权与消息传输使用 TLS，服务器可见正文；鉴权 token 不是端到端加密密钥。
 
 ## 配对
@@ -34,24 +34,42 @@ PC 安全随机生成 32 字节 pairing_secret 并编码为 64 个 hex 字符。
 
 | 方法与路径 | 权限及含义 |
 | --- | --- |
-| `GET /health` | 最小无敏感信息健康检查 |
-| `POST /v1/devices/enroll` | 管理员 bootstrap 鉴权；登记 PC，正文 `{device_id, device_name, device_token_hash}` |
-| `POST /v1/pairings` | 已登记 PC；正文 `{pairing_secret_hash, ttl_seconds:300}`；返回 `{pairing_id, expires_at}` |
-| `POST /v1/pairings/claim` | 一次性配对；正文 `{pairing_id, pairing_secret, device_id, device_name, device_token_hash}`；返回 `{pairing_id, state:"pending_confirmation", expires_at}` |
-| `GET /v1/pairings/{pairing_id}/status` | 对应 PC 或该 pending 手机 token；返回 `{state, pc_id, device_id, expires_at, capabilities}`，未确定字段可为 null |
+| `GET /health` | 最小无敏感信息健康检查；可选布尔 `public_pc_enrollment`、`timed_pairing` 公布公开 PC 登记与限期直接绑定能力，缺省按 false |
+| `POST /v1/devices/enroll` | 默认管理员 bootstrap 鉴权；登记 PC，正文 `{device_id, device_name, device_token_hash}`；可选 `enrollment_mode:"public"` 扩展见下文 |
+| `POST /v1/pairings` | 已登记 PC；正文 `{pairing_secret_hash, ttl_seconds:300, auto_confirm?:boolean, binding_ttl_seconds?:86400|259200|604800, capabilities?:[四项白名单子集], history_read?:boolean}`；返回 `{pairing_id, expires_at}` |
+| `POST /v1/pairings/claim` | 一次性配对；正文 `{pairing_id, pairing_secret, device_id, device_name, device_token_hash}`；返回 `{pairing_id, state:"pending_confirmation"或"confirmed", expires_at, binding_expires_at?:UTC}` |
+| `GET /v1/pairings/{pairing_id}/status` | 对应 PC 或该 pending 手机 token；返回 `{state, pc_id, device_id, expires_at, capabilities, binding_expires_at?:UTC}`，未确定字段可为 null |
 | `POST /v1/pairings/{pairing_id}/confirm` | 对应 PC；正文 `{decision:"approve",capabilities?:["question.answer","approval.respond","task.start","task.cancel"]}` 或 `{decision:"reject"}`；capabilities 可选，省略默认四项，只接受白名单子集 |
 | `GET /v1/devices` | 当前凭证能管理/访问的设备及绑定 |
-| `DELETE /v1/devices/{device_id}` | 手机仅能撤销自身；PC 能撤销绑定手机；立即拒绝该设备后续请求 |
+| `DELETE /v1/devices/{device_id}` | 手机仅能撤销自身，包括 pending/revoked；PC 能撤销自身绑定手机；不要求对端在线；幂等返回 `{device_id,state:"revoked"}` 并立即拒绝业务请求 |
 
-手机提交 claim 前先在安全存储中保存 server_base_url、pairing_id、device_id/token，支持进程重启后恢复配对状态查询；短期 pairing_secret 不持久保存。claim 创建的 pending 身份仅允许查询自身配对状态；PC 确认后才允许事件连接及业务操作。
+手机提交 claim 前先在安全存储中保存 server_base_url、pairing_id、device_id/token，支持进程重启后恢复配对状态查询；短期 pairing_secret 不持久保存。旧流程 claim 创建的 pending 身份仅允许查询自身配对状态和删除自身；PC 确认后才允许事件连接及业务操作。限期直接绑定模式在首次 claim 时按 PC 创建二维码时的明确授权直接激活。
 
-状态为 pending_confirmation、confirmed、rejected、expired。rejected/expired 的 token 摘要和配对终态记录保留 24 小时，仅允许原手机查询自身终态；之后清理并返回 PAIRING_NOT_FOUND。手机读取拒绝/过期终态后清理该配对本地凭证，不能将此 pending token 用于其他接口。
+配对状态为 pending_confirmation、confirmed、rejected、expired，解绑新增终态 revoked。旧流程 rejected/expired 的待确认 token 摘要和配对终态记录保留 24 小时，仅允许原手机查询自身终态或删除自身；之后清理并返回 PAIRING_NOT_FOUND。已激活后被撤销或绑定到期的设备保留 revoked 凭证墓碑，业务鉴权返回 DEVICE_REVOKED，仍允许原手机幂等删除自身。手机读到终态或 DEVICE_REVOKED 后清理相应本地活动绑定，不得继续请求业务接口。
 
-device_id 不得覆盖：enroll 遇到已有 device_id 返回 DEVICE_EXISTS；claim 仅同一 pairing_id + device_id + device_token_hash 可幂等重试，其他冲突返回 DEVICE_EXISTS。v1 每个 mobile device_id 绑定一个 PC；手机要管理多个 PC 时，为每个绑定维护独立 profile 和安全凭证，不能覆盖之前的绑定。
+device_id 不得覆盖：默认 bootstrap enroll 遇到已有 device_id 返回 DEVICE_EXISTS；可选 public enroll 仅相同有效 PC 身份和 token 可幂等恢复原登记；claim 仅同一 pairing_id + device_id + device_token_hash 可幂等重试，其他冲突返回 DEVICE_EXISTS。v1 每个 mobile device_id 绑定一个 PC；手机要管理多个 PC 时，为每个绑定维护独立 profile 和安全凭证，不能覆盖之前的绑定。
+
+### 可选公开 PC 登记扩展
+
+所有者须明确开启服务器配置 `RELAY_PUBLIC_PC_ENROLLMENT=1`，默认关闭；客户端仅在 `/health` 明确返回 `public_pc_enrollment:true` 时尝试。PC 首先生成并安全保存独立 32 字节随机 base64url token，然后使用原 `POST /v1/devices/enroll`，正文增加可选字段 `enrollment_mode:"public"`，其余字段不变；`Authorization: Bearer <该PC的device_token>` 必须与正文 `device_token_hash=SHA256(UTF8(device_token))` 相符。服务端不返回 token，也不赋予管理员身份。成功仍为 HTTP 201 `{device_id,role:"pc"}`。相同有效 device_id/token 的重复提交恢复原身份且不额外占用额度；不同 token、其他角色或已撤销/清理身份返回 DEVICE_EXISTS，不允许覆盖或复活。省略 `enrollment_mode` 时继续原管理员 bootstrap 流程。
+
+服务器事务性持久限制公开登记：默认每 IP 每分钟 3 台、每 UTC 日 20 台、公开 PC 总量 500 台；每 PC 最多 8 台有效/待确认手机，并限制待扫码配对。公开租户共享 SQLite 已分配页软上限默认 512 MiB，达到时拒绝新的登记、配对、事件/历史页、操作与推送注册，幂等重试仍返回原回执，原管理员登记的 PC 不受公开额度限制。额度错误分别为 PUBLIC_ENROLLMENT_LIMIT、PUBLIC_DEVICE_LIMIT、PUBLIC_CAPACITY_REACHED；未开启返回 PUBLIC_ENROLLMENT_DISABLED，token 证明错误返回 UNAUTHORIZED。所有者可配置登记额度、存储阈值和未绑定保留期；公开身份连续离线且未绑定默认 30 天后清理业务数据，保留已撤销身份墓碑；在线 PC 或仍有有效已确认手机的 PC 不清理。公开登记仅影响 PC 首次登记，四项 capability 和 PC 明确授权原则不变。
+
+### 可选限期直接扫码绑定扩展
+
+客户端先检查 `/health` 的 `timed_pairing:true`；缺省 false，不能对旧服务器假定已支持。PC 在原 `POST /v1/pairings` 增加 `auto_confirm:true` 与必填 `binding_ttl_seconds`，仅接受 86400、259200、604800（1、3、7 天）；可选 `capabilities` 默认四项白名单，`history_read` 默认 false。PC 选择期限与权限并创建二维码即明确授权持有该单次密钥的首个成功扫码者，无须扫码后 PC 二次确认。二维码 TTL 仍至多 300 秒，绑定期限从成功 claim 开始，与二维码过期时间分别计算。二维码 JSON、claim 请求字段和设备凭证安全存储要求保持原样。
+
+成功 claim 可直接返回 confirmed，并增加可选 `binding_expires_at`；配对状态、`DeviceSummary` 和 `pairing.updated` 同样可携带此字段。相同 claim 重试返回原期限，不续期、不创建第二身份；重复 confirm 只能收紧原 capability 或显式设置历史读取权，不改变绑定期限。省略 auto_confirm 默认 false，保留原二次确认流程；已有未记录期限的绑定保持原期限语义。手机须兼容两种 claim 状态，并展示期限；到期后清理活动绑定，新绑定须重新扫码。
+
+服务器在每次鉴权、读取、写入、WSS 收发和重连时检查期限，另以最近期限的定时器撤销空闲连接。到期事务将手机设为 revoked、清空 capability/history_read、移除推送注册、将配对设为 expired，并发出 `device.revoked`（可选 `reason:"binding_expired"`）。未投递操作标 rejected；已投递无最终回执标 unknown，须 PC 对账。到期后业务请求统一 DEVICE_REVOKED，原手机仍可 DELETE 自身。队列旧事件不能使已过期身份执行动作。
+
+双方解绑不依赖对端在线：PC 只可 DELETE 自身绑定手机，手机只可 DELETE 自身；pending、expired、revoked 手机也可凭原 token 重试自身 DELETE，返回同一 200 `{device_id,state:"revoked"}`。未知 token 为 UNAUTHORIZED，跨设备为 FORBIDDEN。解绑同步将相关 pairing 置 revoked，释放有效/待确认名额，清理推送注册并结算未执行操作；claim/confirm 不得将已撤销身份复活。配对终态记录保留 24 小时后可清理，设备撤销墓碑仍保留。客户端断网解绑时先本地拒绝、保存受保护的待撤销 outbox，网络恢复后先 DELETE 再恢复远程投递，不能等待对端确认才清理本地状态。
+
+服务 schema 4 仅新增 `pairing_policies` 和 `binding_expirations`，旧无期限有效绑定不补写期限。旧代码即使放宽 schema guard 仍不具备到期校验；回滚旧兼容镜像前必须停止服务，撤销全部 binding_expirations 手机及未兑换自动绑定二维码，结算相关未执行操作，保留旧无期限绑定和数据库，不得把限期权限回滚成永久权限。
 
 如果 claim 请求丢失响应，同一 pairing_id + device_id + device_token_hash 重试必须返回同一结果，不能创建第二个身份；其他身份重复兑换返回 PAIRING_USED。同一 pending 设备用自身 token 查状态时不能读取其他人的配对。
 
-PC 明确批准，默认手机 capability 为 `question.answer`、`approval.respond`、`task.start`、`task.cancel`，可在 PC 管理界面收紧权限。审批仍受 PC 原有执行规则约束。 `confirm` 的可选 `capabilities` 在首次确认时指定所授予的白名单子集（可为空）；已 confirmed 的配对可重复发送 `{decision:"approve",capabilities:[...]}`，但只能收紧已有权限，不能重新授予或增加权限。confirmed 配对记录持续保留以支持权限管理；扩权需重新配对。
+PC 通过创建直接绑定二维码或旧流程 confirm 明确批准，默认手机 capability 为 `question.answer`、`approval.respond`、`task.start`、`task.cancel`，可在 PC 管理界面收紧权限。审批仍受 PC 原有执行规则约束。 `confirm` 的可选 `capabilities` 在首次确认时指定所授予的白名单子集（可为空）；已 confirmed 的配对可重复发送 `{decision:"approve",capabilities:[...]}`，但只能收紧已有权限，不能重新授予或增加权限。有效 confirmed 配对记录持续保留以支持权限管理；扩权需重新配对。
 
 ## 事件与可靠传输
 
@@ -134,11 +152,11 @@ ACK 只说明收到事件，不表示 Agent 已执行。实现至少一次传输
 - `task.start`：payload 为 `{prompt, workspace_id}`；session_id 可为空表示新建，此时 workspace_id 必填且来自已授权 WorkspaceSummary。已有会话的 workspace_id 可省略，若提供则必须与会话匹配。request_id=null。
 - `task.cancel`：session_id 必填，payload 为 `{task_id}`，目标任务必须属于该会话且当前凭证有取消权限。request_id=null。
 
-客户端重试必须使用同一 action_id 和同一内容。服务端对当前设备 + action_id 原子去重；同键不同内容返回 IDEMPOTENCY_CONFLICT。服务端自行验证期限，客户端不能延长 PC 原请求期限。
+客户端重试必须使用同一 action_id 和同一内容。服务端对当前设备 + action_id 原子去重；同键不同内容返回 IDEMPOTENCY_CONFLICT。服务端先验证客户端 expires_at 尚未到期，问题和审批回答的客户端期限不得晚于 PC 原请求期限，原请求也必须仍待处理且未到期。验证通过后，四种动作的实际排队期限均为客户端 expires_at 与服务端当前时间加配置排队上限中较早的时间，默认排队上限为 300 秒；不因客户端沿用较长的有效请求期限而拒绝。幂等比较始终使用原始客户端正文，完全相同的重试返回原操作，不重新计算或延长实际期限。
 
-HTTP 202 返回 `{action_id,status:"queued"}`，只表示已接收。`GET /v1/actions/{action_id}` 与 action.result 返回当前状态，状态为 queued、delivered、accepted、rejected、expired、conflict 或 unknown。
+HTTP 202 返回 `{action_id,status:"queued"}`，只表示已接收；可含向后兼容的可选 expires_at，表示服务器持久化的实际排队期限。幂等重试返回已有操作的当前 status 和同一实际期限。`GET /v1/actions/{action_id}` 与 action.result 返回当前状态，状态为 queued、delivered、accepted、rejected、expired、conflict 或 unknown。
 
-`action.request.payload` 固定为 `{action_id, origin_device_id, action_type, target_pc_id, session_id, request_id, expires_at, args}`：action_type 为手机动作 type，args 为原 payload；origin_device_id 由服务器从真实认证结果填写，不能从手机正文照抄。envelope 的 pc_id 为目标 PC。
+`action.request.payload` 固定为 `{action_id, origin_device_id, action_type, target_pc_id, session_id, request_id, expires_at, args}`：action_type 为手机动作 type，args 为原 payload；origin_device_id 由服务器从真实认证结果填写，不能从手机正文照抄。payload 和 envelope 的 expires_at 均为服务器缩短后的实际排队期限，PC 仍须检查该期限和原请求期限。envelope 的 pc_id 为目标 PC。
 
 PC 通过 `POST /v1/events` 发布 action.result，payload 固定为 `{action_id, status, session_id, task_id, request_id, error, updated_at}`；error 为 null 或 `{code,message,retryable}`，尚无值的 ID 为 null。status 由 PC 返回 accepted/rejected/expired/conflict/unknown。accepted 表示 Agent 已接受该操作，任务后续完成由 task.updated 表达。
 

@@ -45,12 +45,20 @@ class RelayPage extends StatefulWidget {
 
 class _RelayPageState extends State<RelayPage> {
   bool busy = false;
+  int networkOperations = 0;
   String? error;
   RelayService get service => widget.service;
-  Future<void> run(Future<void> Function() action) async {
+  Future<void> run(
+    Future<void> Function() action, {
+    bool blocksLocalUi = false,
+  }) async {
     if (busy) return;
     setState(() {
-      busy = true;
+      if (blocksLocalUi) {
+        busy = true;
+      } else {
+        networkOperations++;
+      }
       error = null;
     });
     try {
@@ -58,20 +66,29 @@ class _RelayPageState extends State<RelayPage> {
     } on Object catch (e) {
       if (mounted) setState(() => error = safeRelayError(e));
     } finally {
-      if (mounted) setState(() => busy = false);
+      if (mounted) {
+        setState(() {
+          if (blocksLocalUi) {
+            busy = false;
+          } else {
+            networkOperations--;
+          }
+        });
+      }
     }
   }
 
   Future<void> pair({bool camera = true}) async {
     if (busy || !service.initialized) return;
-    if (!camera && service.serverConfig.isPinned) return;
+    final defaultSelected =
+        service.serverConfig.isPinned && service.serverOverride == null;
+    if (!camera && defaultSelected) return;
     final source = camera
         ? await (widget.scanPairingCode?.call(context) ??
               Navigator.of(context).push<String>(
                 MaterialPageRoute(
-                  builder: (_) => RelayScannerPage(
-                    allowPasteFallback: !service.serverConfig.isPinned,
-                  ),
+                  builder: (_) =>
+                      RelayScannerPage(allowPasteFallback: !defaultSelected),
                 ),
               ))
         : await _textDialog(
@@ -90,7 +107,7 @@ class _RelayPageState extends State<RelayPage> {
         throw const FormatException('配对二维码格式无效，请重新扫描 PC 生成的二维码。');
       }
       service.verifyPairingServer(qr);
-      final pinned = service.serverConfig.isPinned;
+      final pinned = service.isDefaultServer(qr.origin);
       final trusted = await showDialog<bool>(
         useRootNavigator: false,
         context: context,
@@ -100,8 +117,8 @@ class _RelayPageState extends State<RelayPage> {
           title: Text(pinned ? '确认配对此 PC' : '确认信任此联动服务器'),
           content: Text(
             pinned
-                ? '通过内置联动服务配对。请确认二维码来自你自己的 PC；服务可以读取问答与任务正文。确认后提交手机配对申请，仍需 PC 批准。'
-                : '${qr.origin}\n\n服务器可以读取问答与任务正文。请核对这是你自己的 PC 显示的 HTTPS 地址；确认后提交手机配对申请，仍需 PC 批准。',
+                ? '通过内置联动服务配对。请确认二维码来自你自己的 PC；服务可以读取问答与任务正文。新版本扫码后直接绑定，有效期由 PC 设置；旧版本服务可能仍等待 PC 确认。'
+                : '${qr.origin}\n\n服务器可以读取问答与任务正文。请核对这是你自己的 PC 显示的 HTTPS 地址。新版本扫码后直接绑定，有效期由 PC 设置；旧版本服务可能仍等待 PC 确认。',
           ),
           actions: [
             TextButton(
@@ -110,7 +127,7 @@ class _RelayPageState extends State<RelayPage> {
             ),
             FilledButton(
               onPressed: () => Navigator.pop(context, true),
-              child: Text(pinned ? '申请配对' : '信任并申请配对'),
+              child: Text(pinned ? '配对连接' : '信任并配对连接'),
             ),
           ],
         ),
@@ -123,6 +140,21 @@ class _RelayPageState extends State<RelayPage> {
       );
       await service.sync(id, snapshot: true);
     });
+  }
+
+  Future<void> configureServer() async {
+    final value = await _textDialog(
+      context,
+      '云中继设置',
+      service.serverConfig.isPinned
+          ? '默认已配置；如有自己的 HTTPS 中继可自行填入，留空恢复默认'
+          : '输入 HTTPS 中继地址；留空时由扫码选择',
+      initialValue: service.serverOverride ?? '',
+      help: '仅用于下次配对。已有绑定始终使用各自的中继地址和凭据，修改地址不会迁移凭据。',
+    );
+    if (value != null && mounted) {
+      await run(() => service.configureServer(value), blocksLocalUi: true);
+    }
   }
 
   Future<bool> confirm(String title, String body) async =>
@@ -167,7 +199,7 @@ class _RelayPageState extends State<RelayPage> {
           actions: [
             IconButton(
               tooltip: '同步',
-              onPressed: busy
+              onPressed: busy || networkOperations > 0
                   ? null
                   : () => run(() async {
                       for (final p in service.profiles) {
@@ -176,6 +208,14 @@ class _RelayPageState extends State<RelayPage> {
                           snapshot: true,
                         );
                       }
+                      // A deferred DELETE can wait for an unavailable relay.
+                      // Keep it outside this page's busy lifecycle so settings,
+                      // scans and local unpair remain available during retry.
+                      unawaited(
+                        service.retryPendingRevocations().catchError(
+                          (Object _) {},
+                        ),
+                      );
                     }),
               icon: const Icon(Icons.sync),
             ),
@@ -191,7 +231,27 @@ class _RelayPageState extends State<RelayPage> {
                 error!,
                 style: TextStyle(color: Theme.of(context).colorScheme.error),
               ),
-            if (busy) const LinearProgressIndicator(),
+            if (busy || networkOperations > 0) const LinearProgressIndicator(),
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('云中继'),
+              subtitle: Text(
+                service.serverOverride ??
+                    (service.serverConfig.isPinned
+                        ? '默认已配置；如有自己的中继可自行填入'
+                        : '扫码时选择，或自行填入 HTTPS 中继地址'),
+              ),
+              trailing: TextButton(
+                onPressed: busy || !service.initialized
+                    ? null
+                    : configureServer,
+                child: const Text('云中继设置'),
+              ),
+            ),
+            if (service.pendingRevocationCount > 0)
+              Text(
+                '已从本机解绑，${service.pendingRevocationCount} 项服务器撤销等待联网重试。无需另一台设备确认，可立即重新扫码。',
+              ),
             Wrap(
               spacing: 12,
               children: [
@@ -200,7 +260,8 @@ class _RelayPageState extends State<RelayPage> {
                   icon: const Icon(Icons.qr_code_scanner),
                   label: const Text('扫码绑定 / 重新配对'),
                 ),
-                if (!service.serverConfig.isPinned)
+                if (!service.serverConfig.isPinned ||
+                    service.serverOverride != null)
                   TextButton(
                     onPressed: busy || !service.initialized
                         ? null
@@ -253,7 +314,7 @@ class _RelayPageState extends State<RelayPage> {
   );
   Widget _profileCard(Json p) {
     final id = p['device_id'] as String;
-    final active = p['state'] == 'confirmed';
+    final active = p['state'] == 'confirmed' && !service.bindingExpired(p);
     final requests = service.collection(p, 'requests');
     final tasks = service.collection(p, 'tasks');
     final outbox = service.collection(p, 'outbox');
@@ -270,13 +331,19 @@ class _RelayPageState extends State<RelayPage> {
               style: Theme.of(context).textTheme.titleLarge,
             ),
             Text(
-              service.serverConfig.isPinned
+              service.isDefaultServer(
+                    secureOrigin(p['server_base_url'] as String),
+                  )
                   ? '内置联动服务'
                   : p['server_base_url'] as String,
             ),
             Text(
-              '${relayLabel(p['state'])} · ${relayLabel(service.connections[id])}',
+              '${relayLabel(service.bindingExpired(p) ? 'expired' : p['state'])} · ${relayLabel(service.connections[id])}',
             ),
+            if (p['binding_expires_at'] is String)
+              Text(
+                '绑定有效期至：${DateTime.parse(p['binding_expires_at'] as String).toLocal()}',
+              ),
             for (final pc
                 in service
                     .collection(p, 'devices')
@@ -300,9 +367,12 @@ class _RelayPageState extends State<RelayPage> {
                       : () async {
                           if (await confirm(
                             '解绑此 PC？',
-                            '撤销此手机绑定。网络不可用时不会假称撤销成功；其他 PC 绑定不受影响。',
+                            '立即移除此手机上的绑定和缓存，无需 PC 确认。若中继离线，服务器撤销会在联网后重试；期间旧的服务器授权尚未撤销。下次使用请重新扫码。',
                           )) {
-                            await run(() => service.unpair(id));
+                            await run(
+                              () => service.unpair(id),
+                              blocksLocalUi: true,
+                            );
                           }
                         },
                   child: const Text('解绑'),
@@ -426,38 +496,77 @@ Future<String?> _textDialog(
   String title,
   String hint, {
   bool obscure = false,
+  String initialValue = '',
+  String? help,
 }) async {
-  final controller = TextEditingController();
-  final result = await showDialog<String>(
+  return showDialog<String>(
     useRootNavigator: false,
     context: context,
-    builder: (context) => AlertDialog(
-      backgroundColor: _relayDialogBackground(context),
-      surfaceTintColor: Colors.transparent,
-      title: Text(title),
-      content: TextField(
-        controller: controller,
-        obscureText: obscure,
-        enableSuggestions: !obscure,
-        autocorrect: !obscure,
-        decoration: InputDecoration(hintText: hint),
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(context),
-          child: const Text('取消'),
-        ),
-        FilledButton(
-          onPressed: () => Navigator.pop(context, controller.text),
-          child: const Text('继续'),
-        ),
-      ],
+    builder: (context) => _RelayTextDialog(
+      title: title,
+      hint: hint,
+      obscure: obscure,
+      initialValue: initialValue,
+      help: help,
     ),
   );
-  // Controller disposal after the route's reverse animation has detached fields.
-  await Future<void>.delayed(const Duration(milliseconds: 350));
-  controller.dispose();
-  return result;
+}
+
+class _RelayTextDialog extends StatefulWidget {
+  const _RelayTextDialog({
+    required this.title,
+    required this.hint,
+    required this.obscure,
+    required this.initialValue,
+    this.help,
+  });
+  final String title, hint, initialValue;
+  final bool obscure;
+  final String? help;
+  @override
+  State<_RelayTextDialog> createState() => _RelayTextDialogState();
+}
+
+class _RelayTextDialogState extends State<_RelayTextDialog> {
+  late final controller = TextEditingController(text: widget.initialValue);
+
+  @override
+  void dispose() {
+    controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+    scrollable: true,
+    backgroundColor: _relayDialogBackground(context),
+    surfaceTintColor: Colors.transparent,
+    title: Text(widget.title),
+    content: Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        TextField(
+          controller: controller,
+          obscureText: widget.obscure,
+          enableSuggestions: !widget.obscure,
+          autocorrect: !widget.obscure,
+          decoration: InputDecoration(hintText: widget.hint),
+        ),
+        if (widget.help != null) Text(widget.help!),
+      ],
+    ),
+    actions: [
+      TextButton(
+        onPressed: () => Navigator.pop(context),
+        child: const Text('取消'),
+      ),
+      FilledButton(
+        onPressed: () => Navigator.pop(context, controller.text),
+        child: const Text('继续'),
+      ),
+    ],
+  );
 }
 
 class RelayScannerPage extends StatefulWidget {
