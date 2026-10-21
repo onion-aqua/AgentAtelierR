@@ -19,11 +19,13 @@ class NpcMessagesPage extends StatefulWidget {
     required this.controller,
     this.service,
     this.liquidGlass = false,
+    this.initialContactId,
   });
 
   final AppController controller;
   final NpcChatService? service;
   final bool liquidGlass;
+  final String? initialContactId;
 
   @override
   State<NpcMessagesPage> createState() => _NpcMessagesPageState();
@@ -59,6 +61,19 @@ class _NpcMessagesPageState extends State<NpcMessagesPage> {
     widget.controller.addListener(_controllerChanged);
     _search.addListener(_searchChanged);
     _scroll.addListener(_scrollChanged);
+    _scheduleInitialContact();
+  }
+
+  void _scheduleInitialContact() {
+    final id = widget.initialContactId?.trim();
+    if (id == null || id.isEmpty) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || _selectedId != null) return;
+      final contact = widget.controller.npcMessagingContacts
+          .where((candidate) => candidate.id == id)
+          .firstOrNull;
+      if (contact != null) _openContact(contact);
+    });
   }
 
   @override
@@ -70,6 +85,9 @@ class _NpcMessagesPageState extends State<NpcMessagesPage> {
       _resetSession();
     }
     _service = widget.service ?? widget.controller.npcMessaging;
+    if (oldWidget.initialContactId != widget.initialContactId) {
+      _scheduleInitialContact();
+    }
   }
 
   void _searchChanged() {

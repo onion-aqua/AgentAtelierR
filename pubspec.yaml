@@ -18,7 +18,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # of the product and file versions while build-number is used as the build suffix.
 # Flutter requires three numeric version segments. The public four-part
 # release name is shown in the app and native platform version resources.
-version: 1.0.4+52
+version: 1.0.4+53
 
 environment:
   sdk: ^3.13.2
@@ -57,6 +57,8 @@ dependencies:
   mcp_dart: 2.4.3
   url_launcher: ^6.3.3
   app_links: ^7.2.2
+  record: ^7.1.2
+  sherpa_onnx: 1.13.8
 
 dev_dependencies:
   flutter_test:

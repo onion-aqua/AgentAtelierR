@@ -50,6 +50,11 @@ import 'image_generation_manager_page.dart';
 import 'image_generation_service.dart';
 import 'image_generation_store.dart';
 import 'audio_envelope.dart';
+import 'realtime_call/call_session.dart';
+import 'realtime_call/call_page.dart';
+import 'realtime_call/call_settings.dart';
+import 'realtime_call/call_audio_priority.dart';
+import 'virtual_phone_wallpaper_image.dart';
 import 'speech_envelope_loader.dart';
 import 'speech_media_probe.dart';
 import 'speech_file_playback.dart';
@@ -403,6 +408,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
   bool _spineReady = false;
   bool _isReplying = false;
+  late final RealtimeCallController _calls;
+  bool _callWasActive = false;
   bool _isContinuing = false;
   bool _isSuggestingReply = false;
   bool _isCharacterSpeaking = false;
@@ -685,6 +692,12 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   @override
   void initState() {
     super.initState();
+    _calls = RealtimeCallController(
+      app: widget.controller,
+      canStart: () => !_isReplying && !widget.controller.continuousAsmr,
+    );
+    _calls.addListener(_handleCallChanged);
+    widget.controller.addDataResetListener(_calls.prepareForDataReset);
     _companionStopped = _companionRuntime.stopRequested;
     _companionRuntime.addListener(_handleCompanionRuntimeChange);
     WidgetsBinding.instance.addObserver(this);
@@ -2082,7 +2095,33 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     entry.setAlpha(strength);
   }
 
+  void _handleCallChanged() {
+    if (!mounted) return;
+    if (_calls.active && !_callWasActive) _cancelSpeechPlayback();
+    _callWasActive = _calls.active;
+    if (_calls.speaking &&
+        _calls.snapshot.contact?.id ==
+            'primary:${widget.controller.activeCharacterId}') {
+      if (!_isCharacterSpeaking) _startSpeakingAnimation();
+    } else if (_isCharacterSpeaking &&
+        _speechCancellation == null &&
+        _callWasActive) {
+      _stopSpeakingAnimation();
+    }
+    setState(() {});
+  }
+
   void _prepareSpeechFrame(SpineWidgetController controller) {
+    if (_calls.active &&
+        _calls.snapshot.contact?.id ==
+            'primary:${widget.controller.activeCharacterId}') {
+      final energy = _calls.speaking ? _calls.playbackLevel.value : 0.0;
+      _currentSpeechEnergy = energy;
+      _lipSyncEntry?.setTrackTime(
+        (_lipSyncEntry?.getAnimation().getDuration() ?? 0) * energy * 0.48,
+      );
+      return;
+    }
     final playing =
         _isCharacterSpeaking && (_syntheticSpeech || _positionClock.isRunning);
     final position = _syntheticSpeech
@@ -3106,6 +3145,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
   @override
   void dispose() {
+    widget.controller.removeDataResetListener(_calls.prepareForDataReset);
+    _calls.removeListener(_handleCallChanged);
+    _calls.dispose();
     _companionRuntime.removeListener(_handleCompanionRuntimeChange);
     WidgetsBinding.instance.removeObserver(this);
     // The child drawable may already be freed; do not touch native pointers.
@@ -3383,6 +3425,22 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   }
 
   Future<void> _sendMessage({String? automaticPrompt}) async {
+    if (_calls.active) {
+      if (automaticPrompt == null && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              widget.controller.interfaceLanguage.text(
+                '请先结束实时通话。',
+                'End the voice call first.',
+                '先に音声通話を終了してください。',
+              ),
+            ),
+          ),
+        );
+      }
+      return;
+    }
     final rawText = _inputController.text.trim();
     final narration = _narrationInputController.text.trim();
     final narrationBottom = _narrationBottomInputController.text.trim();
@@ -4021,7 +4079,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   }
 
   Future<void> _suggestUserReply() async {
-    if (_isReplying ||
+    if (_calls.active ||
+        _isReplying ||
         _isSuggestingReply ||
         widget.controller.messages.isEmpty) {
       return;
@@ -4140,6 +4199,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   }
 
   void _checkIdleUser() {
+    if (_calls.active) return;
     if (!mounted ||
         !widget.pageActive ||
         widget.controller.continuousAsmr ||
@@ -4176,6 +4236,20 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   }
 
   Future<void> _openContinuousAsmr() async {
+    if (_calls.active) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            widget.controller.interfaceLanguage.text(
+              '请先结束实时通话。',
+              'End the voice call first.',
+              '先に音声通話を終了してください。',
+            ),
+          ),
+        ),
+      );
+      return;
+    }
     if (_isReplying) _cancelReply();
     _cancelSpeechPlayback();
     _stopSpeakingAnimation();
@@ -5543,6 +5617,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
   bool get _mayPlayVoice =>
       !_companionRuntime.stopRequested &&
+      !CallAudioPriority.instance.value &&
       (widget.pageActive || widget.controller.backgroundVoicePlayback);
 
   void _syncBackgroundVoicePolicy() {
@@ -6692,6 +6767,55 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   String _imageGenerationErrorText(Object error) =>
       error is ImageGenerationException ? error.message : '图片生成失败，请打开生图管理查看记录。';
 
+  Widget _buildVirtualPhoneCallPage(BuildContext context) {
+    final wallpaper = widget.controller.virtualPhoneWallpapers.selected;
+    return RealtimeCallPage(
+      controller: _calls,
+      language: widget.controller.interfaceLanguage,
+      wallpaper: wallpaper.filePath != null
+          ? Image(
+              image: virtualPhoneWallpaperFileImage(wallpaper.filePath!),
+              fit: BoxFit.cover,
+            )
+          : Image.asset(
+              wallpaper.assetPath ?? 'assets/images/virtual_phone/bg1.png',
+              fit: BoxFit.cover,
+            ),
+      onBack: () => Navigator.of(context).maybePop(),
+      onOpenMessages: (contactId) {
+        if (contactId.startsWith('primary:')) {
+          Navigator.of(context, rootNavigator: true).pop();
+          return;
+        }
+        Navigator.of(context).push(
+          MaterialPageRoute<void>(
+            builder: (_) => NpcMessagesPage(
+              controller: widget.controller,
+              initialContactId: contactId,
+            ),
+          ),
+        );
+      },
+      onOpenSettings: () => Navigator.of(context).push(
+        MaterialPageRoute<void>(
+          builder: (_) => RealtimeCallSettingsPage(
+            contacts: _calls.contacts
+                .map(
+                  (c) => CallContactOption(
+                    id: c.id,
+                    name: c.displayName,
+                    isMainCharacter: c.id.startsWith('primary:'),
+                  ),
+                )
+                .toList(),
+            defaultFishModel: widget.controller.fishAudioModel,
+            defaultVoice: widget.controller.fishAudioReferenceId,
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _buildVirtualPhoneImagePage(BuildContext context) =>
       ImageGenerationManagerPage(
         store: _imageGenerationStore,
@@ -6974,9 +7098,11 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                     _imageGenerationStore.hasUnseenCompleted,
                 pageManagedBackApps: const {
                   VirtualPhoneApp.pcAgent,
+                  VirtualPhoneApp.phone,
                   VirtualPhoneApp.imageGeneration,
                 },
                 fullBleedApps: <VirtualPhoneApp>{
+                  VirtualPhoneApp.phone,
                   VirtualPhoneApp.shop,
                   VirtualPhoneApp.pcAgent,
                   VirtualPhoneApp.messages,
@@ -6990,6 +7116,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                   VirtualPhoneApp.imageGeneration,
                 },
                 pages: <VirtualPhoneApp, VirtualPhonePageBuilder>{
+                  VirtualPhoneApp.phone: _buildVirtualPhoneCallPage,
                   VirtualPhoneApp.status: _buildVirtualPhoneStatusPage,
                   VirtualPhoneApp.messages: (_) =>
                       NpcMessagesPage(controller: widget.controller),
@@ -7091,11 +7218,13 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
               onCancel: _cancelReply,
               expanded: false,
               onToggleExpanded: _openFullscreenComposer,
-              canUndo: widget.controller.messages.any(
-                (message) => message.isUser,
-              ),
-              canReplay: _lastSpeech.isNotEmpty && !_isReplying,
+              canUndo:
+                  !_calls.active &&
+                  widget.controller.messages.any((message) => message.isUser),
+              canReplay:
+                  !_calls.active && _lastSpeech.isNotEmpty && !_isReplying,
               canContinue:
+                  !_calls.active &&
                   widget.controller.messages.any(
                     (message) => !message.isUser,
                   ) &&
@@ -8253,6 +8382,11 @@ class _ProtectedAppearancePreview extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    if (!appearance.hasPreview) {
+      return const Center(
+        child: Icon(Icons.checkroom_outlined, size: 72, color: Colors.white54),
+      );
+    }
     final fallback = _ProtectedAppearanceImage(
       appearance: appearance,
       fit: fit,

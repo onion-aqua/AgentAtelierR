@@ -73,6 +73,7 @@ void main() {
       final preferences = await SharedPreferences.getInstance();
       var directoryRequests = 0;
       final store = VirtualPhoneWallpaperStore(
+        catalogProvider: () async => const [],
         preferences: preferences,
         directoryProvider: () async {
           directoryRequests++;
@@ -106,7 +107,11 @@ void main() {
       final controller = await AppController.load();
       addTearDown(controller.dispose);
       final store = controller.virtualPhoneWallpapers;
-      expect(store.wallpapers, hasLength(3));
+      expect(store.wallpapers.take(3).map((wallpaper) => wallpaper.id), [
+        'builtin-bg1',
+        'builtin-bg2',
+        'builtin-bg3',
+      ]);
       expect(store.selected.id, 'builtin-bg1');
       await store.load();
       expect(store.selected.filePath, isNull);
@@ -287,6 +292,7 @@ void main() {
           'phone_wallpaper_cached_delete_',
         );
         final store = VirtualPhoneWallpaperStore(
+          catalogProvider: () async => const [],
           preferences: await SharedPreferences.getInstance(),
           directoryProvider: () async => directory,
         );

@@ -92,6 +92,7 @@ void main() {
     double textScale = 1,
     ValueNotifier<bool>? glass,
     ValueNotifier<double>? keyboard,
+    String? initialContactId,
   }) async {
     tester.view.physicalSize = size;
     tester.view.devicePixelRatio = 1;
@@ -118,8 +119,11 @@ void main() {
           language: AppLanguage.chinese,
           liquidGlass: false,
           pages: {
-            VirtualPhoneApp.messages: (_) =>
-                NpcMessagesPage(controller: controller, service: service),
+            VirtualPhoneApp.messages: (_) => NpcMessagesPage(
+              controller: controller,
+              service: service,
+              initialContactId: initialContactId,
+            ),
           },
         ),
       ),
@@ -129,6 +133,21 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('virtual-phone-app-messages')));
     await tester.pumpAndSettle();
   }
+
+  testWidgets(
+    'an incoming-call shortcut opens the requested NPC conversation',
+    (tester) async {
+      await mount(tester, initialContactId: 'claudia');
+      expect(
+        find.byKey(const ValueKey('npc-conversation-claudia')),
+        findsOneWidget,
+      );
+      expect(_draft('claudia'), findsOneWidget);
+      await tester.tap(_back);
+      await tester.pumpAndSettle();
+      expect(_contact('claudia'), findsOneWidget);
+    },
+  );
 
   Future<void> openContact(WidgetTester tester, String id) async {
     await tester.scrollUntilVisible(

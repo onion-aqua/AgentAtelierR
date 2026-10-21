@@ -40,6 +40,7 @@ void main() {
     preferences = await SharedPreferences.getInstance();
     directory = await Directory.systemTemp.createTemp('aar_phone_wallpapers_');
     store = VirtualPhoneWallpaperStore(
+      catalogProvider: () async => const [],
       preferences: preferences,
       directoryProvider: () async => directory,
     );
@@ -55,6 +56,7 @@ void main() {
     () async {
       var calls = 0;
       final bundledStore = VirtualPhoneWallpaperStore(
+        catalogProvider: () async => const [],
         preferences: preferences,
         directoryProvider: () async {
           calls++;
@@ -78,6 +80,7 @@ void main() {
       expect(calls, 0);
 
       final reloaded = VirtualPhoneWallpaperStore(
+        catalogProvider: () async => const [],
         preferences: preferences,
         directoryProvider: () async => throw StateError('Not needed.'),
       );
@@ -115,6 +118,7 @@ void main() {
 
     await source.delete();
     final reloaded = VirtualPhoneWallpaperStore(
+      catalogProvider: () async => const [],
       preferences: preferences,
       directoryProvider: () async => directory,
     );
@@ -146,6 +150,7 @@ void main() {
       expect(await untouched.exists(), true);
 
       final reloaded = VirtualPhoneWallpaperStore(
+        catalogProvider: () async => const [],
         preferences: preferences,
         directoryProvider: () async => directory,
       );
@@ -239,6 +244,7 @@ void main() {
       await File(second.filePath!).writeAsBytes([1, 2, 3]);
 
       final reloaded = VirtualPhoneWallpaperStore(
+        catalogProvider: () async => const [],
         preferences: preferences,
         directoryProvider: () async => directory,
       );
@@ -292,6 +298,7 @@ void main() {
       final wallpaper = await store.importImage(await _png());
       final persisted = preferences.getString(_preferenceKey);
       final unavailable = VirtualPhoneWallpaperStore(
+        catalogProvider: () async => const [],
         preferences: preferences,
         directoryProvider: () async =>
             throw const FileSystemException('unavailable'),
@@ -302,6 +309,7 @@ void main() {
       expect(preferences.getString(_preferenceKey), persisted);
 
       final recovered = VirtualPhoneWallpaperStore(
+        catalogProvider: () async => const [],
         preferences: preferences,
         directoryProvider: () async => directory,
       );
@@ -355,6 +363,7 @@ void main() {
       await store.select('builtin-bg2');
       final saved = preferences.getString(_preferenceKey);
       final failing = VirtualPhoneWallpaperStore(
+        catalogProvider: () async => const [],
         preferences: preferences,
         directoryProvider: () async =>
             throw const FileSystemException('unwritable'),
@@ -379,6 +388,7 @@ void main() {
       final entered = Completer<void>();
       var notifications = 0;
       final temporaryStore = VirtualPhoneWallpaperStore(
+        catalogProvider: () async => const [],
         preferences: preferences,
         directoryProvider: () {
           entered.complete();

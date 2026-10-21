@@ -8,7 +8,7 @@ AgentAtelierR 是以 Android 为主要开发平台的 Flutter AI 角色互动项
 
 ## 当前版本与适用范围
 
-当前源码版本为 **AgentAtelierR 1.0.4.1 MCP FishAudio**，Android / Windows 展示版本 `1.0.4.1`，内部 Flutter 构建号 `1.0.4+52`。安卓正式更新渠道 `stable` 发布序号 55，提供 PC Agent 联动、资源更新及完整 APK 更新；本次安卓更新见 [发布说明](docs/update/RELEASE_1.0.4.1_BUILD52.md)。旧客户端需先完整覆盖安装一次本次正式 APK，之后可使用应用内更新。Windows 自动更新尚未接入。Fish Audio MCP OAuth 语音、模型选择与错误诊断详见 [语音更新说明](docs/CHANGELOG_1.0.4.1_MCP_FishAudio.md)。以下功能以当前源码为准；具体效果会受到本地资源、设备、模型和服务能力影响。
+当前源码版本为 **AgentAtelierR 1.0.4.2**，Android / Windows 源码展示版本 `1.0.4.2`，内部 Flutter 构建号 `1.0.4+53`。本次安卓正式更新渠道 `stable` 发布序号 56，包含虚拟电话、语音打断、本地识别模型下载和新增加密服装；发布说明见 [1.0.4.2 更新内容](docs/CHANGELOG_1.0.4.2.md)。程序代码更新需按 Android 提示确认安装，保留存档和聊天记录。实时电话目前仅支持 Android；Windows 自动更新尚未接入。以下功能以当前源码为准；具体效果会受到本地资源、设备、模型和服务能力影响。
 
 > 正式版提供使用加密构建脚本生成的 **release APK**，启用 Dart 混淆。当前仍沿用 Android 调试签名以兼容已有安装，并非商店正式签名包。旧版 debug 测试包的卡顿与不稳定表现不能代表 release 包。
 
@@ -29,7 +29,9 @@ AgentAtelierR 是以 Android 为主要开发平台的 Flutter AI 角色互动项
 
 主界面手机图标打开虚拟手机桌面，完整的角色状态、商店、服装、组合动作、存档和原菜单功能都在手机范围内使用。图标展开成页面，返回时缩回对应图标；系统返回和边缘手势按页面层级返回，顶部下拉可关闭手机。桌面包含故事天数、大时钟、地图位置与天气、内置或导入壁纸；顶部信号按主 LLM 延迟采样，电量对应饱食度，运营商地区随地图变化而后缀在存档内固定。玻璃开关和主题颜色实时同步，详见[虚拟手机说明](docs/virtual_phone.md)。
 
-信息应用只显示在主聊天中经 NPC 同意、用户确认添加的联系人，可通过交换联系方式、微信、QQ、SMS 等表达触发。每个 NPC 有独立私信和记忆，主聊天再遇到该人物时可以检索先前私信；记录随存档保存并隔离角色。信息右上角可单独选择回复与翻译语言，默认跟随主角，详见[NPC 信息说明](docs/npc_messages.md)。电话入口暂为预留功能，底部自定义图标支持设置快捷入口。
+信息应用只显示在主聊天中经 NPC 同意、用户确认添加的联系人，可通过交换联系方式、微信、QQ、SMS 等表达触发。每个 NPC 有独立私信和记忆，主聊天再遇到该人物时可以检索先前私信；记录随存档保存并隔离角色。信息右上角可单独选择回复与翻译语言，默认跟随主角，详见[NPC 信息说明](docs/npc_messages.md)。
+
+电话应用支持与莱莎、科洛蒂娅进行前台语音通话，两人朗读语言和 CC 翻译均跟随主语言设置。麦克风音频只在设备内经过 Silero VAD 与 Sherpa-ONNX SenseVoice 识别，识别文字使用当前聊天 LLM，回复由 Fish Audio REST 流式 PCM 播放。电话设置支持模型自动下载、解压和手动导入；同时需要现有 LLM 配置和 Fish REST API Key。角色说话时保持回声消除收音，用户插话会停止旧回复，也可点击“打断”；进入后台、系统通话抢占或切换存档会结束本次通话。只保存识别文字和实际播放完成的角色台词，不保存麦克风原始音频。实现与配置见[实时角色电话说明](docs/realtime_call/protocol.md)。
 
 ## PC Agent 联动
 
@@ -117,6 +119,7 @@ APK 输出位于 `build/app/outputs/flutter-apk/`。Windows 目标还需 Visual 
 | `lib/src/ai_services.dart`、`lib/src/gemini_interactions.dart` | LLM、TTS 与 Gemini 协议适配 |
 | `lib/src/character_*.dart` | 角色资源、动作、表情、视线与语音表现 |
 | `lib/src/continuous_asmr_page.dart` | 持续 ASMR 的准备与播放界面 |
+| `lib/src/realtime_call/` | 前台角色电话、本地 VAD/ASR、流式 LLM/TTS、通话记录与设置 |
 | `lib/src/world_map_screen.dart`、`lib/src/stage_environment_catalog.dart` | 地图、地点和场景映射 |
 | `lib/src/local_skin_store.dart`、`lib/src/appearance_picker_page.dart` | 本地服装导入与切换 |
 | `lib/src/memory_ledger.dart`、`lib/src/memory_timeline.dart`、`lib/src/manual_memory_consolidation.dart` | 追加式记忆账本、可解释召回与手动整理 |

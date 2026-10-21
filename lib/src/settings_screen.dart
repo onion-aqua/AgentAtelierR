@@ -1346,9 +1346,9 @@ class SettingsScreenState extends State<SettingsScreen> {
                   title: const Text('AgentAtelierR'),
                   subtitle: Text(
                     language.text(
-                      '版本 1.0.4.1 MCP FishAudio',
-                      'Version 1.0.4.1 MCP FishAudio',
-                      'バージョン 1.0.4.1 MCP FishAudio',
+                      '版本 1.0.4.2',
+                      'Version 1.0.4.2',
+                      'バージョン 1.0.4.2',
                     ),
                   ),
                 ),

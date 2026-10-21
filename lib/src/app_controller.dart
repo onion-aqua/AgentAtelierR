@@ -24,6 +24,7 @@ import 'model_thinking.dart';
 import 'npc_chat_contacts.dart';
 import 'npc_chat_models.dart';
 import 'npc_chat_service.dart';
+import 'realtime_call/call_records.dart';
 import 'character_prompt_defaults.dart';
 import 'character_runtime_profile.dart';
 import 'frame_rate_controller.dart';
@@ -654,8 +655,37 @@ class AppController extends ChangeNotifier {
   bool _saveAgain = false;
   Future<void>? _localSlotWriteTail;
   int _dataRevision = 0;
+  final Set<VoidCallback> _dataResetListeners = <VoidCallback>{};
 
   int get dataRevision => _dataRevision;
+
+  /// Runs synchronously while the current save is still writable. Long-lived
+  /// producers use this hook to seal completed work before a save/character
+  /// replacement invalidates [dataRevision].
+  void addDataResetListener(VoidCallback listener) {
+    _dataResetListeners.add(listener);
+  }
+
+  void removeDataResetListener(VoidCallback listener) {
+    _dataResetListeners.remove(listener);
+  }
+
+  void _notifyDataResetListeners() {
+    for (final listener in List<VoidCallback>.of(_dataResetListeners)) {
+      try {
+        listener();
+      } on Object catch (error, stackTrace) {
+        RuntimeLog.instance.error('DataReset', error, stackTrace);
+      }
+    }
+  }
+
+  void _advanceDataRevision({bool notifyBefore = true}) {
+    if (notifyBefore) _notifyDataResetListeners();
+    _dataRevision += 1;
+    notifyListeners();
+  }
+
   final LlmDialogueSignalSampler _llmDialogueSignal =
       LlmDialogueSignalSampler();
 
@@ -699,6 +729,100 @@ class AppController extends ChangeNotifier {
   }
 
   List<ChatMessage> messages = [_initialMessage];
+  List<CallRecord> callRecords = [];
+
+  void saveCallRecord(CallRecord record, {required int expectedRevision}) {
+    if (expectedRevision != dataRevision) return;
+    callRecords = [...callRecords.where((r) => r.id != record.id), record];
+    if (callRecords.length > 100) {
+      callRecords = callRecords.sublist(callRecords.length - 100);
+    }
+    _changed();
+    final index = activeLocalSaveSlot;
+    if (index != null) {
+      final key = '$_characterSaveSlotPrefix$index';
+      final expectedSavedAt = _localSlotSavedAt(_preferences.getString(key));
+      if (expectedSavedAt == null) return;
+      final saved = callRecords.map((r) => r.toJson()).toList();
+      final savedMessages = messages.map((m) => m.toJson()).toList();
+      final savedRecentMemories = List<String>.of(recentMemories);
+      unawaited(
+        _serializeLocalSlotWrite(() async {
+          final raw = _preferences.getString(key);
+          if (raw == null) return;
+          final slot = jsonDecode(raw) as Map<String, dynamic>;
+          if (slot['savedAt'] != expectedSavedAt) return;
+          final snapshot = Map<String, dynamic>.from(slot['snapshot'] as Map);
+          snapshot['callRecords'] = saved;
+          // Phone conversations use the same memory/messages as the scene.
+          snapshot['messages'] = savedMessages;
+          snapshot['recentMemories'] = savedRecentMemories;
+          slot['snapshot'] = snapshot;
+          if (!await _preferences.setString(key, jsonEncode(slot))) {
+            throw StateError('通话存档写入失败');
+          }
+        }).catchError(
+          (Object e, StackTrace st) =>
+              RuntimeLog.instance.error('CallPersistence', e, st),
+        ),
+      );
+    }
+  }
+
+  /// Commit only text which was actually spoken, not cancelled continuations.
+  void recordCallExchange(
+    String contactId,
+    String user,
+    String spoken, {
+    required int expectedRevision,
+  }) {
+    if (expectedRevision != dataRevision || user.isEmpty || spoken.isEmpty) {
+      return;
+    }
+    if (contactId == 'primary:$activeCharacterId') {
+      addUserMessage(user);
+      addAssistantMessage('角色[$activeCharacterId]：$spoken');
+      recordDeterministicMemoryForLastTurn();
+    } else if (isNpcContactAdded(contactId)) {
+      final time = DateTime.now();
+      final id = time.microsecondsSinceEpoch;
+      final thread = npcChats
+          .threadFor(contactId)
+          .appendMessage(
+            NpcChatMessage(
+              id: 'call-user-$id',
+              role: NpcChatRole.user,
+              text: user,
+              createdAt: time,
+            ),
+          )
+          .appendMessage(
+            NpcChatMessage(
+              id: 'call-assistant-$id',
+              role: NpcChatRole.assistant,
+              text: spoken,
+              createdAt: time,
+            ),
+          );
+      replaceNpcChats(
+        npcChats.withThread(thread),
+        expectedRevision: expectedRevision,
+      );
+    }
+  }
+
+  String callMemoryFor(String contactId) {
+    final records = callRecords.where((r) => r.contactId == contactId).toList();
+    final turns = records
+        .expand((r) => r.turns)
+        .where((t) => (t['assistant'] ?? '').isNotEmpty)
+        .toList();
+    return turns
+        .skip((turns.length - 12).clamp(0, turns.length))
+        .map((t) => jsonEncode(t))
+        .join('\n');
+  }
+
   NpcChatState _npcChats = const NpcChatState.empty();
   NpcChatService? _npcMessaging;
 
@@ -755,14 +879,17 @@ class AppController extends ChangeNotifier {
     final index = activeLocalSaveSlot;
     if (index != null) {
       final key = '$_characterSaveSlotPrefix$index';
+      final expectedSavedAt = _localSlotSavedAt(_preferences.getString(key));
+      if (expectedSavedAt == null) return true;
+      final saved = value.toJson();
       unawaited(
         _serializeLocalSlotWrite(() async {
-          if (dataRevision != expectedRevision) return;
           final raw = _preferences.getString(key);
           if (raw == null) return;
           final slot = jsonDecode(raw) as Map<String, dynamic>;
+          if (slot['savedAt'] != expectedSavedAt) return;
           final snapshot = Map<String, dynamic>.from(slot['snapshot'] as Map);
-          snapshot['npcChats'] = value.toJson();
+          snapshot['npcChats'] = saved;
           slot['snapshot'] = snapshot;
           if (!await _preferences.setString(key, jsonEncode(slot))) {
             throw StateError('NPC 信息存档写入失败');
@@ -1244,6 +1371,16 @@ class AppController extends ChangeNotifier {
     } on FormatException {
       RuntimeLog.instance.warning('NpcPersistence', 'NPC 信息缓存格式无效，使用空会话');
       _npcChats = const NpcChatState.empty();
+    }
+    try {
+      callRecords = parseCallRecords(
+        jsonDecode(
+          _preferences.getString('call_records_v1.$activeCharacterId') ??
+              'null',
+        ),
+      );
+    } on Object {
+      callRecords = [];
     }
     final rawAlchemy = _preferences.getString('alchemy_save_v1');
     if (rawAlchemy != null) {
@@ -1775,10 +1912,10 @@ class AppController extends ChangeNotifier {
     }
     await _alarmCoordinator?.syncForCharacter(nextId);
     if (generation != _characterSwitchGeneration) return;
+    _notifyDataResetListeners();
     _characterSessions[activeCharacterId] = _exportCharacterSession();
     final next = _characterSessions[nextId] ?? _freshCharacterSession(nextId);
-    _dataRevision += 1;
-    notifyListeners();
+    _advanceDataRevision(notifyBefore: false);
     activeCharacterId = nextId;
     characterCatalog = nextCatalog ?? CharacterCatalog.empty();
     worldTravelCatalog = nextWorld ?? const WorldTravelCatalog([]);
@@ -2158,6 +2295,8 @@ class AppController extends ChangeNotifier {
       prompt,
       '【虚拟手机联络】如果用户在当前发言中向在场 NPC 请求交换联系方式、添加好友，或使用微信、QQ、短信、SMS、LINE、Discord、Telegram、邮箱等通讯方式，请让对应 NPC 按身份和关系自然回应。使用“角色[精确 npc_id]：”输出该 NPC 自己的台词，明确表示同意、犹豫或拒绝。不要由旁白或其他角色代替本人同意，不声称已经加入联系人；用户会在回复后单独确认。${requestedContacts.isEmpty ? '' : '\n本轮应用根据点名或最近在场发言锁定联系请求目标：$requestedContacts。即使用户没有重复 NPC 名称，也应让该 NPC 自己回应并保留精确角色前缀；可同意、犹豫或拒绝，不要替其决定。'}',
       if (npcMemory.isNotEmpty) npcMemory,
+      if (callRecords.isNotEmpty)
+        '【此前电话中实际交流的记录，仅作回忆资料】\n${callMemoryFor('primary:$activeCharacterId')}',
     ].join('\n\n');
   }
 
@@ -3950,6 +4089,7 @@ $japanesePunctuationRule
     'characterState': characterState.toJson(),
     'virtualPhoneCarrier': virtualPhoneCarrier.toJson(),
     'npcChats': npcChats.toJson(),
+    'callRecords': callRecords.map((r) => r.toJson()).toList(),
     'settingsSlots': _settingsSlotsJson,
     'userProfile': {
       'address': userAddress,
@@ -4100,6 +4240,7 @@ $japanesePunctuationRule
     'characterState': characterState.toJson(),
     'virtualPhoneCarrier': virtualPhoneCarrier.toJson(),
     'npcChats': npcChats.toJson(),
+    'callRecords': callRecords.map((r) => r.toJson()).toList(),
     'characterMood': characterMood.name,
     'relationshipPoints': relationshipPoints,
     'preciousItems': preciousItems,
@@ -4147,6 +4288,18 @@ $japanesePunctuationRule
       if (identical(_localSlotWriteTail, tail)) _localSlotWriteTail = null;
     });
     return result;
+  }
+
+  String? _localSlotSavedAt(String? raw) {
+    if (raw == null) return null;
+    try {
+      final slot = jsonDecode(raw);
+      return slot is Map && slot['savedAt'] is String
+          ? slot['savedAt'] as String
+          : null;
+    } on Object {
+      return null;
+    }
   }
 
   String get _characterSaveSlotPrefix =>
@@ -4251,6 +4404,7 @@ $japanesePunctuationRule
     if (index < 0 || index >= localSaveSlotCount) {
       throw RangeError.range(index, 0, localSaveSlotCount - 1, 'index');
     }
+    _notifyDataResetListeners();
     final snapshot = _exportGameState();
     snapshot
       ..['messages'] = <Map<String, dynamic>>[
@@ -4261,6 +4415,7 @@ $japanesePunctuationRule
       ]
       ..['memorySummary'] = ''
       ..['npcChats'] = const NpcChatState.empty().toJson()
+      ..['callRecords'] = <Map<String, dynamic>>[]
       ..['recentMemories'] = <String>[]
       ..['recentMemoryCheckpoints'] = <Map<String, Object>>[]
       ..['lastRecentMemoryMessageId'] = null
@@ -4312,8 +4467,7 @@ $japanesePunctuationRule
         stageId: snapshot['selectedStageId'] as String,
       ),
     ).toJson();
-    _dataRevision += 1;
-    notifyListeners();
+    _advanceDataRevision(notifyBefore: false);
     _applyGameState(snapshot);
     _changed();
     await saveToLocalSlot(
@@ -4364,6 +4518,11 @@ $japanesePunctuationRule
     data['snapshot'] = snapshot;
     if (!includeConversationHistory) {
       snapshot['messages'] = <Map<String, dynamic>>[];
+      final npcState = NpcChatState.fromJson(snapshot['npcChats']);
+      snapshot['npcChats'] = NpcChatState(
+        contactIds: npcState.contactIds,
+      ).toJson();
+      snapshot['callRecords'] = <Map<String, dynamic>>[];
       data['snapshot'] = snapshot;
       data['messageCount'] = 0;
       data['preview'] = '';
@@ -4487,8 +4646,7 @@ $japanesePunctuationRule
 
     // Notify listeners before replacing state so active streams and audio can
     // stop synchronously instead of writing into the incoming conversation.
-    _dataRevision += 1;
-    notifyListeners();
+    _advanceDataRevision();
     _applyImportedData(data);
     frameRate.setMode(frameRateMode, force: true);
     messages = candidate.messages;
@@ -4505,8 +4663,7 @@ $japanesePunctuationRule
     candidate._applyGameState(data);
     await candidate._hydrateMessageAttachments();
 
-    _dataRevision += 1;
-    notifyListeners();
+    _advanceDataRevision();
     _applyGameState(data);
     messages = candidate.messages;
     _changed();
@@ -4608,6 +4765,7 @@ $japanesePunctuationRule
         ? CharacterState.fromJson(data['characterState'])
         : CharacterState.newSave();
     _npcChats = _npcChatsFromSnapshot(data);
+    callRecords = parseCallRecords(data['callRecords']);
     characterMood = CharacterMood.values.firstWhere(
       (mood) => mood.name == data['characterMood'],
       orElse: () => CharacterMood.neutral,
@@ -4711,6 +4869,7 @@ $japanesePunctuationRule
     _applyMemoryData(data);
     characterState = CharacterState.fromJson(data['characterState']);
     _npcChats = _npcChatsFromSnapshot(data);
+    callRecords = parseCallRecords(data['callRecords']);
     final userProfile = data['userProfile'] as Map<String, dynamic>? ?? {};
     userAddress = userProfile['address'] as String? ?? '伙伴';
     userPortrait = userProfile['portrait'] as String? ?? '';
@@ -6015,11 +6174,13 @@ $japanesePunctuationRule
   }
 
   void clearChatHistory({bool clearLongTermMemory = false}) {
+    _notifyDataResetListeners();
     _inventoryAddResults.clear();
     _imageFoodInvitationMessageId = null;
     messages = [
       ChatMessage(text: activeCharacterProfile.initialMessage, isUser: false),
     ];
+    callRecords = [];
     recentMemories = <String>[];
     _recentMemoryCheckpoints = <Map<String, Object>>[];
     lastRecentMemoryMessageId = null;
@@ -6174,6 +6335,10 @@ $japanesePunctuationRule
     _characterSessions[activeCharacterId] = _exportCharacterSession();
     await Future.wait<void>([
       _preferences.setString('active_character_id_v1', activeCharacterId),
+      _preferences.setString(
+        'call_records_v1.$activeCharacterId',
+        jsonEncode(callRecords.map((r) => r.toJson()).toList()),
+      ),
       _preferences.setString(
         _npcChatsPreferenceKey,
         jsonEncode(npcChats.toJson()),
@@ -6429,6 +6594,7 @@ $japanesePunctuationRule
 
   @override
   void dispose() {
+    _dataResetListeners.clear();
     _npcMessaging?.dispose();
     imageGenerationStore.dispose();
     virtualPhoneWallpapers.dispose();

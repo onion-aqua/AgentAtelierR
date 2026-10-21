@@ -78,6 +78,12 @@ void main() {
 
     expect(find.byType(UpdateCenterPage), findsOneWidget);
     expect(find.byKey(const ValueKey('update-auto-check')), findsOneWidget);
-    expect(find.text('自动更新未配置'), findsOneWidget);
+    final check = find.byKey(const ValueKey('update-check-now'));
+    await tester.ensureVisible(check);
+    await tester.pumpAndSettle();
+    await tester.tap(check);
+    await tester.pumpAndSettle();
+    expect(runtime.lastCheck?.status.name, 'disabled');
+    expect(find.text('自动更新未配置'), findsWidgets);
   });
 }

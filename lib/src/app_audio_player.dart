@@ -4,6 +4,7 @@ import 'package:audioplayers/audioplayers.dart';
 
 import 'android_companion_runtime.dart';
 import 'runtime_log.dart';
+import 'realtime_call/call_audio_priority.dart';
 
 /// Saves the user's gain separately from the gain suppressed by a phone call.
 /// Muting never restarts stopped audio or rewinds a conversation/ASMR segment.
@@ -11,6 +12,7 @@ class AppAudioPlayer extends AudioPlayer {
   AppAudioPlayer({super.playerId, AndroidCompanionRuntime? runtime})
     : _runtime = runtime ?? AndroidCompanionRuntime.instance {
     _runtime.addListener(_onRuntimeChanged);
+    CallAudioPriority.instance.addListener(_onRuntimeChanged);
     _completion = onPlayerComplete.listen(
       (_) {
         if (releaseMode != ReleaseMode.loop) _setActive(false);
@@ -36,7 +38,11 @@ class AppAudioPlayer extends AudioPlayer {
 
   Future<void> _writeVolume() {
     final next = _volumeTail.then((_) async {
-      if (!_closed) await super.setVolume(_runtime.muted ? 0 : _userVolume);
+      if (!_closed) {
+        await super.setVolume(
+          _runtime.muted || CallAudioPriority.instance.value ? 0 : _userVolume,
+        );
+      }
     });
     _volumeTail = next.catchError((Object error) {
       RuntimeLog.instance.warning('Audio', '播放器音量更新失败：${error.runtimeType}');
@@ -143,6 +149,7 @@ class AppAudioPlayer extends AudioPlayer {
     _closed = true;
     ++_playEpoch;
     _runtime.removeListener(_onRuntimeChanged);
+    CallAudioPriority.instance.removeListener(_onRuntimeChanged);
     await _completion.cancel();
     await _volumeTail;
     await super.dispose();

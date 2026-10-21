@@ -43,6 +43,7 @@ void main() {
     final preferences = await SharedPreferences.getInstance();
     directory = await Directory.systemTemp.createTemp('phone_wallpaper_page_');
     store = VirtualPhoneWallpaperStore(
+      catalogProvider: () async => const [],
       preferences: preferences,
       directoryProvider: () async => directory,
     );

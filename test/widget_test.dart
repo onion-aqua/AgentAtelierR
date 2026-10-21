@@ -2191,10 +2191,10 @@ void main() {
     final seated = characterAppearanceById('seated_01');
     final standing = characterAppearanceById('standing_99');
 
-    expect(characterAppearances, hasLength(7));
+    expect(characterAppearances, hasLength(8));
     expect(
       characterAppearances.where((appearance) => appearance.animated),
-      hasLength(7),
+      hasLength(8),
     );
     expect(
       characterAppearances.where((appearance) => !appearance.animated),
@@ -2218,6 +2218,11 @@ void main() {
       characterAppearanceById('crf_skn_002_0006_01').promptDescription,
       contains('深紫色'),
     );
+    expect(
+      characterAppearanceById('crf_skn_002_0007_01').baseAppearanceId,
+      'seated_01',
+    );
+    expect(characterAppearanceById('crf_skn_002_0007_01').hasPreview, isTrue);
   });
 
   test(

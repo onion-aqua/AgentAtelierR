@@ -27,10 +27,13 @@ class MainActivity : FlutterActivity() {
     private var cosyVoiceBridge: CosyVoiceFlutterBridge? = null
     private var companionRuntimeBridge: CompanionRuntimeBridge? = null
     private var apkUpdateBridge: ApkUpdateBridge? = null
+    private var realtimePcmBridge: RealtimePcmBridge? = null
     private var companionStartedForActivity = false
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        realtimePcmBridge?.dispose()
+        realtimePcmBridge = RealtimePcmBridge(applicationContext, flutterEngine.dartExecutor.binaryMessenger)
         companionRuntimeBridge?.dispose()
         companionRuntimeBridge = CompanionRuntimeBridge(
             this,
@@ -93,6 +96,8 @@ class MainActivity : FlutterActivity() {
     }
 
     override fun onDestroy() {
+        realtimePcmBridge?.dispose()
+        realtimePcmBridge = null
         companionRuntimeBridge?.dispose()
         companionRuntimeBridge = null
         apkUpdateBridge?.dispose()
