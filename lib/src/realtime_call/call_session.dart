@@ -10,6 +10,7 @@ import '../app_localization.dart';
 import '../character_runtime_profile.dart';
 import '../chat_segments.dart' show klaudiaFishAudioReferenceId;
 import '../dialogue_language_guard.dart';
+import '../platform_capabilities.dart';
 import 'call_audio.dart';
 import 'call_audio_priority.dart';
 import 'call_records.dart';
@@ -124,6 +125,7 @@ class RealtimeCallController extends CallUiController
 
   @override
   List<CallContact> get contacts {
+    if (!AppPlatformCapabilities.supportsRealtimeCalls) return const [];
     // Calls are currently adapted only for these two Ryza-world characters.
     // Never reuse Sophie's persona or save as a callable Ryza profile.
     if (app.activeCharacterId != CharacterRuntimeIds.ryza) return const [];
@@ -227,6 +229,7 @@ class RealtimeCallController extends CallUiController
       (throw const FormatException('目前仅支持与莱莎和科洛蒂娅通话。'));
   @override
   Future<void> offerCall(String contactId) async {
+    if (!AppPlatformCapabilities.supportsRealtimeCalls) return;
     if (_closed || active || _phase == CallUiPhase.incoming) return;
     if (_finishing != null) await _finishing;
     if (_preparing != null) await _preparing;
@@ -278,6 +281,7 @@ class RealtimeCallController extends CallUiController
   Future<void> declineCall() => _finish(CallHistoryStatus.rejected);
   @override
   Future<void> startCall(String contactId) async {
+    if (!AppPlatformCapabilities.supportsRealtimeCalls) return;
     if (_closed || active || _phase == CallUiPhase.incoming) return;
     if (_finishing != null) await _finishing;
     if (_preparing != null) await _preparing;

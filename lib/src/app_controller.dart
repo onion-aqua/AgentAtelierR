@@ -25,6 +25,7 @@ import 'npc_chat_contacts.dart';
 import 'npc_chat_models.dart';
 import 'npc_chat_service.dart';
 import 'realtime_call/call_records.dart';
+import 'platform_capabilities.dart';
 import 'character_prompt_defaults.dart';
 import 'character_runtime_profile.dart';
 import 'frame_rate_controller.dart';
@@ -1882,6 +1883,12 @@ class AppController extends ChangeNotifier {
   Future<void> initializeAlarmRuntime({
     CharacterAlarmAccess access = const PluginCharacterAlarmAccess(),
   }) async {
+    // Preserve imported mobile alarm data without invoking a mobile plugin
+    // or attempting to restore scheduled alarms on desktop.
+    if (!AppPlatformCapabilities.supportsVoiceAlarms &&
+        access is PluginCharacterAlarmAccess) {
+      return;
+    }
     final coordinator = _alarmCoordinator ??= CharacterAlarmCoordinator(
       _preferences,
       access: access,
@@ -4519,9 +4526,8 @@ $japanesePunctuationRule
     if (!includeConversationHistory) {
       snapshot['messages'] = <Map<String, dynamic>>[];
       final npcState = NpcChatState.fromJson(snapshot['npcChats']);
-      snapshot['npcChats'] = NpcChatState(
-        contactIds: npcState.contactIds,
-      ).toJson();
+      snapshot['npcChats'] = NpcChatState(contactIds: npcState.contactIds)
+          .toJson();
       snapshot['callRecords'] = <Map<String, dynamic>>[];
       data['snapshot'] = snapshot;
       data['messageCount'] = 0;

@@ -17,6 +17,7 @@ import 'src/app_shell.dart';
 import 'src/runtime_log.dart';
 import 'src/android_companion_runtime.dart';
 import 'src/companion_notification_permission.dart';
+import 'src/platform_capabilities.dart';
 import 'src/local_skin_store.dart';
 import 'src/character_appearance.dart';
 import 'src/character_runtime_profile.dart';
@@ -119,7 +120,7 @@ class _BootstrapAppState extends State<_BootstrapApp> {
       await RuntimeLog.instance.initialize();
       RuntimeLog.instance.info('App', '应用启动，版本 1.0.4.2');
       await initSpineFlutter(enableMemoryDebugging: false);
-      await Alarm.init();
+      if (AppPlatformCapabilities.supportsVoiceAlarms) await Alarm.init();
       await AndroidCompanionRuntime.instance.initialize();
       await AudioPlayer.global.setAudioContext(
         AudioContext(

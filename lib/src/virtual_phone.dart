@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'app_localization.dart';
 import 'glass_ui.dart';
+import 'platform_capabilities.dart';
 import 'virtual_phone_app_route.dart';
 import 'virtual_phone_chrome.dart';
 import 'virtual_phone_wallpaper_image.dart';
@@ -34,6 +35,12 @@ enum VirtualPhoneApp {
 }
 
 extension VirtualPhoneAppData on VirtualPhoneApp {
+  bool get supported => switch (this) {
+    VirtualPhoneApp.phone => AppPlatformCapabilities.supportsRealtimeCalls,
+    VirtualPhoneApp.alarms => AppPlatformCapabilities.supportsVoiceAlarms,
+    _ => true,
+  };
+
   IconData get icon => switch (this) {
     VirtualPhoneApp.status => Icons.favorite_outline_rounded,
     VirtualPhoneApp.shop => Icons.storefront_outlined,
@@ -554,6 +561,7 @@ class _VirtualPhoneCardState extends State<_VirtualPhoneCard> {
   }
 
   void _openApp(VirtualPhoneApp app, {VirtualPhonePageBuilder? builder}) {
+    if (!app.supported) return;
     final navigator = _navigatorKey.currentState;
     if (_closing || _navOpening || navigator == null || navigator.canPop()) {
       return;
@@ -1043,6 +1051,8 @@ class _VirtualPhoneCardState extends State<_VirtualPhoneCard> {
   }
 
   Widget _buildHome(BuildContext context) {
+    final apps = _apps.where((app) => app.supported).toList();
+    final dockApps = _dockApps.where((app) => app.supported).toList();
     return LayoutBuilder(
       builder: (context, constraints) {
         final iconSize = ((constraints.maxWidth - 36 - 30) / 4).clamp(
@@ -1074,7 +1084,7 @@ class _VirtualPhoneCardState extends State<_VirtualPhoneCard> {
                         primary: false,
                         physics: const NeverScrollableScrollPhysics(),
                         padding: EdgeInsets.zero,
-                        itemCount: _apps.length,
+                        itemCount: apps.length,
                         gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
                           crossAxisCount: 4,
                           crossAxisSpacing: 10,
@@ -1082,7 +1092,7 @@ class _VirtualPhoneCardState extends State<_VirtualPhoneCard> {
                           mainAxisExtent: rowHeight,
                         ),
                         itemBuilder: (context, index) {
-                          final app = _apps[index];
+                          final app = apps[index];
                           final callback = widget.callbackFor(app);
                           final hasPage =
                               widget.pages.containsKey(app) || callback != null;
@@ -1118,7 +1128,7 @@ class _VirtualPhoneCardState extends State<_VirtualPhoneCard> {
                   child: Row(
                     crossAxisAlignment: CrossAxisAlignment.center,
                     children: [
-                      for (final app in _dockApps)
+                      for (final app in dockApps)
                         Expanded(
                           child: _PhoneAppIcon(
                             key: ValueKey('virtual-phone-app-${app.name}'),

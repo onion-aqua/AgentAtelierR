@@ -7,6 +7,7 @@
     [string]$AssetName = 'AgentAtelierR-1.0.4-release.apk',
     [string]$AdditionalAssetPath = '',
     [string]$AdditionalAssetName = '',
+    [switch]$DirectConnection,
     [switch]$Prerelease,
     [switch]$Publish
 )
@@ -224,7 +225,14 @@ try {
     }
 
     $accessToken = Get-GitHubToken
-    $script:githubClient = [System.Net.Http.HttpClient]::new()
+    if ($DirectConnection) {
+        $directHandler = [System.Net.Http.HttpClientHandler]::new()
+        $directHandler.UseProxy = $false
+        $script:githubClient = [System.Net.Http.HttpClient]::new($directHandler)
+    }
+    else {
+        $script:githubClient = [System.Net.Http.HttpClient]::new()
+    }
     $script:githubClient.Timeout = [TimeSpan]::FromHours(2)
     $script:githubClient.DefaultRequestHeaders.Authorization =
         [System.Net.Http.Headers.AuthenticationHeaderValue]::new('Bearer', $accessToken)

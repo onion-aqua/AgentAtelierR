@@ -24,3 +24,13 @@
 - 麦克风原始录音只用于本地识别；识别文字、LLM 回复和字幕翻译产生正常服务用量。通话语音需要 Fish REST API Key，MCP OAuth 无法替代。
 - 免提下的插话效果受手机回声消除能力、距离和音量影响，建议使用耳机。
 - 本地识别模型约 156 MB。当前 Gitee 尚无模型附件，将回退官方 GitHub；下载失败时可手动导入模型。
+
+## Windows PC 版
+
+- 同步聊天、长期记忆、NPC 信息、生图、壁纸、云端语音及加密服装资源。
+- PC Agent 联动使用粘贴配对数据，保留前台问答、任务和断线补拉。
+- 移除依赖移动平台的电话、语音闹钟、相机、本地 CosyVoice 和厂商推送入口。
+
+下载 `AgentAtelierR-1.0.4.2-build53-windows-x64-release.zip` 并完整解压。退出旧版本后运行新目录中的 `AgentAtelierR.exe`，保留同目录的 DLL 和 `data` 文件夹。存档和接口设置继续使用原 Windows 用户目录。PC 版后续更新通过“设置 → 关于 → PC 版下载与更新”下载完整包。
+
+Windows x64 保留云端 TTS 和持续 ASMR；实时电话目前仅支持 Android。安卓 stable 更新仍使用 APK，PC ZIP 用于 Windows。

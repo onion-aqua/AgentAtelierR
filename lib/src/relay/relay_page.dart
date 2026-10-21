@@ -1,10 +1,12 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 
 import '../foreground_dialog_coordinator.dart';
 import '../glass_ui.dart';
+import '../platform_capabilities.dart';
 import 'relay_protocol.dart';
 import 'relay_service.dart';
 
@@ -82,8 +84,13 @@ class _RelayPageState extends State<RelayPage> {
     if (busy || !service.initialized) return;
     final defaultSelected =
         service.serverConfig.isPinned && service.serverOverride == null;
-    if (!camera && defaultSelected) return;
-    final source = camera
+    final useCamera = camera && AppPlatformCapabilities.supportsCameraPairing;
+    if (!useCamera &&
+        defaultSelected &&
+        AppPlatformCapabilities.supportsCameraPairing) {
+      return;
+    }
+    final source = useCamera
         ? await (widget.scanPairingCode?.call(context) ??
               Navigator.of(context).push<String>(
                 MaterialPageRoute(
@@ -104,7 +111,7 @@ class _RelayPageState extends State<RelayPage> {
         qr = PairingQr.parse(source);
       } on FormatException {
         // JSON decoder diagnostics can echo the original QR, including secrets.
-        throw const FormatException('配对二维码格式无效，请重新扫描 PC 生成的二维码。');
+        throw const FormatException('配对二维码格式无效，请重新获取 PC 生成的配对数据。');
       }
       service.verifyPairingServer(qr);
       final pinned = service.isDefaultServer(qr.origin);
@@ -135,7 +142,9 @@ class _RelayPageState extends State<RelayPage> {
       if (trusted != true || !mounted) return;
       final id = await service.pair(
         qr,
-        'AgentAtelierR Android',
+        defaultTargetPlatform == TargetPlatform.windows
+            ? 'AgentAtelierR Windows'
+            : 'AgentAtelierR Android',
         trustedByUser: true,
       );
       await service.sync(id, snapshot: true);
@@ -224,7 +233,11 @@ class _RelayPageState extends State<RelayPage> {
         body: ListView(
           padding: const EdgeInsets.all(16),
           children: [
-            const Text('通过你信任的 HTTPS 中继连接 PC。前台问答与任务控制不依赖角色聊天。后台提醒需要配置真实推送渠道。'),
+            Text(
+              AppPlatformCapabilities.supportsRemotePush
+                  ? '通过你信任的 HTTPS 中继连接 PC。前台问答与任务控制不依赖角色聊天。后台提醒需要配置真实推送渠道。'
+                  : '通过你信任的 HTTPS 中继连接 PC。前台问答与任务控制不依赖角色聊天；应用运行时同步消息，重新打开后补拉。',
+            ),
             if (service.startupError != null) Text(service.startupError!),
             if (error != null)
               Text(
@@ -239,7 +252,9 @@ class _RelayPageState extends State<RelayPage> {
                 service.serverOverride ??
                     (service.serverConfig.isPinned
                         ? '默认已配置；如有自己的中继可自行填入'
-                        : '扫码时选择，或自行填入 HTTPS 中继地址'),
+                        : AppPlatformCapabilities.supportsCameraPairing
+                        ? '扫码时选择，或自行填入 HTTPS 中继地址'
+                        : '从配对数据选择，或自行填入 HTTPS 中继地址'),
               ),
               trailing: TextButton(
                 onPressed: busy || !service.initialized
@@ -250,18 +265,27 @@ class _RelayPageState extends State<RelayPage> {
             ),
             if (service.pendingRevocationCount > 0)
               Text(
-                '已从本机解绑，${service.pendingRevocationCount} 项服务器撤销等待联网重试。无需另一台设备确认，可立即重新扫码。',
+                '已从本机解绑，${service.pendingRevocationCount} 项服务器撤销等待联网重试。无需另一台设备确认，可立即重新配对。',
               ),
             Wrap(
               spacing: 12,
               children: [
                 FilledButton.icon(
                   onPressed: busy || !service.initialized ? null : pair,
-                  icon: const Icon(Icons.qr_code_scanner),
-                  label: const Text('扫码绑定 / 重新配对'),
+                  icon: Icon(
+                    AppPlatformCapabilities.supportsCameraPairing
+                        ? Icons.qr_code_scanner
+                        : Icons.content_paste_rounded,
+                  ),
+                  label: Text(
+                    AppPlatformCapabilities.supportsCameraPairing
+                        ? '扫码绑定 / 重新配对'
+                        : '粘贴配对数据 / 重新配对',
+                  ),
                 ),
-                if (!service.serverConfig.isPinned ||
-                    service.serverOverride != null)
+                if (AppPlatformCapabilities.supportsCameraPairing &&
+                    (!service.serverConfig.isPinned ||
+                        service.serverOverride != null))
                   TextButton(
                     onPressed: busy || !service.initialized
                         ? null
@@ -270,37 +294,38 @@ class _RelayPageState extends State<RelayPage> {
                   ),
               ],
             ),
-            _RelayCard(
-              child: Padding(
-                padding: const EdgeInsets.all(12),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text('远程通知'),
-                    Text(service.pushStatus),
-                    const Text(
-                      '默认不展示完整问题正文。未配置厂商 SDK 或 FCM 项目时，后台、锁屏及进程被回收后的提醒不可用；回到应用会重新同步。',
-                    ),
-                    Wrap(
-                      children: [
-                        TextButton(
-                          onPressed: busy
-                              ? null
-                              : () => run(service.enablePush),
-                          child: const Text('启用推送 / 申请通知权限'),
-                        ),
-                        TextButton(
-                          onPressed: busy
-                              ? null
-                              : () => run(service.disablePush),
-                          child: const Text('停用推送'),
-                        ),
-                      ],
-                    ),
-                  ],
+            if (AppPlatformCapabilities.supportsRemotePush)
+              _RelayCard(
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text('远程通知'),
+                      Text(service.pushStatus),
+                      const Text(
+                        '默认不展示完整问题正文。未配置厂商 SDK 或 FCM 项目时，后台、锁屏及进程被回收后的提醒不可用；回到应用会重新同步。',
+                      ),
+                      Wrap(
+                        children: [
+                          TextButton(
+                            onPressed: busy
+                                ? null
+                                : () => run(service.enablePush),
+                            child: const Text('启用推送 / 申请通知权限'),
+                          ),
+                          TextButton(
+                            onPressed: busy
+                                ? null
+                                : () => run(service.disablePush),
+                            child: const Text('停用推送'),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
                 ),
               ),
-            ),
             if (service.profiles.isEmpty)
               const Padding(
                 padding: EdgeInsets.all(24),

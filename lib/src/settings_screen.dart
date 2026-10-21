@@ -49,6 +49,8 @@ import 'speech_loudness.dart';
 import 'companion_runtime_settings.dart';
 import 'update/update_center_page.dart';
 import 'update/update_runtime.dart';
+import 'desktop_updates_page.dart';
+import 'platform_capabilities.dart';
 
 String _activeTtsModel(AppController controller) =>
     switch (controller.ttsProvider) {
@@ -1205,7 +1207,29 @@ class SettingsScreenState extends State<SettingsScreen> {
                       },
                     ),
                   ),
-                for (final provider in TtsProvider.values)
+                if (!AppPlatformCapabilities.supportsLocalTts &&
+                    controller.ttsProvider == TtsProvider.local)
+                  ListTile(
+                    title: Text(
+                      language.text(
+                        '请重新选择语音服务',
+                        'Choose a supported speech service',
+                        '対応する音声サービスを選択してください',
+                      ),
+                    ),
+                    subtitle: Text(
+                      language.text(
+                        '当前配置的本地 CosyVoice 仅支持 Android。请选择下方的云端语音服务。',
+                        'The configured local CosyVoice engine requires Android. Select a cloud speech service below.',
+                        '現在設定されているローカルCosyVoiceはAndroid専用です。以下のクラウド音声サービスを選択してください。',
+                      ),
+                    ),
+                  ),
+                for (final provider in TtsProvider.values.where(
+                  (provider) =>
+                      provider != TtsProvider.local ||
+                      AppPlatformCapabilities.supportsLocalTts,
+                ))
                   ListTile(
                     key: ValueKey('tts-settings-${provider.name}'),
                     leading: Icon(
@@ -1318,10 +1342,26 @@ class SettingsScreenState extends State<SettingsScreen> {
                   key: const ValueKey('about-update-center-tile'),
                   leading: const Icon(Icons.system_update_alt_rounded),
                   title: Text(
-                    language.text('版本与更新', 'Version & updates', 'バージョンと更新'),
+                    AppPlatformCapabilities.isWindows
+                        ? language.text(
+                            'PC 版下载与更新',
+                            'PC downloads & updates',
+                            'PC版のダウンロードと更新',
+                          )
+                        : language.text(
+                            '版本与更新',
+                            'Version & updates',
+                            'バージョンと更新',
+                          ),
                   ),
                   subtitle: Text(
-                    widget.updateRuntime == null
+                    AppPlatformCapabilities.isWindows
+                        ? language.text(
+                            '下载 Windows 完整包并解压运行',
+                            'Download and extract the complete Windows package',
+                            'Windows完全パッケージを取得して展開',
+                          )
+                        : widget.updateRuntime == null
                         ? language.text(
                             '更新服务尚未初始化，当前不可用',
                             'The update service is not initialized',
@@ -1334,7 +1374,9 @@ class SettingsScreenState extends State<SettingsScreen> {
                           ),
                   ),
                   trailing: Icon(
-                    widget.updateRuntime == null
+                    AppPlatformCapabilities.isWindows
+                        ? Icons.open_in_new_rounded
+                        : widget.updateRuntime == null
                         ? Icons.cloud_off_outlined
                         : Icons.chevron_right_rounded,
                   ),
@@ -1376,6 +1418,16 @@ class SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<void> _openUpdateCenter(BuildContext context) async {
+    if (AppPlatformCapabilities.isWindows) {
+      await _openDetailPage<void>(
+        context: context,
+        builder: (_) => DesktopUpdatesPage(
+          language: controller.interfaceLanguage,
+          liquidGlass: controller.liquidGlassChatUi,
+        ),
+      );
+      return;
+    }
     final runtime = widget.updateRuntime;
     final language = controller.interfaceLanguage;
     if (runtime == null) {

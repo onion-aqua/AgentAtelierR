@@ -54,6 +54,7 @@ import 'realtime_call/call_session.dart';
 import 'realtime_call/call_page.dart';
 import 'realtime_call/call_settings.dart';
 import 'realtime_call/call_audio_priority.dart';
+import 'platform_capabilities.dart';
 import 'virtual_phone_wallpaper_image.dart';
 import 'speech_envelope_loader.dart';
 import 'speech_media_probe.dart';
@@ -7116,7 +7117,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                   VirtualPhoneApp.imageGeneration,
                 },
                 pages: <VirtualPhoneApp, VirtualPhonePageBuilder>{
-                  VirtualPhoneApp.phone: _buildVirtualPhoneCallPage,
+                  if (AppPlatformCapabilities.supportsRealtimeCalls)
+                    VirtualPhoneApp.phone: _buildVirtualPhoneCallPage,
                   VirtualPhoneApp.status: _buildVirtualPhoneStatusPage,
                   VirtualPhoneApp.messages: (_) =>
                       NpcMessagesPage(controller: widget.controller),
@@ -7147,11 +7149,12 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                     controller: widget.controller,
                     embedded: true,
                   ),
-                  VirtualPhoneApp.alarms: (_) => AlarmScreen(
-                    controller: widget.controller,
-                    onMenuPressed: () {},
-                    embedded: true,
-                  ),
+                  if (AppPlatformCapabilities.supportsVoiceAlarms)
+                    VirtualPhoneApp.alarms: (_) => AlarmScreen(
+                      controller: widget.controller,
+                      onMenuPressed: () {},
+                      embedded: true,
+                    ),
                   VirtualPhoneApp.settings: (_) => SettingsScreen(
                     controller: widget.controller,
                     relayService: widget.relayService,
@@ -10480,13 +10483,15 @@ class _AttachmentMenuButtonState extends State<_AttachmentMenuButton> {
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.end,
                 children: [
-                  _AttachmentMenuOption(
-                    liquidGlass: widget.liquidGlass,
-                    icon: Icons.camera_alt_outlined,
-                    label: widget.language.text('拍照', 'Camera', '撮影'),
-                    onPressed: () => _select(widget.onTakePhoto),
-                  ),
-                  const SizedBox(height: 6),
+                  if (AppPlatformCapabilities.supportsPhotoCapture) ...[
+                    _AttachmentMenuOption(
+                      liquidGlass: widget.liquidGlass,
+                      icon: Icons.camera_alt_outlined,
+                      label: widget.language.text('拍照', 'Camera', '撮影'),
+                      onPressed: () => _select(widget.onTakePhoto),
+                    ),
+                    const SizedBox(height: 6),
+                  ],
                   _AttachmentMenuOption(
                     liquidGlass: widget.liquidGlass,
                     icon: Icons.image_outlined,

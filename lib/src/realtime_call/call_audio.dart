@@ -84,7 +84,7 @@ class AndroidCallPcmOutput implements CallPcmOutput {
     final owner = _owner;
     _owner = null;
     try {
-      await _channel.invokeMethod<void>('stop');
+      if (_isAndroid()) await _channel.invokeMethod<void>('stop');
     } finally {
       if (owner != null) await runtime.setPlayerActive(owner, false);
     }
