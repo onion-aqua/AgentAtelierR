@@ -440,7 +440,7 @@ class _TavernMetaChip extends StatelessWidget {
     decoration: BoxDecoration(
       color: Theme.of(context).colorScheme.surface.withValues(alpha: 0.42),
       borderRadius: BorderRadius.circular(5),
-      border: Border.all(color: Theme.of(context).dividerColor),
+      border: Border.all(color: Theme.of(context).dividerColor, width: 0),
     ),
     child: Row(
       mainAxisSize: MainAxisSize.min,

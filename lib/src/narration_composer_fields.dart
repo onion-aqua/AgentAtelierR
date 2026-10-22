@@ -10,6 +10,7 @@ class NarrationComposerFields extends StatefulWidget {
     required this.onToggleExpanded,
     required this.expandLabel,
     required this.readOnly,
+    this.foregroundColor = Colors.white,
   });
   final List<TextEditingController> controllers;
   final List<String> hints;
@@ -17,6 +18,7 @@ class NarrationComposerFields extends StatefulWidget {
   final VoidCallback onToggleExpanded;
   final String expandLabel;
   final bool readOnly;
+  final Color foregroundColor;
 
   @override
   State<NarrationComposerFields> createState() =>
@@ -45,7 +47,7 @@ class _NarrationComposerFieldsState extends State<NarrationComposerFields> {
             constraints: const BoxConstraints.tightFor(width: 32, height: 26),
             tooltip: widget.expandLabel,
             iconSize: 18,
-            color: Colors.white70,
+            color: widget.foregroundColor.withValues(alpha: .7),
             icon: Icon(
               widget.expanded
                   ? Icons.close_fullscreen_rounded
@@ -56,7 +58,11 @@ class _NarrationComposerFieldsState extends State<NarrationComposerFields> {
         ),
       ),
       for (var index = 0; index < 3; index++) ...[
-        if (index > 0) const Divider(height: 1, color: Colors.white24),
+        if (index > 0)
+          Divider(
+            height: 1,
+            color: widget.foregroundColor.withValues(alpha: .24),
+          ),
         Expanded(
           child: Scrollbar(
             controller: _scroll[index],
@@ -73,7 +79,9 @@ class _NarrationComposerFieldsState extends State<NarrationComposerFields> {
               textInputAction: TextInputAction.newline,
               textAlignVertical: TextAlignVertical.top,
               style: TextStyle(
-                color: index == 1 ? Colors.white : Colors.white70,
+                color: index == 1
+                    ? widget.foregroundColor
+                    : widget.foregroundColor.withValues(alpha: .7),
                 fontSize: 14,
               ),
               decoration: InputDecoration(
@@ -81,7 +89,10 @@ class _NarrationComposerFieldsState extends State<NarrationComposerFields> {
                 border: InputBorder.none,
                 contentPadding: const EdgeInsets.fromLTRB(0, 4, 10, 4),
                 hintText: widget.hints[index],
-                hintStyle: const TextStyle(color: Colors.white54, fontSize: 12),
+                hintStyle: TextStyle(
+                  color: widget.foregroundColor.withValues(alpha: .6),
+                  fontSize: 12,
+                ),
               ),
             ),
           ),

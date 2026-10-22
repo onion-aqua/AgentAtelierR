@@ -417,10 +417,20 @@ void main() {
       );
       await mount(tester, glass: glass);
       final pageState = tester.state(find.byType(VirtualPhoneWallpaperPage));
-      expect(find.byType(BackdropFilter), findsNothing);
+      expect(
+        find.byWidgetPredicate(
+          (widget) => widget is BackdropFilter && widget.enabled,
+        ),
+        findsNothing,
+      );
       glass.value = true;
       await tester.pumpAndSettle();
-      expect(find.byType(BackdropFilter), findsOneWidget);
+      expect(
+        find.byWidgetPredicate(
+          (widget) => widget is BackdropFilter && widget.enabled,
+        ),
+        findsOneWidget,
+      );
       expect(
         tester.state(find.byType(VirtualPhoneWallpaperPage)),
         same(pageState),
@@ -429,7 +439,9 @@ void main() {
       expect(
         find.descendant(
           of: _card(imported.id),
-          matching: find.byType(BackdropFilter),
+          matching: find.byWidgetPredicate(
+            (widget) => widget is BackdropFilter && widget.enabled,
+          ),
         ),
         findsNothing,
       );
@@ -448,7 +460,12 @@ void main() {
       glass.value = false;
       await tester.pumpAndSettle();
       expect(dialogColor().a, greaterThan(glassAlpha));
-      expect(find.byType(BackdropFilter), findsNothing);
+      expect(
+        find.byWidgetPredicate(
+          (widget) => widget is BackdropFilter && widget.enabled,
+        ),
+        findsNothing,
+      );
       expect(find.text('已选 1'), findsOneWidget);
       await tester.tap(find.byKey(const ValueKey('wallpaper-delete-cancel')));
       await tester.pumpAndSettle();

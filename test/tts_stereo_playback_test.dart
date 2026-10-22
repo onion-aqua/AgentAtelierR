@@ -72,7 +72,7 @@ void main() {
         '说两句话陪我聊聊吧。',
       );
       await tester.tap(find.byKey(const ValueKey('chat-send-button')));
-      await _waitFor(tester, () => fixture.ttsRequests == 1);
+      await _waitFor(tester, () => fixture.ttsRequests == 2);
       expect(audio.played, isEmpty);
       controller.configureTtsStereo(
         enabled: false,
@@ -117,7 +117,7 @@ void main() {
       );
       await tester.enterText(find.byType(TextField), '雨夜轻声陪伴');
       await tester.tap(find.text('确定'));
-      await _waitFor(tester, () => fixture.ttsRequests == 1);
+      await _waitFor(tester, () => fixture.ttsRequests == 2);
       fixture.controller.configureTtsStereo(
         enabled: false,
         position: TtsStereoPosition.right,
@@ -404,7 +404,8 @@ void main() {
       final fixture = await _Fixture.create(
         tester,
         reply: '第一段暂时听不到，也要保留完整的文字内容。\n第二段是有效语音，会继续陪你听窗外的雨声。',
-        ttsResponses: [_silentWav(), _silentWav(), _monoWav()],
+        ttsResponseForText: (text) =>
+            text.contains('第一段') ? _silentWav() : _monoWav(),
       );
       await tester.pumpWidget(
         MaterialApp(home: ContinuousAsmrPage(controller: fixture.controller)),
@@ -417,8 +418,8 @@ void main() {
         tester,
         () => find.text('雨夜轻声陪伴 · 2').evaluate().isNotEmpty,
       );
-      expect(fixture.ttsTexts[0], fixture.ttsTexts[1]);
-      expect(fixture.ttsTexts[2], isNot(fixture.ttsTexts[0]));
+      expect(fixture.ttsTexts.where((text) => text.contains('第一段')).length, 2);
+      expect(fixture.ttsTexts.where((text) => text.contains('第二段')).length, 1);
       expect(find.textContaining('第一段暂时听不到'), findsOneWidget);
       expect(find.textContaining('异常音频已跳过'), findsOneWidget);
       expect(audio.played, isEmpty);
@@ -464,9 +465,8 @@ void main() {
         tester,
         () => find.textContaining('音频准备失败').evaluate().isNotEmpty,
       );
-      expect(fixture.ttsTexts[0], fixture.ttsTexts[1]);
-      expect(fixture.ttsTexts[2], fixture.ttsTexts[3]);
-      expect(fixture.ttsTexts[0], isNot(fixture.ttsTexts[2]));
+      expect(fixture.ttsTexts.where((text) => text.contains('第一段')).length, 2);
+      expect(fixture.ttsTexts.where((text) => text.contains('第二段')).length, 2);
       expect(fixture.ttsTexts.any((text) => text.contains('第三段')), isFalse);
       expect(find.textContaining('异常音频已跳过'), findsNWidgets(2));
       expect(audio.played, isEmpty);
@@ -494,14 +494,14 @@ void main() {
     (tester) async {
       final fixture = await _Fixture.create(
         tester,
-        reply: '第一段的语音请求尚未返回，现在停止陪伴。\n第二段不应该在停止之后发起合成。',
+        reply: '第一段的语音请求尚未返回，现在停止陪伴。\n第二段会提前请求。\n第三段不应该在停止之后发起合成。',
       );
       await tester.pumpWidget(
         MaterialApp(home: ContinuousAsmrPage(controller: fixture.controller)),
       );
       await tester.enterText(find.byType(TextField), '雨夜轻声陪伴');
       await tester.tap(find.text('确定'));
-      await _waitFor(tester, () => fixture.ttsRequests == 1);
+      await _waitFor(tester, () => fixture.ttsRequests == 2);
       await audio.emitCompanionState({
         'running': false,
         'stopRequested': true,
@@ -509,13 +509,13 @@ void main() {
       });
       await _waitFor(tester, () => find.text('后台陪伴已停止').evaluate().isNotEmpty);
       fixture.releaseFirstTts();
-      await _waitFor(tester, () => fixture.ttsResponsesSent == 1);
+      await _waitFor(tester, () => fixture.ttsResponsesSent == 2);
       await tester.runAsync(
         () => Future<void>.delayed(const Duration(milliseconds: 100)),
       );
       await tester.pump();
       await _waitForNoSpeechCache(tester, fixture.directory);
-      expect(fixture.ttsRequests, 1);
+      expect(fixture.ttsRequests, 2);
       expect(audio.played, isEmpty);
       expect(audio.sources, isEmpty);
       expect(await _speechCacheFiles(tester, fixture.directory), isEmpty);
@@ -661,6 +661,7 @@ class _Fixture {
     WidgetTester tester, {
     required String reply,
     List<Uint8List>? ttsResponses,
+    Uint8List Function(String text)? ttsResponseForText,
   }) async {
     tester.view.physicalSize = const Size(390, 1000);
     tester.view.devicePixelRatio = 1;
@@ -683,17 +684,16 @@ class _Fixture {
       final body = await utf8.decoder.bind(request).join();
       final data = jsonDecode(body) as Map<String, dynamic>;
       if (request.uri.path == '/tts') {
-        fixture.ttsRequests++;
+        final ordinal = fixture.ttsRequests++;
         fixture.ttsTexts.add(data['text'] as String);
-        if (fixture.ttsRequests == 1) await fixture.firstTts.future;
+        if (ordinal == 0) await fixture.firstTts.future;
         request.response.headers.contentType = ContentType('audio', 'wav');
         request.response.add(
-          ttsResponses == null
+          ttsResponseForText != null
+              ? ttsResponseForText(data['text'] as String)
+              : ttsResponses == null
               ? _monoWav()
-              : ttsResponses[min(
-                  fixture.ttsRequests - 1,
-                  ttsResponses.length - 1,
-                )],
+              : ttsResponses[min(ordinal, ttsResponses.length - 1)],
         );
       } else if (data['stream'] == true) {
         fixture.streamedReplies++;

@@ -96,16 +96,6 @@ extension VirtualPhoneAppData on VirtualPhoneApp {
 
 typedef VirtualPhonePageBuilder = Widget Function(BuildContext context);
 
-class _PhoneNavigatorObserver extends NavigatorObserver {
-  _PhoneNavigatorObserver(this.onHomeChanged);
-  final ValueChanged<bool> onHomeChanged;
-
-  @override
-  void didChangeTop(Route<dynamic> topRoute, Route<dynamic>? previousTopRoute) {
-    onHomeChanged(topRoute.isFirst);
-  }
-}
-
 /// Navigation owned by the phone, including its forms and confirmation dialogs.
 class VirtualPhoneScope extends InheritedWidget {
   const VirtualPhoneScope({
@@ -465,11 +455,7 @@ class _VirtualPhoneCardState extends State<_VirtualPhoneCard> {
   double _dragOffset = 0;
   bool _dragging = false;
   bool _closing = false;
-  final _homeVisible = ValueNotifier(true);
-  late final _PhoneNavigatorObserver _navigationObserver =
-      _PhoneNavigatorObserver((home) {
-        if (mounted) _homeVisible.value = home;
-      });
+  final _appAnimation = ProxyAnimation(kAlwaysDismissedAnimation);
   late bool _lastGlass;
 
   bool get _liquidGlass =>
@@ -504,7 +490,7 @@ class _VirtualPhoneCardState extends State<_VirtualPhoneCard> {
   @override
   void dispose() {
     widget.updates?.removeListener(_handleStyleUpdate);
-    _homeVisible.dispose();
+    _appAnimation.parent = null;
     super.dispose();
   }
 
@@ -584,6 +570,7 @@ class _VirtualPhoneCardState extends State<_VirtualPhoneCard> {
       iconBackground: const Color(0xFF26292D),
       iconForeground: Colors.white,
       reduceMotion: MediaQuery.disableAnimationsOf(context),
+      desktopBackdrop: app == VirtualPhoneApp.settings,
       canHandleBackGesture: () =>
           mounted && (ModalRoute.of(context)?.isCurrent ?? false),
       builder: (context) => _buildAppPage(context, app, builder),
@@ -592,6 +579,7 @@ class _VirtualPhoneCardState extends State<_VirtualPhoneCard> {
     _navOpening = true;
     navigator.push<void>(route);
     final animation = route.animation;
+    _appAnimation.parent = animation;
     void handleStatus(AnimationStatus status) {
       if (!identical(_activeAppRoute, route)) return;
       _navOpening =
@@ -603,9 +591,10 @@ class _VirtualPhoneCardState extends State<_VirtualPhoneCard> {
     if (animation != null) handleStatus(animation.status);
     route.completed.then((_) {
       animation?.removeStatusListener(handleStatus);
-      if (identical(_activeAppRoute, route)) {
+      if (mounted && identical(_activeAppRoute, route)) {
         _activeAppRoute = null;
         _navOpening = false;
+        _appAnimation.parent = kAlwaysDismissedAnimation;
       }
     });
   }
@@ -684,10 +673,14 @@ class _VirtualPhoneCardState extends State<_VirtualPhoneCard> {
               key: const ValueKey('virtual-phone-screen'),
               width: phoneWidth,
               height: phoneHeight,
+              padding: const EdgeInsets.all(1),
               decoration: BoxDecoration(
                 color: Colors.black,
                 borderRadius: phoneRadius,
-                border: Border.all(color: Colors.white.withValues(alpha: .35)),
+                border: Border.all(
+                  color: Colors.white.withValues(alpha: .35),
+                  width: 0,
+                ),
                 boxShadow: const [
                   BoxShadow(
                     color: Colors.black87,
@@ -738,7 +731,6 @@ class _VirtualPhoneCardState extends State<_VirtualPhoneCard> {
                                         child: ScaffoldMessenger(
                                           child: Navigator(
                                             key: _navigatorKey,
-                                            observers: [_navigationObserver],
                                             onGenerateRoute: (_) =>
                                                 PageRouteBuilder<void>(
                                                   settings: const RouteSettings(
@@ -899,7 +891,7 @@ class _VirtualPhoneCardState extends State<_VirtualPhoneCard> {
           .copyWith(size: Size(constraints.maxWidth, 44)),
       child: AnimatedBuilder(
         animation: Listenable.merge([
-          _homeVisible,
+          _appAnimation,
           if (widget.updates != null) widget.updates!,
         ]),
         builder: (context, _) => _buildStatusBar(context),
@@ -908,17 +900,21 @@ class _VirtualPhoneCardState extends State<_VirtualPhoneCard> {
   );
 
   Widget _buildStatusBar(BuildContext context) {
-    final home = _homeVisible.value;
-    // Apps use a solid surface matching their page header, rather than the
-    // wallpaper underneath. Tint monochrome assets while retaining alpha.
-    final background = home
-        ? Colors.transparent
-        : glassPageHeaderColor(context).withValues(alpha: 1);
-    final foreground =
-        home ||
-            ThemeData.estimateBrightnessForColor(background) == Brightness.dark
+    // Start blending as the expanding window approaches the top. Using the
+    // route's own progress also keeps reverse and cancelled gestures in sync;
+    // Navigator's top route changes before that window has finished moving.
+    final progress = const Interval(
+      .55,
+      1,
+    ).transform(VirtualPhoneAppRoute.visualProgress(_appAnimation.value));
+    final header = glassPageHeaderColor(context).withValues(alpha: 1);
+    final background = header.withValues(alpha: progress);
+    final appForeground =
+        ThemeData.estimateBrightnessForColor(header) == Brightness.dark
         ? Colors.white
         : Colors.black;
+    final foreground = Color.lerp(Colors.white, appForeground, progress)!;
+    final homeLabel = progress < .5;
     final info = _statusInfo;
     final bars = (info.signalBars ?? 0).clamp(0, 4);
     final seconds = info.llmLatency == null
@@ -964,18 +960,19 @@ class _VirtualPhoneCardState extends State<_VirtualPhoneCard> {
               right: MediaQuery.sizeOf(context).width / 2 + 53,
               child: Align(
                 alignment: Alignment.centerLeft,
-                child: Text(
-                  _homeVisible.value
-                      ? _homeInfo.carrierLabel
-                      : _homeInfo.timeLabel,
-                  key: const ValueKey('virtual-phone-status-time'),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    color: foreground,
-                    fontSize: 12,
-                    height: 1,
-                    fontWeight: FontWeight.w600,
+                child: Opacity(
+                  opacity: (1 - 2 * progress).abs(),
+                  child: Text(
+                    homeLabel ? _homeInfo.carrierLabel : _homeInfo.timeLabel,
+                    key: const ValueKey('virtual-phone-status-time'),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      color: foreground,
+                      fontSize: 12,
+                      height: 1,
+                      fontWeight: FontWeight.w600,
+                    ),
                   ),
                 ),
               ),
@@ -991,7 +988,7 @@ class _VirtualPhoneCardState extends State<_VirtualPhoneCard> {
                     borderRadius: BorderRadius.circular(16),
                     border: Border.all(
                       color: foreground.withValues(alpha: .16),
-                      width: .7,
+                      width: 0,
                     ),
                   ),
                   child: Image.asset(
@@ -1117,7 +1114,8 @@ class _VirtualPhoneCardState extends State<_VirtualPhoneCard> {
               GlassSurface(
                 key: const ValueKey('virtual-phone-dock'),
                 liquidGlass: _liquidGlass,
-                backdropBlur: false,
+                tone: GlassTone.dark,
+                blurSigma: 2,
                 borderRadius: BorderRadius.circular(28),
                 fallbackColor: const Color(0xB33B3F45),
                 child: Padding(
@@ -1140,6 +1138,7 @@ class _VirtualPhoneCardState extends State<_VirtualPhoneCard> {
                             label: app.label(_language),
                             enabled: true,
                             showLabel: false,
+                            refractBackdrop: false,
                             showProgress:
                                 app == VirtualPhoneApp.imageGeneration &&
                                 (widget.imageGenerationActiveBuilder?.call() ??
@@ -1324,7 +1323,8 @@ class _PhoneHomeTile extends StatelessWidget {
   Widget build(BuildContext context) {
     return GlassSurface(
       liquidGlass: GlassStyleScope.resolve(context),
-      backdropBlur: false,
+      tone: GlassTone.dark,
+      blurSigma: 2,
       fallbackColor: const Color(0xB33B3F45),
       borderRadius: BorderRadius.circular(15),
       child: Padding(
@@ -1386,6 +1386,7 @@ class _PhoneAppIcon extends StatefulWidget {
     this.showLabel = true,
     this.showProgress = false,
     this.showUnread = false,
+    this.refractBackdrop = true,
     this.size = 58,
   });
 
@@ -1399,6 +1400,7 @@ class _PhoneAppIcon extends StatefulWidget {
   final bool showLabel;
   final bool showProgress;
   final bool showUnread;
+  final bool refractBackdrop;
   final double size;
 
   @override
@@ -1444,7 +1446,9 @@ class _PhoneAppIconState extends State<_PhoneAppIcon> {
                     children: [
                       GlassSurface(
                         liquidGlass: widget.liquidGlass,
-                        backdropBlur: false,
+                        tone: GlassTone.dark,
+                        backdropBlur: widget.refractBackdrop,
+                        blurSigma: 2,
                         fallbackColor: widget.enabled
                             ? const Color(0xFF26292D)
                             : const Color(0xFF111214),

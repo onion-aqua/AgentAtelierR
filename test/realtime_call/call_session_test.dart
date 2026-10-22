@@ -18,6 +18,50 @@ import 'package:shared_preferences/shared_preferences.dart';
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
+  test('phone prefetches two sentences while first is pending and preserves playback order', () async {
+    SharedPreferences.setMockInitialValues({});
+    final app = await AppController.load();
+    app.configureAi(
+      enabled: true,
+      baseUrl: 'https://example.test/v1',
+      model: 'model',
+    );
+    final first = StreamController<Uint8List>();
+    final requested = <String>[];
+    final output = _RecordingOutput();
+    final fixture = await _callFixture(
+      app,
+      reply: '莱莎：第一句。第二句。第三句。',
+      output: output,
+      speechFactory: (text, voice, model, key) {
+        requested.add(text);
+        final number = requested.length;
+        return CallSpeech(
+          number == 1
+              ? first.stream
+              : Stream.value(Uint8List.fromList([number, 0])),
+          () async {},
+        );
+      },
+    );
+    await fixture.controller.startCall('primary:ryza');
+    await fixture.controller.sendText('继续说');
+    await _waitUntil(() => requested.length == 2);
+    expect(output.values, isEmpty);
+    first.add(Uint8List.fromList([1, 0]));
+    await first.close();
+    await _waitUntil(
+      () => fixture.controller.snapshot.phase == CallUiPhase.listening,
+    );
+    expect(requested, ['第一句。', '第二句。', '第三句。']);
+    expect(output.values, [1, 2, 3]);
+    expect(app.callRecords.single.turns.single['assistant'], '第一句。第二句。第三句。');
+    await fixture.controller.endCall();
+    fixture.controller.dispose();
+    app.dispose();
+    await fixture.directory.delete(recursive: true);
+  });
+
   test('phone directory offers only Ryza and Claudia, regardless of other contacts', () async {
     SharedPreferences.setMockInitialValues({});
     final app = await AppController.load();
@@ -154,6 +198,7 @@ void main() {
           model: 'model',
         )
         ..addNpcContact('claudia');
+      app.fishAudioReferenceId = 'voice';
       final directory = await Directory.systemTemp.createTemp('call-session-');
       final model = File('${directory.path}/model.int8.onnx');
       final tokens = File('${directory.path}/tokens.txt');
@@ -469,6 +514,7 @@ void main() {
         model: 'model',
       );
       final asr = _FakeAsr();
+      app.fishAudioReferenceId = 'voice';
       final directory = await Directory.systemTemp.createTemp('call-recovery-');
       final files = [
         File('${directory.path}/model.int8.onnx'),
@@ -529,7 +575,9 @@ _callFixture(
   CallReplyBackend? backend,
   List<String>? spoken,
   _FakeAsr? asr,
+  CallSpeechFactory? speechFactory,
 }) async {
+  app.fishAudioReferenceId = 'voice';
   final directory = await Directory.systemTemp.createTemp('call-session-');
   final files = [
     File('${directory.path}/model.int8.onnx'),
@@ -555,13 +603,15 @@ _callFixture(
       ),
     ),
     readFishKey: () async => 'fish-key',
-    speechFactory: (text, voice, model, key) {
-      spoken?.add(text);
-      return CallSpeech(
-        Stream.value(Uint8List.fromList([0, 0, 0, 0])),
-        () async {},
-      );
-    },
+    speechFactory:
+        speechFactory ??
+        (text, voice, model, key) {
+          spoken?.add(text);
+          return CallSpeech(
+            Stream.value(Uint8List.fromList([0, 0, 0, 0])),
+            () async {},
+          );
+        },
   );
   return (controller: controller, output: output, directory: directory);
 }
@@ -618,6 +668,12 @@ class _FakeOutput implements CallPcmOutput {
   Future<void> stop() async {}
   @override
   Future<bool> setSpeaker(bool value) async => true;
+}
+
+class _RecordingOutput extends _FakeOutput {
+  final values = <int>[];
+  @override
+  Future<void> write(Uint8List pcm) async => values.add(pcm.first);
 }
 
 class _BlockingSecondDrainOutput implements CallPcmOutput {

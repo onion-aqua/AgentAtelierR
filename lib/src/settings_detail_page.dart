@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'app_controller.dart';
 import 'glass_ui.dart';
+import 'settings_form.dart';
 
 /// Non-opaque routes keep the character scene mounted and animating behind
 /// settings. The caller hides its category surface to avoid stacking glass.
@@ -17,7 +18,7 @@ Future<T?> pushSettingsPage<T>({
     reverseTransitionDuration: const Duration(milliseconds: 180),
     pageBuilder: (context, animation, secondaryAnimation) => _SettingsPageScope(
       controller: controller,
-      child: Builder(builder: builder),
+      child: SettingsFormTheme(child: Builder(builder: builder)),
     ),
     transitionsBuilder: (context, animation, secondaryAnimation, child) {
       if (MediaQuery.disableAnimationsOf(context)) return child;
@@ -93,69 +94,74 @@ class SettingsDetailPage extends StatelessWidget {
       animation: state,
       builder: (context, _) {
         final dark = Theme.of(context).brightness == Brightness.dark;
-        return GlassSurface(
-          key: const ValueKey('settings-detail-glass'),
-          liquidGlass: state.liquidGlassChatUi,
-          tone: dark ? GlassTone.dark : GlassTone.light,
-          borderRadius: BorderRadius.zero,
-          fallbackColor: dark
-              ? const Color(0xD91C2222)
-              : const Color(0xB8EEF2F0),
-          child: Scaffold(
-            backgroundColor: Colors.transparent,
-            appBar: AppBar(
-              // The shell's menu stays mounted behind non-opaque detail routes.
-              // An almost-opaque header prevents its icon bleeding through the
-              // back button while the rest of the page remains translucent.
-              backgroundColor: dark
-                  ? const Color(0xF0242829)
-                  : const Color(0xF0F1F3F4),
-              surfaceTintColor: Colors.transparent,
-              elevation: 0,
-              scrolledUnderElevation: 0,
-              leading: IconButton(
-                key: const ValueKey('settings-detail-back'),
-                tooltip: MaterialLocalizations.of(context).backButtonTooltip,
-                icon: const Icon(Icons.arrow_back_rounded),
-                onPressed: () => Navigator.of(context).maybePop(),
+        return SettingsFormTheme(
+          child: GlassSurface(
+            key: const ValueKey('settings-detail-glass'),
+            liquidGlass: state.liquidGlassChatUi,
+            tone: dark ? GlassTone.dark : GlassTone.light,
+            borderRadius: BorderRadius.zero,
+            fallbackColor: dark
+                ? const Color(0xD91C2222)
+                : const Color(0xB8EEF2F0),
+            child: Scaffold(
+              backgroundColor: Colors.transparent,
+              appBar: AppBar(
+                // The shell's menu stays mounted behind non-opaque detail routes.
+                // An almost-opaque header prevents its icon bleeding through the
+                // back button while the rest of the page remains translucent.
+                backgroundColor: dark
+                    ? const Color(0xF0242829)
+                    : const Color(0xF0F1F3F4),
+                surfaceTintColor: Colors.transparent,
+                elevation: 0,
+                scrolledUnderElevation: 0,
+                leading: IconButton(
+                  key: const ValueKey('settings-detail-back'),
+                  tooltip: MaterialLocalizations.of(context).backButtonTooltip,
+                  icon: const Icon(Icons.arrow_back_rounded),
+                  onPressed: () => Navigator.of(context).maybePop(),
+                ),
+                title: title,
               ),
-              title: title,
-            ),
-            body: SafeArea(
-              top: false,
-              child: Center(
-                child: ConstrainedBox(
-                  constraints: const BoxConstraints(maxWidth: 760),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      Expanded(
-                        child: scrollable
-                            ? SingleChildScrollView(
-                                padding: contentPadding,
-                                child: SizedBox(
-                                  width: double.infinity,
+              body: SafeArea(
+                top: false,
+                child: Center(
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 760),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Expanded(
+                          child: scrollable
+                              ? SingleChildScrollView(
+                                  padding: contentPadding,
+                                  child: SizedBox(
+                                    width: double.infinity,
+                                    child: content,
+                                  ),
+                                )
+                              : Padding(
+                                  padding: contentPadding,
                                   child: content,
                                 ),
-                              )
-                            : Padding(padding: contentPadding, child: content),
-                      ),
-                      if (actions.isNotEmpty) ...[
-                        const Divider(height: 1),
-                        Padding(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 16,
-                            vertical: 10,
-                          ),
-                          child: Wrap(
-                            alignment: WrapAlignment.end,
-                            spacing: 8,
-                            runSpacing: 4,
-                            children: actions,
-                          ),
                         ),
+                        if (actions.isNotEmpty) ...[
+                          const Divider(height: 1),
+                          Padding(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 16,
+                              vertical: 10,
+                            ),
+                            child: Wrap(
+                              alignment: WrapAlignment.end,
+                              spacing: 8,
+                              runSpacing: 4,
+                              children: actions,
+                            ),
+                          ),
+                        ],
                       ],
-                    ],
+                    ),
                   ),
                 ),
               ),

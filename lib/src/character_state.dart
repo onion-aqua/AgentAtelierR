@@ -9,13 +9,17 @@ class CharacterState {
     this.updatedAt,
     Map<String, int>? delta,
     List<String>? settled,
+    bool oathRingLossPending = false,
   }) : values =
            values ??
            {'mood': 0, 'energy': 65, 'closeness': 40, 'curiosity': 50},
        bands =
            bands ?? {'mood': 1, 'energy': 1, 'closeness': 1, 'curiosity': 1},
        delta = delta ?? {},
-       settled = settled ?? [];
+       settled = settled ?? [],
+       oathRingLossPending =
+           oathRingLossPending &&
+           (values?['mood'] ?? 0) < reconciliationUnlockMood;
 
   /// The initial relationship state for a newly created local save.
   ///
@@ -33,6 +37,23 @@ class CharacterState {
   final String emotion;
   final String reason;
   final DateTime? updatedAt;
+  static const reconciliationUnlockMood = -250;
+  final bool oathRingLossPending;
+
+  bool get reconciliationPurchaseBlocked =>
+      oathRingLossPending && (values['mood'] ?? 0) < reconciliationUnlockMood;
+
+  /// A confirmed inventory loss is a fixed penalty, not an LLM stat proposal.
+  CharacterState loseOathRing(String explanation) => CharacterState(
+    values: {...values, 'mood': (values['mood'] ?? 0) - 500},
+    bands: {...bands, 'mood': 0},
+    delta: {for (final key in values.keys) key: key == 'mood' ? -500 : 0},
+    emotion: 'sad',
+    reason: explanation,
+    updatedAt: DateTime.now(),
+    settled: settled,
+    oathRingLossPending: true,
+  );
 
   CharacterState recoverAfterTime(String turn, String kind, int minutes) {
     final marker = '$turn:recovery';
@@ -56,6 +77,7 @@ class CharacterState {
       emotion: next.emotion,
       reason: next.reason,
       updatedAt: next.updatedAt,
+      oathRingLossPending: next.reconciliationPurchaseBlocked,
       settled: [
         ...settled,
         marker,
@@ -93,11 +115,13 @@ class CharacterState {
     final nextBands = Map<String, int>.from(bands);
     for (final key in values.keys) {
       final limit = key == 'closeness' ? 2 : 5;
-      next[key] =
-          (values[key]! + ((raw[key] as int?) ?? 0).clamp(-limit, limit)).clamp(
-            key == 'mood' ? -100 : 0,
-            100,
-          );
+      final adjusted =
+          values[key]! + ((raw[key] as int?) ?? 0).clamp(-limit, limit);
+      // Ordinary mood still bottoms out at -100. Exceptional item losses below
+      // that range must recover incrementally, not snap back on the next turn.
+      next[key] = key == 'mood' && values[key]! < -100
+          ? (adjusted > 100 ? 100 : adjusted)
+          : adjusted.clamp(key == 'mood' ? -100 : 0, 100);
       changes[key] = next[key]! - values[key]!;
       final lower = key == 'mood' ? -25 : 30;
       final upper = key == 'mood' ? 25 : 70;
@@ -119,6 +143,7 @@ class CharacterState {
       reason: why.trim(),
       updatedAt: DateTime.now(),
       settled: [...settled, turn].reversed.take(100).toList().reversed.toList(),
+      oathRingLossPending: reconciliationPurchaseBlocked,
     );
   }
 
@@ -138,7 +163,16 @@ class CharacterState {
           : previous + change;
       next[key] = change == 0 && !resetNegativeStats
           ? previous
-          : adjusted.clamp(change < 0 ? 0 : (key == 'mood' ? -100 : 0), 100);
+          : adjusted.clamp(
+              // A tonic's minimum-zero penalty must not heal existing negative
+              // mood; positive gifts must not erase the exceptional loss either.
+              key == 'mood' && previous < 0
+                  ? (change < 0
+                        ? previous
+                        : (previous < -100 ? previous : -100))
+                  : (change < 0 ? 0 : (key == 'mood' ? -100 : 0)),
+              100,
+            );
       applied[key] = next[key]! - previous;
       final lower = key == 'mood' ? -25 : 30;
       final upper = key == 'mood' ? 25 : 70;
@@ -158,6 +192,7 @@ class CharacterState {
       reason: reason,
       updatedAt: DateTime.now(),
       settled: settled,
+      oathRingLossPending: reconciliationPurchaseBlocked,
     );
   }
 
@@ -204,6 +239,7 @@ class CharacterState {
     'reason': reason,
     'updatedAt': updatedAt?.toIso8601String(),
     'settled': settled,
+    'oathRingLossPending': reconciliationPurchaseBlocked,
   };
   factory CharacterState.fromJson(dynamic raw) {
     final defaults = CharacterState();
@@ -211,15 +247,20 @@ class CharacterState {
     Map<String, int> read(String field, Map<String, int> fallback) => {
       for (final key in defaults.values.keys)
         key: raw[field] is Map && raw[field][key] is int
-            ? (raw[field][key] as int).clamp(
-                field == 'bands'
-                    ? 0
-                    : (key == 'mood' || field == 'delta' ? -100 : 0),
-                field == 'bands' ? 2 : 100,
-              )
+            ? key == 'mood' &&
+                      field != 'bands' &&
+                      (raw[field][key] as int) < -100
+                  ? raw[field][key] as int
+                  : (raw[field][key] as int).clamp(
+                      field == 'bands'
+                          ? 0
+                          : (key == 'mood' || field == 'delta' ? -100 : 0),
+                      field == 'bands' ? 2 : 100,
+                    )
             : fallback[key] ?? 0,
     };
     return CharacterState(
+      oathRingLossPending: raw['oathRingLossPending'] == true,
       values: read('values', defaults.values),
       bands: read('bands', defaults.bands),
       delta: read('delta', {}),

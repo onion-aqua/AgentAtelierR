@@ -42,6 +42,8 @@ import 'settings_slot_selector.dart';
 import 'openai_settings_dialog.dart';
 import 'legacy_data_converter.dart';
 import 'settings_detail_page.dart';
+import 'settings_form.dart';
+import 'personality/personality_editor_page.dart';
 import 'conversation_collections_page.dart';
 import 'conversation_history_page.dart';
 import 'tts_spatial_settings.dart';
@@ -209,17 +211,19 @@ class SettingsScreenState extends State<SettingsScreen> {
   }
 
   @override
-  Widget build(BuildContext context) => AnimatedBuilder(
-    animation: controller,
-    builder: (context, _) => widget.backHandledByShell
-        ? _buildSettings(context)
-        : PopScope(
-            canPop: _category == null || _isShortcutRoot,
-            onPopInvokedWithResult: (didPop, _) {
-              if (!didPop) handleBack();
-            },
-            child: _buildSettings(context),
-          ),
+  Widget build(BuildContext context) => SettingsFormTheme(
+    child: AnimatedBuilder(
+      animation: controller,
+      builder: (context, _) => widget.backHandledByShell
+          ? _buildSettings(context)
+          : PopScope(
+              canPop: _category == null || _isShortcutRoot,
+              onPopInvokedWithResult: (didPop, _) {
+                if (!didPop) handleBack();
+              },
+              child: _buildSettings(context),
+            ),
+    ),
   );
 
   Widget _buildSettings(BuildContext context) {
@@ -311,11 +315,6 @@ class SettingsScreenState extends State<SettingsScreen> {
                               selected: controller.activeCharacterId == 'ryza',
                               onTap: () => _switchCharacter('ryza'),
                             ),
-                          ),
-                          Container(
-                            width: 1,
-                            height: 76,
-                            color: Colors.white.withValues(alpha: .20),
                           ),
                           Expanded(
                             child: _CharacterChoice(
@@ -417,9 +416,9 @@ class SettingsScreenState extends State<SettingsScreen> {
                   subtitle: Text(
                     controller.liquidGlassChatUi
                         ? language.text(
-                            '动态浮层启用背景模糊与玻璃高光',
-                            'Blur and glass highlights enabled',
-                            'ぼかしとガラスのハイライトを有効化',
+                            '透光玻璃、背景折射与触摸流光；不支持折射时使用兼容效果',
+                            'Clear glass, backdrop refraction and touch highlights; compatible effects on other renderers',
+                            '透明ガラス・背景屈折・タッチの光沢。未対応環境では互換効果を使用',
                           )
                         : language.text(
                             '保留动态浮层，仅关闭模糊并使用普通半透明材质',
@@ -817,6 +816,39 @@ class SettingsScreenState extends State<SettingsScreen> {
                 _SectionLabel(
                   language.text('设定与注入', 'Profiles & injection', '設定と注入'),
                 ),
+                ListTile(
+                  key: const ValueKey('settings-personality-editor'),
+                  leading: const Icon(Icons.psychology_alt_outlined),
+                  title: Text(
+                    language.text(
+                      '人格倾向（试用）',
+                      'Personality tendencies (trial)',
+                      '性格傾向（試用）',
+                    ),
+                  ),
+                  subtitle: Text(
+                    controller.personalityLoadWarning ??
+                        (controller.personalityEnabled
+                            ? controller
+                                  .personalityConfiguration
+                                  .activeProfile
+                                  .name
+                            : language.text(
+                                '未启用 · 预设、参数与情境预览',
+                                'Disabled · Presets, traits and scenario preview',
+                                '無効 · プリセット・パラメータ・場面プレビュー',
+                              )),
+                  ),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => _openDetailPage<void>(
+                    context: context,
+                    builder: (_) => PersonalityEditorPage(
+                      controller: controller,
+                      initialConfiguration: controller.personalityConfiguration,
+                      onSave: controller.savePersonalityConfiguration,
+                    ),
+                  ),
+                ),
                 SwitchListTile(
                   value: controller.characterPersonaInjectionEnabled,
                   onChanged: controller.setCharacterPersonaInjectionEnabled,
@@ -1139,9 +1171,9 @@ class SettingsScreenState extends State<SettingsScreen> {
                   ),
                   subtitle: Text(
                     language.text(
-                      '单独规划语音情绪与停顿，改善上下句衔接。开启后每轮增加一次模型请求，可能增加等待时间和用量。两种模式均保留感情程度和句内演出密度设置。',
-                      'Plan voice emotions and pauses separately for smoother continuity. Adds one model request per turn and may increase latency and usage. Both modes retain emotion intensity and inline cue density settings.',
-                      '音声の感情と間を個別に計画し、台詞のつながりを改善します。有効時は毎ターンモデルへのリクエストが1回増え、待ち時間と使用量が増える場合があります。両モードで感情の強さと文中演出密度の設定を利用できます。',
+                      '单独规划情绪与停顿。每轮多一次模型请求，等待时间和用量会增加。',
+                      'Plan emotions and pauses separately. Adds one model request per turn, with more latency and usage.',
+                      '感情と間を個別に計画します。毎ターンのリクエストが1回増え、待ち時間と使用量も増えます。',
                     ),
                   ),
                   value: controller.independentSpeechPerformance,
@@ -1388,9 +1420,9 @@ class SettingsScreenState extends State<SettingsScreen> {
                   title: const Text('AgentAtelierR'),
                   subtitle: Text(
                     language.text(
-                      '版本 1.0.4.2',
-                      'Version 1.0.4.2',
-                      'バージョン 1.0.4.2',
+                      '版本 1.0.4.3',
+                      'Version 1.0.4.3',
+                      'バージョン 1.0.4.3',
                     ),
                   ),
                 ),
@@ -2394,276 +2426,304 @@ class SettingsScreenState extends State<SettingsScreen> {
               title: const Text('Fish Audio MCP'),
               content: SizedBox(
                 width: contentWidth,
-                child: SingleChildScrollView(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      SettingsOptionCard(
-                        child: ListTile(
-                          leading: Icon(
-                            service.isReady
-                                ? Icons.check_circle_outline
-                                : Icons.cloud_outlined,
-                          ),
-                          title: Text('状态：${service.statusLabel}'),
-                          subtitle: Text(
-                            service.errorMessage ??
-                                '官方端点：${FishMcpService.endpoint}\n'
-                                    '需要 Fish Audio 账号 OAuth 授权。',
-                          ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    SettingsOptionCard(
+                      child: ListTile(
+                        leading: Icon(
+                          service.isReady
+                              ? Icons.check_circle_outline
+                              : Icons.cloud_outlined,
+                        ),
+                        title: Text('状态：${service.statusLabel}'),
+                        subtitle: Text(
+                          service.errorMessage ??
+                              '官方端点：${FishMcpService.endpoint}\n'
+                                  '需要 Fish Audio 账号 OAuth 授权。',
                         ),
                       ),
-                      const SizedBox(height: 8),
-                      TextField(
-                        key: const ValueKey('fish-mcp-normal-voice'),
-                        controller: voice,
-                        decoration: const InputDecoration(
-                          labelText: '普通音色 ID',
-                          hintText: '留空时交由官方工具处理',
-                          border: OutlineInputBorder(),
-                        ),
+                    ),
+                    FilledButton.icon(
+                      onPressed: connecting
+                          ? null
+                          : () async {
+                              setDialogState(() {
+                                busy = true;
+                                localError = null;
+                              });
+                              try {
+                                await service.connect();
+                              } on Object {
+                                if (context.mounted) {
+                                  setDialogState(() {
+                                    localError = '连接未完成，请复制诊断查看具体原因。';
+                                  });
+                                }
+                              } finally {
+                                if (context.mounted) {
+                                  setDialogState(() => busy = false);
+                                }
+                              }
+                            },
+                      icon: busy
+                          ? const SizedBox(
+                              width: 18,
+                              height: 18,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.login),
+                      label: Text(
+                        service.state == FishMcpConnectionState.authenticating
+                            ? '等待浏览器授权…'
+                            : '连接账号（不生成语音）',
                       ),
+                    ),
+                    const SettingsSectionHeading(
+                      '音色与模型',
+                      description: '聊天和通话共用；ASMR 可单独指定音色。',
+                    ),
+                    const SizedBox(height: 8),
+                    TextField(
+                      key: const ValueKey('fish-mcp-normal-voice'),
+                      controller: voice,
+                      decoration: const InputDecoration(
+                        labelText: '普通音色 ID',
+                        hintText: '留空时交由官方工具处理',
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    TextField(
+                      key: const ValueKey('fish-mcp-asmr-voice'),
+                      controller: asmrVoice,
+                      decoration: const InputDecoration(
+                        labelText: 'ASMR 音色 ID',
+                        hintText: '留空时沿用普通音色',
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    DropdownButtonFormField<String>(
+                      key: ValueKey('fish-mcp-model-$model'),
+                      initialValue: model,
+                      isExpanded: true,
+                      decoration: const InputDecoration(
+                        labelText: '模型',
+                        border: OutlineInputBorder(),
+                      ),
+                      items: [
+                        for (final option in modelOptions)
+                          DropdownMenuItem(
+                            value: option,
+                            child: Text(
+                              option.isEmpty ? '服务默认（不指定模型）' : option,
+                            ),
+                          ),
+                      ],
+                      onChanged: (value) {
+                        if (value != null) {
+                          setDialogState(() => model = value);
+                        }
+                      },
+                    ),
+                    Text(
+                      '生成路径：$generationRouteLabel',
+                      key: const ValueKey('fish-mcp-generation-route'),
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                    if (generationRoute == 'studio')
                       Text(
-                        describeField(voiceField, '音色'),
+                        'Studio MCP 会在 Fish Audio 云端项目保存台词、音色配置及生成音频；普通对话和 ASMR 均使用对应的已配置音色。',
+                        key: const ValueKey('fish-mcp-studio-cloud-notice'),
                         style: Theme.of(context).textTheme.bodySmall,
                       ),
-                      const SizedBox(height: 8),
-                      TextField(
-                        key: const ValueKey('fish-mcp-asmr-voice'),
-                        controller: asmrVoice,
-                        decoration: const InputDecoration(
-                          labelText: 'ASMR 音色 ID',
-                          hintText: '留空时沿用普通音色',
-                          border: OutlineInputBorder(),
-                        ),
-                      ),
-                      Text(
-                        'ASMR 音色留空时沿用普通音色。',
-                        style: Theme.of(context).textTheme.bodySmall,
-                      ),
-                      const SizedBox(height: 8),
-                      const SettingsOptionCard(
-                        child: ListTile(
-                          title: Text('科洛蒂娅固定音色 ID'),
-                          subtitle: SelectableText(klaudiaFishAudioReferenceId),
-                        ),
-                      ),
-                      const SizedBox(height: 8),
-                      DropdownButtonFormField<String>(
-                        key: ValueKey('fish-mcp-model-$model'),
-                        initialValue: model,
-                        isExpanded: true,
-                        decoration: const InputDecoration(
-                          labelText: '模型',
-                          border: OutlineInputBorder(),
-                        ),
-                        items: [
-                          for (final option in modelOptions)
-                            DropdownMenuItem(
-                              value: option,
-                              child: Text(
-                                option.isEmpty ? '服务默认（不指定模型）' : option,
+                    Text(
+                      '保存后，下次语音请求生效。',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                    const SizedBox(height: 16),
+                    ExpansionTile(
+                      key: const ValueKey('fish-mcp-advanced'),
+                      title: const Text('高级选项与连接诊断'),
+                      subtitle: const Text('回退策略、工具定义、调用记录与账号管理'),
+                      children: [
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            Text(
+                              describeField(voiceField, '音色'),
+                              style: Theme.of(context).textTheme.bodySmall,
+                            ),
+                            Text(
+                              modelDescription,
+                              style: Theme.of(context).textTheme.bodySmall,
+                            ),
+                            const SettingsOptionCard(
+                              child: ListTile(
+                                title: Text('科洛蒂娅固定音色 ID'),
+                                subtitle: SelectableText(
+                                  klaudiaFishAudioReferenceId,
+                                ),
                               ),
                             ),
-                        ],
-                        onChanged: (value) {
-                          if (value != null) {
-                            setDialogState(() => model = value);
-                          }
-                        },
-                      ),
-                      Text(
-                        '生成路径：$generationRouteLabel',
-                        key: const ValueKey('fish-mcp-generation-route'),
-                        style: Theme.of(context).textTheme.bodySmall,
-                      ),
-                      Text(
-                        modelDescription,
-                        style: Theme.of(context).textTheme.bodySmall,
-                      ),
-                      if (generationRoute == 'studio')
-                        Text(
-                          'Studio MCP 会在 Fish Audio 云端项目保存台词、音色配置及生成音频；普通对话和 ASMR 均使用对应的已配置音色。',
-                          key: const ValueKey('fish-mcp-studio-cloud-notice'),
-                          style: Theme.of(context).textTheme.bodySmall,
-                        ),
-                      Text(
-                        '当前选择仅为草稿，点击“保存并使用 MCP”后下次请求才生效；返回或取消不会保存。',
-                        style: Theme.of(context).textTheme.bodySmall,
-                      ),
-                      const SizedBox(height: 8),
-                      SelectableText(
-                        '最近请求模型：${!hasRecentRequest
-                            ? '暂无调用记录'
-                            : lastRequestedModel?.trim().isNotEmpty == true
-                            ? lastRequestedModel!.trim()
-                            : '服务默认（不指定模型）'}',
-                        key: const ValueKey('fish-mcp-last-requested-model'),
-                        style: Theme.of(context).textTheme.bodySmall,
-                      ),
-                      SelectableText(
-                        '云端返回模型：${reportedModel?.isNotEmpty == true ? reportedModel : '未返回模型标识，无法确认已切换'}',
-                        key: const ValueKey('fish-mcp-last-reported-model'),
-                        style: Theme.of(context).textTheme.bodySmall,
-                      ),
-                      if (service.lastConfiguredBackend != null)
-                        SelectableText(
-                          'Studio 已确认后端配置：${service.lastConfiguredBackend}（项目配置证据）',
-                          key: const ValueKey(
-                            'fish-mcp-last-configured-backend',
-                          ),
-                          style: Theme.of(context).textTheme.bodySmall,
-                        ),
-                      Text(
-                        '最近调用状态：$modelSelectionStatus',
-                        style: Theme.of(context).textTheme.bodySmall,
-                      ),
-                      if (recentRequestUsesOldModel)
-                        Text(
-                          '最近调用使用的是旧设置，不能作为当前选择的结果；保存后下一次请求才生效。',
-                          style: Theme.of(context).textTheme.bodySmall,
-                        ),
-                      SwitchListTile(
-                        value: autoFallback,
-                        onChanged: (value) =>
-                            setDialogState(() => autoFallback = value),
-                        title: const Text('MCP 失败时允许回退现有 Fish API'),
-                        subtitle: const Text(
-                          '默认关闭。仅在 MCP 未提交生成且本地准备失败时回退；缺少 Studio 工具或 Studio 流程失败不回退。使用现有 Fish API Key 和音色；已选模型保持不变，服务默认时使用 API 模型配置。可能消耗独立的开发者 API 余额。OAuth 凭据不导出到普通备份。',
-                        ),
-                      ),
-                      const SizedBox(height: 8),
-                      FilledButton.icon(
-                        onPressed: connecting
-                            ? null
-                            : () async {
-                                setDialogState(() {
-                                  busy = true;
-                                  localError = null;
-                                });
-                                try {
-                                  await service.connect();
-                                } on Object {
-                                  if (context.mounted) {
-                                    setDialogState(() {
-                                      localError = '连接未完成，请复制诊断查看具体原因。';
-                                    });
-                                  }
-                                } finally {
-                                  if (context.mounted) {
-                                    setDialogState(() => busy = false);
-                                  }
-                                }
-                              },
-                        icon: busy
-                            ? const SizedBox(
-                                width: 18,
-                                height: 18,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2,
-                                ),
-                              )
-                            : const Icon(Icons.login),
-                        label: Text(
-                          service.state == FishMcpConnectionState.authenticating
-                              ? '等待浏览器授权（完成后自动刷新）'
-                              : '登录并探测 tools/list（不生成语音）',
-                        ),
-                      ),
-                      if (service.tools.isNotEmpty) ...[
-                        const SizedBox(height: 12),
-                        Text('已发现工具（${service.tools.length}）'),
-                        const SizedBox(height: 4),
-                        for (final tool in service.tools)
-                          ExpansionTile(
-                            key: ValueKey('fish-mcp-tool-${tool.name}'),
-                            leading: Icon(
-                              tool.name == service.ttsToolName
-                                  ? Icons.record_voice_over
-                                  : Icons.extension_outlined,
+                            const SizedBox(height: 8),
+                            SelectableText(
+                              '最近请求模型：${!hasRecentRequest
+                                  ? '暂无调用记录'
+                                  : lastRequestedModel?.trim().isNotEmpty == true
+                                  ? lastRequestedModel!.trim()
+                                  : '服务默认（不指定模型）'}',
+                              key: const ValueKey(
+                                'fish-mcp-last-requested-model',
+                              ),
+                              style: Theme.of(context).textTheme.bodySmall,
                             ),
-                            title: Text(tool.name),
-                            subtitle: Text(tool.description ?? '无描述'),
-                            children: [
-                              Padding(
-                                padding: const EdgeInsets.fromLTRB(
-                                  16,
-                                  0,
-                                  16,
-                                  12,
+                            SelectableText(
+                              '云端返回模型：${reportedModel?.isNotEmpty == true ? reportedModel : '未返回模型标识，无法确认已切换'}',
+                              key: const ValueKey(
+                                'fish-mcp-last-reported-model',
+                              ),
+                              style: Theme.of(context).textTheme.bodySmall,
+                            ),
+                            if (service.lastConfiguredBackend != null)
+                              SelectableText(
+                                'Studio 已确认后端配置：${service.lastConfiguredBackend}（项目配置证据）',
+                                key: const ValueKey(
+                                  'fish-mcp-last-configured-backend',
                                 ),
-                                child: Column(
-                                  crossAxisAlignment:
-                                      CrossAxisAlignment.stretch,
+                                style: Theme.of(context).textTheme.bodySmall,
+                              ),
+                            Text(
+                              '最近调用状态：$modelSelectionStatus',
+                              style: Theme.of(context).textTheme.bodySmall,
+                            ),
+                            if (recentRequestUsesOldModel)
+                              Text(
+                                '最近调用使用的是旧设置，不能作为当前选择的结果；保存后下一次请求才生效。',
+                                style: Theme.of(context).textTheme.bodySmall,
+                              ),
+                            SwitchListTile(
+                              value: autoFallback,
+                              onChanged: (value) =>
+                                  setDialogState(() => autoFallback = value),
+                              title: const Text('MCP 失败时允许回退现有 Fish API'),
+                              subtitle: const Text(
+                                '默认关闭。仅在 MCP 未提交生成且本地准备失败时回退；缺少 Studio 工具或 Studio 流程失败不回退。使用现有 Fish API Key 和音色；已选模型保持不变，服务默认时使用 API 模型配置。可能消耗独立的开发者 API 余额。OAuth 凭据不导出到普通备份。',
+                              ),
+                            ),
+                            const SizedBox(height: 8),
+                            if (service.tools.isNotEmpty) ...[
+                              const SizedBox(height: 12),
+                              Text('已发现工具（${service.tools.length}）'),
+                              const SizedBox(height: 4),
+                              for (final tool in service.tools)
+                                ExpansionTile(
+                                  key: ValueKey('fish-mcp-tool-${tool.name}'),
+                                  leading: Icon(
+                                    tool.name == service.ttsToolName
+                                        ? Icons.record_voice_over
+                                        : Icons.extension_outlined,
+                                  ),
+                                  title: Text(tool.name),
+                                  subtitle: Text(tool.description ?? '无描述'),
                                   children: [
-                                    OutlinedButton.icon(
-                                      onPressed: () => copyText(
-                                        const JsonEncoder.withIndent('  ')
-                                            .convert(tool.toJson()),
+                                    Padding(
+                                      padding: const EdgeInsets.fromLTRB(
+                                        16,
+                                        0,
+                                        16,
+                                        12,
                                       ),
-                                      icon: const Icon(Icons.copy, size: 18),
-                                      label: const Text('复制工具与完整 inputSchema'),
-                                    ),
-                                    const SizedBox(height: 8),
-                                    SelectableText(
-                                      const JsonEncoder.withIndent('  ')
-                                          .convert(tool.inputSchema),
-                                      style: Theme.of(context)
-                                          .textTheme
-                                          .bodySmall,
+                                      child: Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.stretch,
+                                        children: [
+                                          OutlinedButton.icon(
+                                            onPressed: () => copyText(
+                                              const JsonEncoder.withIndent('  ')
+                                                  .convert(tool.toJson()),
+                                            ),
+                                            icon: const Icon(
+                                              Icons.copy,
+                                              size: 18,
+                                            ),
+                                            label: const Text(
+                                              '复制工具与完整 inputSchema',
+                                            ),
+                                          ),
+                                          const SizedBox(height: 8),
+                                          SelectableText(
+                                            const JsonEncoder.withIndent('  ')
+                                                .convert(tool.inputSchema),
+                                            style: Theme.of(context)
+                                                .textTheme
+                                                .bodySmall,
+                                          ),
+                                        ],
+                                      ),
                                     ),
                                   ],
                                 ),
-                              ),
                             ],
-                          ),
-                      ],
-                      if (service.lastDiscoveryAt != null)
-                        Text(
-                          service.studioAvailable
-                              ? 'Studio MCP：所需工具齐全，可使用项目 default_backend 配置明确模型。'
-                              : 'Studio MCP：$studioUnavailableDetails。',
-                          style: Theme.of(context).textTheme.bodySmall,
+                            if (service.lastDiscoveryAt != null)
+                              Text(
+                                service.studioAvailable
+                                    ? 'Studio MCP：所需工具齐全，可使用项目 default_backend 配置明确模型。'
+                                    : 'Studio MCP：$studioUnavailableDetails。',
+                                style: Theme.of(context).textTheme.bodySmall,
+                              ),
+                            const SizedBox(height: 8),
+                            OutlinedButton.icon(
+                              onPressed: () =>
+                                  copyText(service.diagnosticReport),
+                              icon: const Icon(Icons.copy, size: 18),
+                              label: const Text('复制连接 / 错误诊断（已脱敏）'),
+                            ),
+                            Wrap(
+                              spacing: 8,
+                              runSpacing: 8,
+                              children: [
+                                TextButton(
+                                  onPressed: () async {
+                                    await service.disconnect();
+                                    if (context.mounted) {
+                                      setDialogState(() {
+                                        busy = false;
+                                        localError = null;
+                                      });
+                                    }
+                                  },
+                                  child: const Text('断开连接'),
+                                ),
+                                TextButton(
+                                  onPressed: () async {
+                                    await service.logout();
+                                    if (context.mounted) {
+                                      setDialogState(() {});
+                                    }
+                                  },
+                                  child: const Text('退出授权'),
+                                ),
+                              ],
+                            ),
+                          ],
                         ),
+                      ],
+                    ),
+                    if (localError != null) ...[
                       const SizedBox(height: 8),
-                      OutlinedButton.icon(
-                        onPressed: () => copyText(service.diagnosticReport),
-                        icon: const Icon(Icons.copy, size: 18),
-                        label: const Text('复制连接 / 错误诊断（已脱敏）'),
-                      ),
-                      if (localError != null) ...[
-                        const SizedBox(height: 8),
-                        Text(
-                          localError!,
-                          style: TextStyle(
-                            color: Theme.of(context).colorScheme.error,
-                          ),
+                      Text(
+                        localError!,
+                        style: TextStyle(
+                          color: Theme.of(context).colorScheme.error,
                         ),
-                      ],
+                      ),
                     ],
-                  ),
+                  ],
                 ),
               ),
               actions: [
-                TextButton(
-                  onPressed: () async {
-                    await service.disconnect();
-                    if (context.mounted) {
-                      setDialogState(() {
-                        busy = false;
-                        localError = null;
-                      });
-                    }
-                  },
-                  child: const Text('断开连接'),
-                ),
-                TextButton(
-                  onPressed: () async {
-                    await service.logout();
-                    if (context.mounted) setDialogState(() {});
-                  },
-                  child: const Text('退出授权'),
-                ),
                 TextButton(
                   onPressed: () => Navigator.pop(context, false),
                   child: const Text('取消'),
@@ -3279,7 +3339,7 @@ class SettingsScreenState extends State<SettingsScreen> {
                       padding: const EdgeInsets.all(12),
                       decoration: BoxDecoration(
                         color: Colors.green.withValues(alpha: 0.10),
-                        border: Border.all(color: Colors.green),
+                        border: Border.all(color: Colors.green, width: 0),
                         borderRadius: BorderRadius.circular(6),
                       ),
                       child: Row(
@@ -4610,6 +4670,22 @@ class _LongTermMemoryDialogState extends State<_LongTermMemoryDialog> {
       final client = OpenAiCompatibleClient();
       final proposal = await ManualMemoryConsolidation().prepare(
         controller: controller,
+        onLegacyNumberingRecovery: () {
+          if (!mounted) throw StateError('记忆页面已关闭，已保留原记忆');
+          checkDraft();
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              duration: const Duration(seconds: 8),
+              content: Text(
+                language.text(
+                  '检测到旧版记忆编号不兼容，正在使用 LLM 兼容整理。原记忆会保留，完成后请确认。',
+                  'Legacy memory numbering was detected. The LLM is reorganizing it for compatibility. Your original memories are kept until you confirm.',
+                  '旧形式の記憶番号を検出しました。LLMで互換整理中です。確認するまで元の記憶は保持されます。',
+                ),
+              ),
+            ),
+          );
+        },
         complete: (messages) => client.complete(
           lightweight: true,
           provider: provider,
@@ -4780,6 +4856,7 @@ class _LongTermMemoryDialogState extends State<_LongTermMemoryDialog> {
                         border: Border.all(
                           color: Theme.of(context).colorScheme.outline
                               .withValues(alpha: .2),
+                          width: 0,
                         ),
                       ),
                       child: Column(
@@ -5077,6 +5154,17 @@ class _ManualMemoryReviewDialogState extends State<_ManualMemoryReviewDialog> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
+              if (proposal.usedLegacyNumberingRecovery) ...[
+                Text(
+                  language.text(
+                    '已使用 LLM 完成旧编号兼容整理，编号由程序映射。请核对内容后保存；取消会保留原记忆。',
+                    'The LLM reorganized legacy memories and the app mapped their IDs. Review before saving; canceling keeps the originals.',
+                    'LLMによる旧番号の互換整理が完了し、アプリで番号を対応付けました。保存前に確認してください。キャンセルすると元の記憶を保持します。',
+                  ),
+                  key: const ValueKey('memory-legacy-recovery-notice'),
+                ),
+                const SizedBox(height: 16),
+              ],
               if (proposal.recent.isNotEmpty) ...[
                 Text(
                   language.text('最近记忆', 'Recent memories', '最近の記憶'),
@@ -5574,7 +5662,7 @@ class _TtsPreviewEditor extends StatelessWidget {
       color: Colors.transparent,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(4),
-        side: BorderSide(color: colors.outline),
+        side: BorderSide(color: colors.outline, width: 0),
       ),
       clipBehavior: Clip.antiAlias,
       child: Column(

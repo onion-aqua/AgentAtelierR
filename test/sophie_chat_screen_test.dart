@@ -1,6 +1,13 @@
+import 'dart:io';
+import 'dart:ui' as ui;
+
+import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ryza_chat_mvp/src/app_controller.dart';
+import 'package:ryza_chat_mvp/src/app_theme.dart';
 import 'package:ryza_chat_mvp/src/character_camera.dart';
 import 'package:ryza_chat_mvp/src/character_catalog.dart';
 import 'package:ryza_chat_mvp/src/chat_screen.dart';
@@ -9,7 +16,49 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:spine_flutter/spine_flutter.dart';
 
 void main() {
-  Future<AppController> mountComposer(WidgetTester tester) async {
+  TestWidgetsFlutterBinding.ensureInitialized();
+  final messenger =
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+  final audioChannels = <String>{
+    'xyz.luan/audioplayers.global',
+    'xyz.luan/audioplayers.global/events',
+    'xyz.luan/audioplayers',
+    'agent_atelier_r/companion_runtime/events',
+  };
+  setUpAll(() async {
+    for (final name in audioChannels) {
+      messenger.setMockMethodCallHandler(
+        MethodChannel(name),
+        (_) async => null,
+      );
+    }
+    messenger.setMockMethodCallHandler(
+      const MethodChannel('xyz.luan/audioplayers'),
+      (call) async {
+        if (call.method == 'create') {
+          final id = (call.arguments as Map)['playerId'];
+          final channel = 'xyz.luan/audioplayers/events/$id';
+          audioChannels.add(channel);
+          messenger.setMockMethodCallHandler(
+            MethodChannel(channel),
+            (_) async => null,
+          );
+        }
+        return null;
+      },
+    );
+    await AudioPlayer.global.ensureInitialized();
+  });
+  tearDownAll(() {
+    for (final name in audioChannels) {
+      messenger.setMockMethodCallHandler(MethodChannel(name), null);
+    }
+  });
+
+  Future<AppController> mountComposer(
+    WidgetTester tester, {
+    Brightness brightness = Brightness.light,
+  }) async {
     SharedPreferences.setMockInitialValues({
       'active_character_id_v1': 'sophie',
       'ai_enabled': false,
@@ -22,6 +71,11 @@ void main() {
     });
     await tester.pumpWidget(
       MaterialApp(
+        theme: atelierTheme(AppAccentTheme.jade, brightness),
+        builder: (context, child) => RepaintBoundary(
+          key: const ValueKey('composer-audit-capture'),
+          child: child!,
+        ),
         home: AnimatedBuilder(
           animation: controller,
           builder: (context, _) => ChatScreen(
@@ -40,6 +94,71 @@ void main() {
     (widget) =>
         widget is TextField && widget.decoration?.hintText == '和苏菲说点什么…',
   );
+
+  for (final brightness in [Brightness.light, Brightness.dark]) {
+    for (final glass in [false, true]) {
+      testWidgets(
+        'fullscreen composer follows theme $brightness glass=$glass',
+        (tester) async {
+          final controller = await mountComposer(
+            tester,
+            brightness: brightness,
+          );
+          controller.setLiquidGlassChatUi(glass);
+          controller.setSplitNarrationComposer(true);
+          await tester.pump();
+          await tester.enterText(
+            find.byKey(const ValueKey('narration-input-1')),
+            '保留全屏草稿',
+          );
+          await tester.tap(find.byIcon(Icons.open_in_full_rounded));
+          await tester.pump();
+          await tester.pump(const Duration(milliseconds: 240));
+          final field = tester.widget<TextField>(
+            find.byKey(const ValueKey('narration-input-1')).last,
+          );
+          expect(field.controller!.text, '保留全屏草稿');
+          expect(
+            ThemeData.estimateBrightnessForColor(field.style!.color!),
+            brightness == Brightness.light ? Brightness.dark : Brightness.light,
+          );
+          final boundary = tester.renderObject<RenderRepaintBoundary>(
+            find.byKey(const ValueKey('composer-audit-capture')),
+          );
+          await tester.runAsync(() async {
+            final image = await boundary.toImage(pixelRatio: 1);
+            try {
+              final png = (await image.toByteData(
+                format: ui.ImageByteFormat.png,
+              ))!;
+              final folder = Directory('build/ui-audit');
+              await folder.create(recursive: true);
+              await File(
+                '${folder.path}/composer-${brightness.name}-$glass.png',
+              ).writeAsBytes(
+                png.buffer.asUint8List(png.offsetInBytes, png.lengthInBytes),
+              );
+            } finally {
+              image.dispose();
+            }
+          });
+          await tester.tap(find.text('返回（保留草稿）'));
+          await tester.pump();
+          await tester.pump(const Duration(milliseconds: 240));
+          expect(
+            tester
+                .widget<TextField>(
+                  find.byKey(const ValueKey('narration-input-1')),
+                )
+                .controller!
+                .text,
+            '保留全屏草稿',
+          );
+          expect(tester.takeException(), isNull);
+        },
+      );
+    }
+  }
 
   testWidgets(
     'Sophie dialogue never borrows avatar or name metadata from Ryza contacts',

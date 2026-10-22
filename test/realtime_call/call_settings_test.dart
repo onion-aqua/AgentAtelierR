@@ -55,6 +55,45 @@ void main() {
 
   setUp(() => SharedPreferences.setMockInitialValues({}));
 
+  testWidgets('opening and saving preserves inherited call model', (
+    tester,
+  ) async {
+    final store = CallSettingsStore();
+    await store.save(CallSettings(fishModel: ''));
+    await tester.pumpWidget(
+      MaterialApp(home: RealtimeCallSettingsPage(store: store)),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('保存'));
+    await tester.pumpAndSettle();
+    expect((await store.load()).fishModel, isEmpty);
+    expect((await store.load()).voiceOverrides, isEmpty);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('saving retires legacy model and voice overrides', (
+    tester,
+  ) async {
+    final store = CallSettingsStore();
+    await store.save(
+      CallSettings(
+        fishModel: 'drama-3',
+        voiceOverrides: {'primary:ryza': 'old-voice'},
+      ),
+    );
+    await tester.pumpWidget(
+      MaterialApp(home: RealtimeCallSettingsPage(store: store)),
+    );
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('call-fish-model')), findsNothing);
+    expect(find.byType(TextFormField), findsNothing);
+    await tester.tap(find.text('保存'));
+    await tester.pumpAndSettle();
+    expect((await store.load()).fishModel, isEmpty);
+    expect((await store.load()).voiceOverrides, isEmpty);
+    expect(tester.takeException(), isNull);
+  });
+
   test(
     'configuration persists across store instances without credentials',
     () async {
@@ -87,7 +126,7 @@ void main() {
       final store = CallSettingsStore(preferences: preferences);
       for (final malformed in ['{', '[]', '{"asr":{"language":5}}']) {
         await preferences.setString(CallSettingsStore.preferenceKey, malformed);
-        expect((await store.load()).fishModel, 'drama-3');
+        expect((await store.load()).fishModel, isEmpty);
         expect((await store.load()).asr.modelPath, isEmpty);
       }
     },
@@ -121,31 +160,17 @@ void main() {
 
   testWidgets('Klaudia explains its built-in voice fallback', (tester) async {
     await tester.pumpWidget(
-      const MaterialApp(
-        home: RealtimeCallSettingsPage(
-          contacts: [
-            CallContactOption(id: 'claudia', name: '科洛蒂娅'),
-            CallContactOption(id: 'kara', name: '卡菈'),
-          ],
-          defaultFishModel: 'drama-3',
-          defaultVoice: '',
-        ),
-      ),
+      const MaterialApp(home: RealtimeCallSettingsPage()),
     );
     await tester.pumpAndSettle();
     await tester.scrollUntilVisible(
-      find.byKey(const ValueKey('call-voice-claudia')),
-      420,
+      find.text('模型与普通音色统一使用“声音与语音”的配置；科洛蒂娅使用内置音色。修改后下次通话生效。'),
+      350,
       scrollable: find.byType(Scrollable).first,
     );
-    await tester.pumpAndSettle();
-    await tester.scrollUntilVisible(
-      find.text('留空使用应用内置的科洛蒂娅音色'),
-      500,
-      scrollable: find.byType(Scrollable).first,
-    );
-    expect(find.text('留空使用应用内置的科洛蒂娅音色'), findsOneWidget);
-    expect(find.text('此 NPC 需要独立音色'), findsOneWidget);
+    expect(find.byKey(const ValueKey('call-voice-claudia')), findsNothing);
+    expect(find.byType(TextFormField), findsNothing);
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets('download fills model rows and Save persists installed paths', (
@@ -155,9 +180,6 @@ void main() {
     await tester.pumpWidget(
       MaterialApp(
         home: RealtimeCallSettingsPage(
-          contacts: const [],
-          defaultFishModel: 'drama-3',
-          defaultVoice: '',
           store: store,
           downloader: _ModelDownloader(),
         ),

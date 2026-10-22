@@ -118,7 +118,7 @@ class _BootstrapAppState extends State<_BootstrapApp> {
   Future<void> _initialize() async {
     try {
       await RuntimeLog.instance.initialize();
-      RuntimeLog.instance.info('App', '应用启动，版本 1.0.4.2');
+      RuntimeLog.instance.info('App', '应用启动，版本 1.0.4.3');
       await initSpineFlutter(enableMemoryDebugging: false);
       if (AppPlatformCapabilities.supportsVoiceAlarms) await Alarm.init();
       await AndroidCompanionRuntime.instance.initialize();
@@ -143,6 +143,7 @@ class _BootstrapAppState extends State<_BootstrapApp> {
       _updates?.dispose();
       _updates = updates;
       final controller = await AppController.load();
+      controller.startColdLaunchGreeting();
       await controller.initializeAlarmRuntime();
       if (controller.activeCharacterId == CharacterRuntimeIds.ryza) {
         await LocalSkinStore.instance.initialize();

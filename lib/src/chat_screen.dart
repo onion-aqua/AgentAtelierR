@@ -62,6 +62,9 @@ import 'speech_file_playback.dart';
 import 'speech_loudness.dart';
 import 'tts_spatial_settings.dart';
 import 'character_speech_driver.dart';
+import 'character_startup_sleep.dart';
+import 'character_wake_performance.dart';
+import 'cold_start_wake_button.dart';
 import 'character_resource_behavior.dart';
 import 'character_lipsync.dart';
 import 'character_motion_dynamics.dart';
@@ -352,6 +355,13 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   late CharacterAppearance _appearance;
   late String _activeCharacterId;
   bool _staticPortraitReady = false;
+  bool _wasAwaitingWake = false;
+  bool get _awaitingWake => widget.controller.characterAwaitingWake;
+  final _startupSleepMotion = CharacterStartupSleepMotion();
+  CharacterWakePerformance? _wakePerformance;
+  Timer? _staticWakeTimer;
+  bool _waking = false;
+  bool _wakeCompletionScheduled = false;
   CharacterRuntimeProfile get _activeCharacterProfile =>
       characterRuntimeProfileById(_activeCharacterId);
   bool get _usesProtectedSpine =>
@@ -381,7 +391,12 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
   void _selectPosture(String id, {bool byUser = false}) {
     final group = _crossLeggedGroup;
-    if (!_spineReady || _tapReactionActive || _appearance.isStanding) return;
+    if (_awaitingWake ||
+        !_spineReady ||
+        _tapReactionActive ||
+        _appearance.isStanding) {
+      return;
+    }
     if (!_postureState.select(
       id,
       supported: id == 'sitting_normal' || group != null,
@@ -695,7 +710,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     super.initState();
     _calls = RealtimeCallController(
       app: widget.controller,
-      canStart: () => !_isReplying && !widget.controller.continuousAsmr,
+      canStart: () =>
+          !_awaitingWake && !_isReplying && !widget.controller.continuousAsmr,
     );
     _calls.addListener(_handleCallChanged);
     widget.controller.addDataResetListener(_calls.prepareForDataReset);
@@ -703,6 +719,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     _companionRuntime.addListener(_handleCompanionRuntimeChange);
     WidgetsBinding.instance.addObserver(this);
     _activeCharacterId = widget.controller.activeCharacterId;
+    _wasAwaitingWake = _awaitingWake;
     _appearance = characterAppearanceById(
       widget.controller.selectedCharacterAppearanceId,
     );
@@ -761,6 +778,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       onBeforeApplyAnimation: _prepareSpeechFrame,
       onAfterApplyAnimation: (controller) {
         _applySpeakingHeadMotion(controller);
+        _wakePerformance?.applyTearOpacity(controller.skeleton);
         _touchPhysics.apply(controller.updateDelta);
       },
       onAfterUpdateWorldTransforms: (controller) =>
@@ -836,6 +854,14 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     _syncBackgroundVoicePolicy();
     final characterChanged =
         _activeCharacterId != widget.controller.activeCharacterId;
+    if (_waking &&
+        (characterChanged ||
+            _observedDataRevision != widget.controller.dataRevision ||
+            widget.controller.selectedCharacterAppearanceId != _appearance.id ||
+            forceAppearanceReload)) {
+      _cancelWakePerformance();
+      _applyStartupSleepFace();
+    }
     if (characterChanged ||
         _observedDataRevision != widget.controller.dataRevision) {
       _selectingCollection = false;
@@ -850,6 +876,18 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       _syncCharacterAnimationPause();
     }
     if (!widget.controller.gazeTrackingEnabled) _endGaze();
+    if (_wasAwaitingWake != _awaitingWake) {
+      _wasAwaitingWake = _awaitingWake;
+      _applyExpression(_currentExpression);
+      if (!_awaitingWake) {
+        _recordUserActivity();
+        _scheduleIdleChange();
+        _scheduleMicroMotion();
+        _scheduleCharacterBlink();
+        _scheduleFacialDetailChange();
+      }
+      if (mounted) setState(() {});
+    }
     final next = characterAppearanceById(
       widget.controller.selectedCharacterAppearanceId,
     );
@@ -1084,10 +1122,12 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   }
 
   void _scheduleIdleChange() {
-    if (widget.controller.continuousAsmr || widget.pauseCharacterAnimation) {
+    _idleTimer?.cancel();
+    if (_awaitingWake ||
+        widget.controller.continuousAsmr ||
+        widget.pauseCharacterAnimation) {
       return;
     }
-    _idleTimer?.cancel();
     // The bundled original rig locks its base pose. Preserve manual pose choice;
     // emotion and conversation are not reasons to randomly cross sitting axes.
     if (_resourceBehavior.fixedBasePoseMode) return;
@@ -1134,7 +1174,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
   void _playIdleAnimation(String animation) {
     final spineController = _spineController;
-    if (!_spineReady ||
+    if (_awaitingWake ||
+        !_spineReady ||
         spineController == null ||
         spineController.skeletonData.findAnimation(animation) == null) {
       return;
@@ -1432,7 +1473,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     Duration? remainingDuration,
   }) {
     final spineController = _spineController;
-    if (!_spineReady ||
+    if (_awaitingWake ||
+        !_spineReady ||
         spineController == null ||
         !_canPlayMotionGroup(group)) {
       return false;
@@ -1643,7 +1685,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
   bool _canPlayRecipe(MotionRecipe recipe) {
     final controller = _spineController;
-    return _spineReady &&
+    return !_awaitingWake &&
+        _spineReady &&
         controller != null &&
         recipe.available(
           _recipeAnimationNames,
@@ -1840,6 +1883,11 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     _currentExpression = expression;
 
     if (!_spineReady || _spineController == null || _tapReactionActive) return;
+    if (_waking) return;
+    if (_awaitingWake) {
+      _applyStartupSleepFace();
+      return;
+    }
     _blinkRestoreTimer?.cancel();
     _speechBlinkClosed = false;
     _spineController!.animationState
@@ -2113,6 +2161,24 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   }
 
   void _prepareSpeechFrame(SpineWidgetController controller) {
+    final wake = _wakePerformance;
+    if (wake != null) {
+      final lifecycle = WidgetsBinding.instance.lifecycleState;
+      final visible =
+          widget.pageActive &&
+          !widget.pauseCharacterAnimation &&
+          (lifecycle == null || lifecycle == AppLifecycleState.resumed);
+      wake.advance(visible ? controller.updateDelta : 0);
+      if (wake.finished && !_wakeCompletionScheduled) {
+        _wakeCompletionScheduled = true;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted && identical(_wakePerformance, wake)) {
+            _finishWakePerformance();
+          }
+        });
+      }
+      return;
+    }
     if (_calls.active &&
         _calls.snapshot.contact?.id ==
             'primary:${widget.controller.activeCharacterId}') {
@@ -2195,7 +2261,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
     // This director advances on frame delta, not per-audio-clip position.
     // Its target/hold transitions continue through TTS sentence boundaries.
-    final parts = _performanceDirector.sample(
+    final awakeParts = _performanceDirector.sample(
       delta: delta,
       emotion: _currentExpression.name,
       speaking: _isCharacterSpeaking,
@@ -2203,12 +2269,18 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       enhanceConversation:
           !widget.pauseCharacterAnimation && !widget.controller.continuousAsmr,
       suppressed:
+          _awaitingWake ||
           _tapReactionActive ||
           _gazePointer != null ||
           _performanceQueue.isNotEmpty ||
           (_motionBlocksProcedural &&
               !_performanceDirector.hasActiveAttitudeCue),
     );
+    final sleepFrame = _startupSleepMotion.sample(
+      delta: delta,
+      sleeping: _awaitingWake && !_waking,
+    );
+    final parts = sleepFrame.merge(awakeParts);
     for (final entry in parts.entries) {
       if (_tapReactionActive) break;
       // Automatic gaze uses the same visible eyeball joints as pointer gaze.
@@ -2534,10 +2606,12 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   }
 
   void _scheduleFacialDetailChange() {
-    if (widget.controller.continuousAsmr || widget.pauseCharacterAnimation) {
+    _facialDetailTimer?.cancel();
+    if (_awaitingWake ||
+        widget.controller.continuousAsmr ||
+        widget.pauseCharacterAnimation) {
       return;
     }
-    _facialDetailTimer?.cancel();
     if (!mounted || !_spineReady) return;
     final profile = _resourceEmotion;
     _facialDetailTimer = Timer(
@@ -2552,6 +2626,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   }
 
   void _rotateFacialDetail() {
+    if (_awaitingWake) return;
     if (_motionBusy) {
       _scheduleFacialDetailChange();
       return;
@@ -2611,10 +2686,12 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   }
 
   void _scheduleCharacterBlink() {
-    if (widget.controller.continuousAsmr || widget.pauseCharacterAnimation) {
+    _blinkTimer?.cancel();
+    if (_awaitingWake ||
+        widget.controller.continuousAsmr ||
+        widget.pauseCharacterAnimation) {
       return;
     }
-    _blinkTimer?.cancel();
     if (!mounted || !_spineReady || !_appearance.animated) return;
     _blinkBeat = chooseCharacterBlink(
       _performanceDirector.profile.tensionProfile(
@@ -2630,7 +2707,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   }
 
   void _performCharacterBlink() {
-    if (!mounted || !_spineReady || _spineController == null) {
+    if (_awaitingWake || !mounted || !_spineReady || _spineController == null) {
       return;
     }
     // Tap animations own the eyes; semantic gestures and held gaze should not
@@ -2671,10 +2748,12 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   }
 
   void _scheduleMicroMotion() {
-    if (widget.controller.continuousAsmr || widget.pauseCharacterAnimation) {
+    _microMotionTimer?.cancel();
+    if (_awaitingWake ||
+        widget.controller.continuousAsmr ||
+        widget.pauseCharacterAnimation) {
       return;
     }
-    _microMotionTimer?.cancel();
     if (!_spineReady || !_appearance.animated) return;
     // Speech retains resource-authored torso beats. Explicit gestures keep
     // priority; the speaking candidate filter below never selects random arms.
@@ -2700,6 +2779,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   }
 
   void _playAmbientMotion() {
+    if (_awaitingWake) return;
     if (!ConversationMotionPolicy.canAnimate(
           resourcesReady: _spineReady,
           paused:
@@ -3146,6 +3226,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
   @override
   void dispose() {
+    _cancelWakePerformance(nativeAlive: false);
     widget.controller.removeDataResetListener(_calls.prepareForDataReset);
     _calls.removeListener(_handleCallChanged);
     _calls.dispose();
@@ -3214,8 +3295,92 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     super.dispose();
   }
 
+  void _applyStartupSleepFace() {
+    final controller = _spineController;
+    if (!_spineReady || controller == null) return;
+    _idleTimer?.cancel();
+    _microMotionTimer?.cancel();
+    _facialDetailTimer?.cancel();
+    _blinkTimer?.cancel();
+    _blinkRestoreTimer?.cancel();
+    _speechBlinkClosed = false;
+    _lipSyncEntry = null;
+    final face = resolveStartupSleepFace(
+      _appearance.baseAppearanceId ?? _appearance.id,
+      (name) => controller.skeletonData.findAnimation(name) != null,
+    );
+    for (final (track, animation) in [
+      (11, face.eye),
+      (12, face.eyebrow),
+      (13, face.mouth),
+    ]) {
+      if (animation != null) {
+        // The first revealed frame must already be asleep. Waking uses the
+        // normal expression mix, so its eyes still open smoothly.
+        _setFacialAnimation(track, animation, mixDuration: 0);
+      }
+    }
+    for (var track = 14; track <= 16; track++) {
+      controller.animationState.setEmptyAnimation(track, .2);
+    }
+  }
+
+  void _wakeCharacter() {
+    if (!_awaitingWake || _waking) return;
+    FocusScope.of(context).unfocus();
+    final spine = _spineController;
+    _clearPerformanceQueue();
+    _resetMotionOverlays();
+    _applyStartupSleepFace();
+    setState(() {
+      _waking = true;
+      _wakeCompletionScheduled = false;
+    });
+    if (_appearance.animated && _spineReady && spine != null) {
+      _wakePerformance = CharacterWakePerformance(
+        state: spine.animationState,
+        data: spine.skeletonData,
+        appearanceId: _appearance.baseAppearanceId ?? _appearance.id,
+        pose: _currentIdleAnimation,
+      )..advance(0);
+      RuntimeLog.instance.info(
+        'Interaction',
+        '唤醒演出开始；stretch=${_wakePerformance!.stretch ?? 'unavailable'}；输入保持锁定',
+      );
+    } else {
+      // Static portraits or an unavailable rig must not trap the composer.
+      // Keep visible click feedback, then safely unlock without inventing clips.
+      _staticWakeTimer = Timer(const Duration(milliseconds: 700), () {
+        if (mounted && _waking) _finishWakePerformance();
+      });
+    }
+    widget.controller.frameRate.boost(
+      FrameRateActivity.characterMotion,
+      duration: const Duration(seconds: 7),
+    );
+  }
+
+  void _cancelWakePerformance({bool nativeAlive = true}) {
+    _staticWakeTimer?.cancel();
+    _staticWakeTimer = null;
+    _wakePerformance?.clear(nativeAlive: nativeAlive);
+    _wakePerformance = null;
+    _wakeCompletionScheduled = false;
+    _waking = false;
+  }
+
+  void _finishWakePerformance() {
+    _cancelWakePerformance();
+    widget.controller.wakeCharacter();
+    if (mounted) setState(() {});
+  }
+
   Future<void> _reactToTap(Offset localPosition) async {
     final reaction = _hitTestReaction(localPosition);
+    if (_awaitingWake) {
+      if (reaction != null) _wakeCharacter();
+      return;
+    }
     if (reaction == null) {
       return;
     }
@@ -3426,6 +3591,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   }
 
   Future<void> _sendMessage({String? automaticPrompt}) async {
+    if (_awaitingWake) return;
     if (_calls.active) {
       if (automaticPrompt == null && mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -3466,6 +3632,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
             '请分析我发送的附件。',
         ].join('\n');
     final isAutomatic = automaticPrompt != null;
+    final personalityPreferences = widget.controller
+        .interpretPersonality(text)
+        .preferences;
     final precedingContactRequest = _takeContactFollowUp();
     // Keep contact intent with this generation. Cancelled or failed replies
     // must not leave an invitation for a later reply or a different save.
@@ -3770,6 +3939,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       final recentDialogue = history.take(max(0, history.length - 1)).toList();
       final characterState = widget.controller.characterState;
       final sharedContext = <String, dynamic>{
+        if (personalityPreferences.isNotEmpty)
+          'personality_preferences': personalityPreferences,
         'current_reply': reply,
         'user_intent_text': text,
         'previous_dialogue': recentDialogue.reversed
@@ -4080,7 +4251,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   }
 
   Future<void> _suggestUserReply() async {
-    if (_calls.active ||
+    if (_awaitingWake ||
+        _calls.active ||
         _isReplying ||
         _isSuggestingReply ||
         widget.controller.messages.isEmpty) {
@@ -4200,7 +4372,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   }
 
   void _checkIdleUser() {
-    if (_calls.active) return;
+    if (_awaitingWake || _calls.active) return;
     if (!mounted ||
         !widget.pageActive ||
         widget.controller.continuousAsmr ||
@@ -4621,7 +4793,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         : null;
     String? plannedText;
     var playbackFinished = false;
-    Future<SpeechPreparation<_PreparedSpeech?>>? inFlightPreparation;
+    OrderedSpeechPreparation<_PreparedSpeech?>? preparations;
     int primaryOrdinalAt(int index) => primaryOrdinals[segments[index]] ?? -1;
     void applyDispatched(List<SpeechPerformanceDispatchCue> cues) {
       if (!performanceIsCurrent() || generation != _speechPlaybackGeneration) {
@@ -4708,18 +4880,23 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         );
       }
 
-      Future<SpeechPreparation<_PreparedSpeech?>> captureSegmentAt(int index) {
-        return inFlightPreparation = SpeechPreparation.capture(
-          () => prepareSegmentAt(index),
-        );
-      }
-
+      final providerKey = widget.controller.ttsProvider.name;
+      final queue = preparations = OrderedSpeechPreparation<_PreparedSpeech?>(
+        length: segments.length,
+        concurrency: SpeechConcurrencyPolicy.limit(providerKey),
+        prepare: prepareSegmentAt,
+        dispose: (prepared) async {
+          if (prepared != null) await _deleteTemporarySpeech(prepared.path);
+        },
+        isCurrent: () =>
+            performanceIsCurrent() && generation == _speechPlaybackGeneration,
+        onError: (error) => SpeechConcurrencyPolicy.observe(providerKey, error),
+      );
+      queue.prefetch();
       final rejections = SpeechRejectionBudget();
       Object? lastRejected;
-      var pending = captureSegmentAt(0);
       for (var index = 0; index < segments.length; index++) {
-        final result = await pending;
-        if (identical(inFlightPreparation, pending)) inFlightPreparation = null;
+        final result = await queue.take(index);
         if (!performanceIsCurrent() ||
             generation != _speechPlaybackGeneration) {
           await result.discard((prepared) async {
@@ -4743,9 +4920,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           rejections.accepted();
         }
         if (prepared == null) {
-          if (index + 1 < segments.length) {
-            pending = captureSegmentAt(index + 1);
-          }
+          queue.prefetch();
           continue;
         }
         if (!performanceIsCurrent() ||
@@ -4753,9 +4928,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           unawaited(_deleteTemporarySpeech(prepared.path));
           return;
         }
-        final next = index + 1 < segments.length
-            ? captureSegmentAt(index + 1)
-            : null;
+        queue.prefetch();
+        final hasNext = index + 1 < segments.length;
         final segment = segments[index];
         final displayIndex = _displayIndexForSpeechSegment(
           displaySource ?? text,
@@ -4824,13 +4998,12 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
             motionGroupIds: performance?.motionGroupIds ?? const [],
           ),
         );
-        if (next != null) {
+        if (hasNext) {
           if (segment.isPrimary && segments[index + 1].isPrimary) {
             _pauseSpeakingBetweenSegments();
           } else {
             _stopSpeakingAnimation();
           }
-          pending = next;
         } else {
           _stopSpeakingAnimation();
         }
@@ -4957,18 +5130,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         ),
       );
     } finally {
-      // A cancellation can finish playback before its prefetched clip arrives.
-      // Observe the result and remove it without delaying the user's next turn.
-      final abandoned = inFlightPreparation;
-      if (abandoned != null) {
-        unawaited(
-          abandoned.then(
-            (result) => result.discard((prepared) async {
-              if (prepared != null) await _deleteTemporarySpeech(prepared.path);
-            }),
-          ),
-        );
-      }
+      preparations?.close();
     }
   }
 
@@ -5340,7 +5502,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   }
 
   Future<void> _regenerateLastSpeech() async {
-    if (_isReplying || _regeneratingSpeech || !_mayPlayVoice) return;
+    if (_awaitingWake || _isReplying || _regeneratingSpeech || !_mayPlayVoice) {
+      return;
+    }
     final message = widget.controller.messages
         .where((m) => !m.isUser && m.text.trim().isNotEmpty)
         .lastOrNull;
@@ -5384,6 +5548,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   }
 
   Future<void> _replayLastSpeech() async {
+    if (_awaitingWake) return;
     await _playCachedSpeech(_lastSpeech);
   }
 
@@ -5392,7 +5557,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     String text,
     ChatSpeaker speaker,
   ) async {
-    if (_isReplying || !_mayPlayVoice) return;
+    if (_awaitingWake || _isReplying || !_mayPlayVoice) return;
     final characterId = widget.controller.activeCharacterId;
     final revision = widget.controller.dataRevision;
     try {
@@ -5617,6 +5782,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   }
 
   bool get _mayPlayVoice =>
+      !_awaitingWake &&
       !_companionRuntime.stopRequested &&
       !CallAudioPriority.instance.value &&
       (widget.pageActive || widget.controller.backgroundVoicePlayback);
@@ -6278,6 +6444,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       );
 
   Future<void> _openFullscreenComposer() async {
+    if (_awaitingWake) return;
     if (!widget.controller.splitNarrationComposer) return;
     FocusManager.instance.primaryFocus?.unfocus();
     final language = widget.controller.interfaceLanguage;
@@ -6292,13 +6459,16 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         body: SafeArea(
           child: GlassSurface(
             liquidGlass: widget.controller.liquidGlassChatUi,
-            fallbackColor: const Color(0xE62A2A2A),
+            readableText: true,
+            fallbackColor: Theme.of(context).colorScheme.surface
+                .withValues(alpha: .94),
             child: Padding(
               padding: const EdgeInsets.all(16),
               child: Column(
                 children: [
                   Expanded(
                     child: NarrationComposerFields(
+                      foregroundColor: Theme.of(context).colorScheme.onSurface,
                       controllers: [
                         _narrationInputController,
                         _inputController,
@@ -6799,18 +6969,21 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       },
       onOpenSettings: () => Navigator.of(context).push(
         MaterialPageRoute<void>(
-          builder: (_) => RealtimeCallSettingsPage(
-            contacts: _calls.contacts
-                .map(
-                  (c) => CallContactOption(
-                    id: c.id,
-                    name: c.displayName,
-                    isMainCharacter: c.id.startsWith('primary:'),
+          builder: (callContext) => AnimatedBuilder(
+            animation: widget.controller,
+            builder: (_, _) => RealtimeCallSettingsPage(
+              liquidGlass: widget.controller.liquidGlassChatUi,
+              onOpenVoiceSettings: () => Navigator.of(callContext).push(
+                MaterialPageRoute<void>(
+                  builder: (_) => SettingsScreen(
+                    controller: widget.controller,
+                    initialSection: SettingsSection.audio,
+                    onMenuPressed: () => Navigator.of(callContext).maybePop(),
                   ),
-                )
-                .toList(),
-            defaultFishModel: widget.controller.fishAudioModel,
-            defaultVoice: widget.controller.fishAudioReferenceId,
+                ),
+              ),
+              ttsProvider: widget.controller.ttsProvider,
+            ),
           ),
         ),
       ),
@@ -7196,6 +7369,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                   widget.controller.translationLanguage.name != 'none',
               messages: widget.controller.messages,
               isReplying: _isReplying,
+              onWakeCharacter: _awaitingWake ? _wakeCharacter : null,
+              waking: _waking,
               scrollController: _scrollController,
               inputController: _inputController,
               narrationController: _narrationInputController,
@@ -7222,11 +7397,16 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
               expanded: false,
               onToggleExpanded: _openFullscreenComposer,
               canUndo:
+                  !_awaitingWake &&
                   !_calls.active &&
                   widget.controller.messages.any((message) => message.isUser),
               canReplay:
-                  !_calls.active && _lastSpeech.isNotEmpty && !_isReplying,
+                  !_awaitingWake &&
+                  !_calls.active &&
+                  _lastSpeech.isNotEmpty &&
+                  !_isReplying,
               canContinue:
+                  !_awaitingWake &&
                   !_calls.active &&
                   widget.controller.messages.any(
                     (message) => !message.isUser,
@@ -7435,22 +7615,27 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           CharacterCamera(
             keepSceneProportions: true,
             onTap: _reactToTap,
-            onCharacterDragStart: _appearance.animated ? _beginFacePull : null,
-            onCharacterDragUpdate: _appearance.animated
+            onCharacterDragStart: !_awaitingWake && _appearance.animated
+                ? _beginFacePull
+                : null,
+            onCharacterDragUpdate: !_awaitingWake && _appearance.animated
                 ? _updateFacePull
                 : null,
             onCharacterDragEnd: _endFacePull,
-            onCharacterTouchStart: _appearance.animated
+            onCharacterTouchStart: !_awaitingWake && _appearance.animated
                 ? _beginTouchPhysics
                 : null,
-            onCharacterTouchMove: _appearance.animated
+            onCharacterTouchMove: !_awaitingWake && _appearance.animated
                 ? _moveTouchPhysics
                 : null,
             onCharacterTouchEnd: _endTouchPhysics,
-            onGazeChanged: widget.controller.gazeTrackingEnabled
+            onGazeChanged:
+                !_awaitingWake && widget.controller.gazeTrackingEnabled
                 ? _updateGaze
                 : null,
-            onGazeEnd: widget.controller.gazeTrackingEnabled ? _endGaze : null,
+            onGazeEnd: !_awaitingWake && widget.controller.gazeTrackingEnabled
+                ? _endGaze
+                : null,
             child: Stack(
               fit: StackFit.expand,
               clipBehavior: Clip.none,
@@ -7982,6 +8167,7 @@ class _SceneTimeMenuState extends State<_SceneTimeMenu> {
         label: widget.language.text('切换场景时间', 'Change scene time', 'シーンの時間を変更'),
         child: GlassSurface(
           liquidGlass: widget.liquidGlass,
+          tone: GlassTone.dark,
           borderRadius: BorderRadius.circular(21),
           fallbackColor: Colors.black.withValues(alpha: 0.38),
           child: SizedBox(
@@ -8154,6 +8340,7 @@ class _TimeOptionPill extends StatelessWidget {
       message: tooltip,
       child: GlassSurface(
         liquidGlass: liquidGlass,
+        tone: GlassTone.dark,
         borderRadius: BorderRadius.circular(22),
         fallbackColor: selected
             ? Colors.white.withValues(alpha: 0.30)
@@ -8216,6 +8403,7 @@ class _VoiceModeOptionPill extends StatelessWidget {
     const foreground = Colors.white;
     return GlassSurface(
       liquidGlass: liquidGlass,
+      tone: GlassTone.dark,
       borderRadius: BorderRadius.circular(22),
       fallbackColor: selected
           ? Colors.white.withValues(alpha: 0.30)
@@ -8273,10 +8461,9 @@ class _GlassPickerTile extends StatelessWidget {
   Widget build(BuildContext context) {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 3),
-      child: GlassSurface(
+      child: GlassContentCard(
         liquidGlass: liquidGlass,
         borderRadius: BorderRadius.circular(10),
-        fallbackColor: Colors.white.withValues(alpha: 0.08),
         child: ListTile(
           dense: dense,
           leading: leading,
@@ -8317,10 +8504,8 @@ class _MotionPickerPage extends StatelessWidget {
           ),
         ),
       ),
-      body: GlassSurface(
+      body: GlassPageSurface(
         liquidGlass: liquidGlass,
-        borderRadius: BorderRadius.zero,
-        fallbackColor: const Color(0xE8201D1B),
         child: Column(
           children: [
             postureControls,
@@ -8335,7 +8520,11 @@ class _MotionPickerPage extends StatelessWidget {
                             'No combinations are available for this skin or posture. Try sitting normally.',
                             '現在の衣装・姿勢では再生できる組み合わせがありません。通常座りをお試しください。',
                           ),
-                          style: const TextStyle(color: Colors.white70),
+                          style: TextStyle(
+                            color: Theme.of(context)
+                                .colorScheme
+                                .onSurfaceVariant,
+                          ),
                           textAlign: TextAlign.center,
                         ),
                       ),
@@ -8348,17 +8537,23 @@ class _MotionPickerPage extends StatelessWidget {
                         return _GlassPickerTile(
                           liquidGlass: liquidGlass,
                           dense: true,
-                          leading: const Icon(
+                          leading: Icon(
                             Icons.layers_outlined,
-                            color: Colors.white70,
+                            color: Theme.of(context)
+                                .colorScheme
+                                .onSurfaceVariant,
                           ),
                           title: Text(
                             recipe.name.replaceFirst(RegExp(r'^\d+_'), ''),
-                            style: const TextStyle(color: Colors.white),
+                            style: TextStyle(
+                              color: Theme.of(context).colorScheme.onSurface,
+                            ),
                           ),
-                          trailing: const Icon(
+                          trailing: Icon(
                             Icons.play_arrow,
-                            color: Colors.white70,
+                            color: Theme.of(context)
+                                .colorScheme
+                                .onSurfaceVariant,
                           ),
                           onTap: () => onSelected(recipe),
                         );
@@ -8605,6 +8800,7 @@ class _StaticAppearanceLabel extends StatelessWidget {
   Widget build(BuildContext context) {
     return GlassSurface(
       liquidGlass: liquidGlass,
+      tone: GlassTone.dark,
       borderRadius: BorderRadius.circular(16),
       child: const Padding(
         padding: EdgeInsets.symmetric(horizontal: 10, vertical: 7),
@@ -8755,7 +8951,7 @@ class _SuggestionQuotaButtonState extends State<_SuggestionQuotaButton> {
                       ? const Color(0xFFD99636)
                       : const Color(0xFF59636D),
                   shape: BoxShape.circle,
-                  border: Border.all(color: Colors.white70, width: 0.8),
+                  border: Border.all(color: Colors.white70, width: 0),
                 ),
                 child: Text(
                   '$remaining',
@@ -8777,6 +8973,8 @@ class _SuggestionQuotaButtonState extends State<_SuggestionQuotaButton> {
 
 class _LiquidGlassConversation extends StatelessWidget {
   const _LiquidGlassConversation({
+    this.onWakeCharacter,
+    this.waking = false,
     required this.selectingCollection,
     required this.savingCollection,
     required this.collectionSelection,
@@ -8835,6 +9033,8 @@ class _LiquidGlassConversation extends StatelessWidget {
   });
 
   final AppLanguage language;
+  final VoidCallback? onWakeCharacter;
+  final bool waking;
   final CharacterRuntimeProfile characterProfile;
   final bool selectingCollection;
   final bool savingCollection;
@@ -8965,33 +9165,41 @@ class _LiquidGlassConversation extends StatelessWidget {
                     child: SingleChildScrollView(
                       child: IgnorePointer(
                         ignoring: selectingCollection,
-                        child: _GlassComposer(
-                          availableHeight: min(
-                            MediaQuery.sizeOf(context).height * .5,
-                            max(0.0, constraints.maxHeight - 90),
-                          ),
-                          language: language,
-                          characterProfile: characterProfile,
-                          controller: inputController,
-                          narrationController: narrationController,
-                          bottomNarrationController: bottomNarrationController,
-                          splitNarration: splitNarration,
-                          onToggleNarration: onToggleNarration,
-                          isReplying: isReplying,
-                          showMicrophone: showMicrophone,
-                          unlockInputWhileReplying: unlockInputWhileReplying,
-                          attachments: attachments,
-                          liquidGlass: liquidGlass,
-                          onTakePhoto: onTakePhoto,
-                          onPickImage: onPickImage,
-                          onPickFile: onPickFile,
-                          onRemoveAttachment: onRemoveAttachment,
-                          onSubmitted: onSubmitted,
-                          onSend: onSend,
-                          onCancel: onCancel,
-                          expanded: expanded,
-                          onToggleExpanded: onToggleExpanded,
-                        ),
+                        child: onWakeCharacter != null
+                            ? ColdStartWakeButton(
+                                language: language,
+                                onPressed: onWakeCharacter!,
+                                waking: waking,
+                              )
+                            : _GlassComposer(
+                                availableHeight: min(
+                                  MediaQuery.sizeOf(context).height * .5,
+                                  max(0.0, constraints.maxHeight - 90),
+                                ),
+                                language: language,
+                                characterProfile: characterProfile,
+                                controller: inputController,
+                                narrationController: narrationController,
+                                bottomNarrationController:
+                                    bottomNarrationController,
+                                splitNarration: splitNarration,
+                                onToggleNarration: onToggleNarration,
+                                isReplying: isReplying,
+                                showMicrophone: showMicrophone,
+                                unlockInputWhileReplying:
+                                    unlockInputWhileReplying,
+                                attachments: attachments,
+                                liquidGlass: liquidGlass,
+                                onTakePhoto: onTakePhoto,
+                                onPickImage: onPickImage,
+                                onPickFile: onPickFile,
+                                onRemoveAttachment: onRemoveAttachment,
+                                onSubmitted: onSubmitted,
+                                onSend: onSend,
+                                onCancel: onCancel,
+                                expanded: expanded,
+                                onToggleExpanded: onToggleExpanded,
+                              ),
                       ),
                     ),
                   ),
@@ -9015,7 +9223,8 @@ class _LiquidGlassConversation extends StatelessWidget {
                     isSuggesting: isSuggestingReply,
                     controller: suggestionController,
                     onPressed:
-                        !isReplying &&
+                        onWakeCharacter == null &&
+                            !isReplying &&
                             !selectingCollection &&
                             !isSuggestingReply
                         ? onSuggestReply
@@ -9061,7 +9270,8 @@ class _LiquidGlassConversation extends StatelessWidget {
                         ? const _RotatingIcon(Icons.autorenew_rounded)
                         : null,
                     onLongPress:
-                        !isReplying &&
+                        onWakeCharacter == null &&
+                            !isReplying &&
                             !selectingCollection &&
                             messages.any(
                               (m) => !m.isUser && m.text.trim().isNotEmpty,
@@ -9154,7 +9364,9 @@ class _LiquidGlassSurface extends StatelessWidget {
   Widget build(BuildContext context) {
     return GlassSurface(
       liquidGlass: liquidGlass,
+      tone: GlassTone.dark,
       fallbackColor: const Color(0xFF201D1B).withValues(alpha: 0.72),
+      readableText: true,
       boxShadow: const [
         BoxShadow(
           color: Color(0x52000000),
@@ -9268,7 +9480,10 @@ class _GlassMessageList extends StatelessWidget {
             decoration: BoxDecoration(
               shape: BoxShape.circle,
               color: Colors.white.withValues(alpha: 0.16),
-              border: Border.all(color: Colors.white.withValues(alpha: 0.24)),
+              border: Border.all(
+                color: Colors.white.withValues(alpha: 0.24),
+                width: 0,
+              ),
             ),
             child: Icon(
               Icons.person_outline_rounded,
@@ -9653,6 +9868,7 @@ class _RyzaRun extends StatelessWidget {
           color: glass
               ? Colors.white.withValues(alpha: 0.24)
               : Theme.of(context).colorScheme.outlineVariant,
+          width: 0,
         ),
       ),
       clipBehavior: Clip.antiAlias,
@@ -9765,6 +9981,7 @@ class _CharacterRun extends StatelessWidget {
           color: glass
               ? Colors.white.withValues(alpha: 0.24)
               : Theme.of(context).colorScheme.outlineVariant,
+          width: 0,
         ),
       ),
       child: avatarAsset == null
@@ -10007,6 +10224,7 @@ class _PendingAttachmentBar extends StatelessWidget {
               borderRadius: BorderRadius.circular(10),
               border: Border.all(
                 color: glass ? Colors.white24 : Colors.black12,
+                width: 0,
               ),
             ),
             child: Row(
@@ -10075,6 +10293,7 @@ class _SentAttachmentLabels extends StatelessWidget {
                 borderRadius: BorderRadius.circular(8),
                 border: Border.all(
                   color: glass ? Colors.white24 : Colors.black12,
+                  width: 0,
                 ),
               ),
               clipBehavior: Clip.antiAlias,
@@ -10114,6 +10333,7 @@ class _SentAttachmentLabels extends StatelessWidget {
                 borderRadius: BorderRadius.circular(6),
                 border: Border.all(
                   color: glass ? Colors.white24 : Colors.black12,
+                  width: 0,
                 ),
               ),
               child: Row(
@@ -10298,6 +10518,7 @@ class _GlassComposer extends StatelessWidget {
                     borderRadius: BorderRadius.circular(18),
                     border: Border.all(
                       color: Colors.white.withValues(alpha: 0.28),
+                      width: 0,
                     ),
                   ),
                   child: splitNarration
@@ -10584,6 +10805,7 @@ class _AttachmentMenuOption extends StatelessWidget {
   Widget build(BuildContext context) {
     return GlassSurface(
       liquidGlass: liquidGlass,
+      tone: GlassTone.dark,
       borderRadius: BorderRadius.circular(20),
       fallbackColor: Colors.black.withValues(alpha: 0.58),
       child: InkWell(
@@ -10644,8 +10866,10 @@ class _ConversationSheetState extends State<_ConversationSheet> {
       top: false,
       child: GlassSurface(
         liquidGlass: widget.liquidGlass,
+        tone: GlassTone.dark,
         borderRadius: const BorderRadius.vertical(top: Radius.circular(18)),
         fallbackColor: const Color(0xE8201D1B),
+        readableText: true,
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [

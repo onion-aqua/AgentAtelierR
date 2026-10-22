@@ -24,7 +24,7 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   SharedPreferences.setMockInitialValues({});
   test(
-    'Fish timeout aborts each attempt before retry and hides credentials',
+    'Fish timeout aborts once without retry and hides credentials',
     () async {
       final client = _StalledClient();
       final fish = FishAudioClient(
@@ -42,7 +42,7 @@ void main() {
               .having(
                 (e) => e.toString(),
                 'network explanation',
-                contains('已重试 3 次'),
+                contains('未自动重试'),
               )
               .having(
                 (e) => e.toString(),
@@ -51,7 +51,7 @@ void main() {
               ),
         ),
       );
-      expect(client.requests, 4);
+      expect(client.requests, 1);
       expect(client.active, 0);
       expect(client.peakActive, 1);
     },

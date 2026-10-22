@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:audioplayers/audioplayers.dart';
 
 import 'app_audio_player.dart';
+
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
@@ -429,7 +430,7 @@ class _MimoTtsSettingsDialogState extends State<MimoTtsSettingsDialog> {
               ),
               Container(
                 decoration: BoxDecoration(
-                  border: Border.all(color: colors.outline),
+                  border: Border.all(color: colors.outline, width: 0),
                   borderRadius: BorderRadius.circular(8),
                 ),
                 child: Column(

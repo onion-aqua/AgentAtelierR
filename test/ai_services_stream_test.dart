@@ -314,7 +314,7 @@ void main() {
   });
 
   test(
-    'Fish Audio retries a transient response and returns audio bytes',
+    'Fish Audio surfaces rate limits without repeating a billable POST',
     () async {
       var requests = 0;
       final client = MockClient((_) async {
@@ -327,14 +327,21 @@ void main() {
         );
       });
 
-      final bytes = await FishAudioClient(client: client).synthesizeBytes(
-        apiKey: 'test-key',
-        referenceId: 'voice-id',
-        text: 'hello',
+      await expectLater(
+        FishAudioClient(client: client).synthesizeBytes(
+          apiKey: 'test-key',
+          referenceId: 'voice-id',
+          text: 'hello',
+        ),
+        throwsA(
+          isA<AiServiceException>().having(
+            (e) => e.toString(),
+            'status',
+            contains('429'),
+          ),
+        ),
       );
-
-      expect(bytes, isNotEmpty);
-      expect(requests, 2);
+      expect(requests, 1);
     },
   );
 

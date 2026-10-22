@@ -20,7 +20,10 @@ class RyzaLoadingPanel extends StatelessWidget {
           decoration: BoxDecoration(
             color: const Color(0xB3000000),
             borderRadius: BorderRadius.circular(20),
-            border: Border.all(color: Colors.white.withValues(alpha: .14)),
+            border: Border.all(
+              color: Colors.white.withValues(alpha: .14),
+              width: 0,
+            ),
           ),
           child: Column(
             mainAxisSize: MainAxisSize.min,

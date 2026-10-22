@@ -283,7 +283,7 @@ class MimoTtsClient {
             body: jsonEncode(body),
           )
           .timeout(const Duration(seconds: 120)),
-      shouldRetryResult: (result) => isRetryableHttpStatus(result.statusCode),
+      maxRetries: 0, // Do not replay potentially billable synthesis.
     );
     Map<String, dynamic>? decoded;
     try {

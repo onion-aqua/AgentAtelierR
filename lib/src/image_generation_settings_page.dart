@@ -1,3 +1,5 @@
+import 'settings_form.dart';
+
 import 'package:flutter/material.dart';
 
 import 'app_localization.dart';
@@ -312,433 +314,439 @@ class _ImageGenerationSettingsPageState
     final colors = Theme.of(context).colorScheme;
     return PopScope(
       canPop: !_saving,
-      child: GlassPageSurface(
-        liquidGlass: _liquidGlass,
-        child: Scaffold(
-          key: const ValueKey('image-generation-settings-page'),
-          backgroundColor: Colors.transparent,
-          appBar: AppBar(
-            backgroundColor: glassPageHeaderColor(context),
-            surfaceTintColor: Colors.transparent,
-            elevation: 0,
-            scrolledUnderElevation: 0,
-            leading: IconButton(
-              key: const ValueKey('image-generation-settings-back'),
-              onPressed: _saving
-                  ? null
-                  : () => Navigator.of(context).maybePop(),
-              tooltip: MaterialLocalizations.of(context).backButtonTooltip,
-              icon: const Icon(Icons.arrow_back_rounded),
+      child: SettingsFormTheme(
+        child: GlassPageSurface(
+          liquidGlass: _liquidGlass,
+          child: Scaffold(
+            key: const ValueKey('image-generation-settings-page'),
+            backgroundColor: Colors.transparent,
+            appBar: AppBar(
+              backgroundColor: glassPageHeaderColor(context),
+              surfaceTintColor: Colors.transparent,
+              elevation: 0,
+              scrolledUnderElevation: 0,
+              leading: IconButton(
+                key: const ValueKey('image-generation-settings-back'),
+                onPressed: _saving
+                    ? null
+                    : () => Navigator.of(context).maybePop(),
+                tooltip: MaterialLocalizations.of(context).backButtonTooltip,
+                icon: const Icon(Icons.arrow_back_rounded),
+              ),
+              title: Text(
+                _t('生图接口', 'Image generation', '画像生成'),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
             ),
-            title: Text(
-              _t('生图接口', 'Image generation', '画像生成'),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-            ),
-          ),
-          body: SafeArea(
-            top: false,
-            child: Center(
-              child: ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 760),
-                child: Column(
-                  children: [
-                    Expanded(
-                      child: ListView(
-                        padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
-                        children: [
-                          GlassContentCard(
-                            liquidGlass: _liquidGlass,
-                            child: SwitchListTile(
-                              key: const ValueKey('image-generation-enabled'),
-                              value: _enabled,
+            body: SafeArea(
+              top: false,
+              child: Center(
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 760),
+                  child: Column(
+                    children: [
+                      Expanded(
+                        child: ListView(
+                          padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+                          children: [
+                            GlassContentCard(
+                              liquidGlass: _liquidGlass,
+                              child: SwitchListTile(
+                                key: const ValueKey('image-generation-enabled'),
+                                value: _enabled,
+                                onChanged: _saving
+                                    ? null
+                                    : (value) =>
+                                          setState(() => _enabled = value),
+                                title: Text(
+                                  _t(
+                                    '启用主对话生图',
+                                    'Enable chat image generation',
+                                    'チャット画像生成を有効にする',
+                                  ),
+                                ),
+                                subtitle: Text(
+                                  _t(
+                                    '识别到明确的生图请求后才会调用此接口。',
+                                    'This endpoint is called only for an explicit image request.',
+                                    '明確な画像生成依頼を検出した場合のみ、この API を呼び出します。',
+                                  ),
+                                ),
+                              ),
+                            ),
+                            const SizedBox(height: 14),
+                            _sectionTitle(
+                              _t('连接', 'Connection', '接続'),
+                              Icons.link_rounded,
+                            ),
+                            _field(
+                              key: const ValueKey('image-generation-base-url'),
+                              controller: _baseUrl,
+                              label: _t('接口地址', 'Endpoint URL', 'エンドポイント URL'),
+                              hint: 'https://api.openai.com/v1',
+                              keyboardType: TextInputType.url,
+                            ),
+                            _field(
+                              key: const ValueKey('image-generation-api-key'),
+                              controller: _apiKey,
+                              label: 'API Key',
+                              obscureText: _obscureKey,
+                              enableSuggestions: false,
+                              autocorrect: false,
+                              suffixIcon: IconButton(
+                                key: const ValueKey(
+                                  'image-generation-key-visibility',
+                                ),
+                                tooltip: _obscureKey
+                                    ? _t('显示 Key', 'Show key', 'キーを表示')
+                                    : _t('隐藏 Key', 'Hide key', 'キーを隠す'),
+                                onPressed: _saving
+                                    ? null
+                                    : () => setState(
+                                        () => _obscureKey = !_obscureKey,
+                                      ),
+                                icon: Icon(
+                                  _obscureKey
+                                      ? Icons.visibility_outlined
+                                      : Icons.visibility_off_outlined,
+                                ),
+                              ),
+                              helper: _t(
+                                '独立保存在系统安全存储中。清空后保存会删除已保存的生图 Key。',
+                                'Stored independently in secure storage. Save an empty value to delete the image-generation key.',
+                                'システムの安全なストレージに個別保存します。空欄で保存すると画像生成キーを削除します。',
+                              ),
+                            ),
+                            _field(
+                              key: const ValueKey('image-generation-model'),
+                              controller: _model,
+                              label: _t('模型', 'Model', 'モデル'),
+                              hint: 'gpt-image-1',
+                            ),
+                            const SizedBox(height: 4),
+                            DropdownButtonFormField<ImageGenerationProtocol>(
+                              key: const ValueKey('image-generation-protocol'),
+                              initialValue: _protocol,
+                              isExpanded: true,
+                              decoration: InputDecoration(
+                                labelText: _t('协议格式', 'Protocol', 'プロトコル'),
+                                border: const OutlineInputBorder(),
+                              ),
+                              items: [
+                                for (final protocol
+                                    in ImageGenerationProtocol.values)
+                                  DropdownMenuItem(
+                                    value: protocol,
+                                    child: Text(_protocolLabel(protocol)),
+                                  ),
+                              ],
                               onChanged: _saving
                                   ? null
-                                  : (value) => setState(() => _enabled = value),
-                              title: Text(
-                                _t(
-                                  '启用主对话生图',
-                                  'Enable chat image generation',
-                                  'チャット画像生成を有効にする',
-                                ),
-                              ),
-                              subtitle: Text(
-                                _t(
-                                  '识别到明确的生图请求后才会调用此接口。',
-                                  'This endpoint is called only for an explicit image request.',
-                                  '明確な画像生成依頼を検出した場合のみ、この API を呼び出します。',
-                                ),
-                              ),
+                                  : (value) {
+                                      if (value != null) {
+                                        setState(() => _protocol = value);
+                                      }
+                                    },
                             ),
-                          ),
-                          const SizedBox(height: 14),
-                          _sectionTitle(
-                            _t('连接', 'Connection', '接続'),
-                            Icons.link_rounded,
-                          ),
-                          _field(
-                            key: const ValueKey('image-generation-base-url'),
-                            controller: _baseUrl,
-                            label: _t('接口地址', 'Endpoint URL', 'エンドポイント URL'),
-                            hint: 'https://api.openai.com/v1',
-                            keyboardType: TextInputType.url,
-                          ),
-                          _field(
-                            key: const ValueKey('image-generation-api-key'),
-                            controller: _apiKey,
-                            label: 'API Key',
-                            obscureText: _obscureKey,
-                            enableSuggestions: false,
-                            autocorrect: false,
-                            suffixIcon: IconButton(
-                              key: const ValueKey(
-                                'image-generation-key-visibility',
-                              ),
-                              tooltip: _obscureKey
-                                  ? _t('显示 Key', 'Show key', 'キーを表示')
-                                  : _t('隐藏 Key', 'Hide key', 'キーを隠す'),
-                              onPressed: _saving
-                                  ? null
-                                  : () => setState(
-                                      () => _obscureKey = !_obscureKey,
+                            const SizedBox(height: 10),
+                            GlassContentCard(
+                              liquidGlass: _liquidGlass,
+                              borderRadius: BorderRadius.circular(14),
+                              child: Padding(
+                                padding: const EdgeInsets.all(12),
+                                child: Row(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Icon(
+                                      Icons.route_outlined,
+                                      size: 20,
+                                      color: colors.primary,
                                     ),
-                              icon: Icon(
-                                _obscureKey
-                                    ? Icons.visibility_outlined
-                                    : Icons.visibility_off_outlined,
+                                    const SizedBox(width: 10),
+                                    Expanded(
+                                      child: Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          Text(
+                                            _protocol ==
+                                                    ImageGenerationProtocol.auto
+                                                ? _t(
+                                                    '当前识别：${_protocolLabel(_previewProtocol)}',
+                                                    'Detected: ${_protocolLabel(_previewProtocol)}',
+                                                    '現在の判別：${_protocolLabel(_previewProtocol)}',
+                                                  )
+                                                : _protocolLabel(_protocol),
+                                            style: Theme.of(context)
+                                                .textTheme
+                                                .titleSmall,
+                                          ),
+                                          const SizedBox(height: 4),
+                                          Text(
+                                            _endpointSummary(),
+                                            style: TextStyle(
+                                              color: colors.onSurfaceVariant,
+                                              fontSize: 12,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ],
+                                ),
                               ),
                             ),
-                            helper: _t(
-                              '独立保存在系统安全存储中。清空后保存会删除已保存的生图 Key。',
-                              'Stored independently in secure storage. Save an empty value to delete the image-generation key.',
-                              'システムの安全なストレージに個別保存します。空欄で保存すると画像生成キーを削除します。',
-                            ),
-                          ),
-                          _field(
-                            key: const ValueKey('image-generation-model'),
-                            controller: _model,
-                            label: _t('模型', 'Model', 'モデル'),
-                            hint: 'gpt-image-1',
-                          ),
-                          const SizedBox(height: 4),
-                          DropdownButtonFormField<ImageGenerationProtocol>(
-                            key: const ValueKey('image-generation-protocol'),
-                            initialValue: _protocol,
-                            isExpanded: true,
-                            decoration: InputDecoration(
-                              labelText: _t('协议格式', 'Protocol', 'プロトコル'),
-                              border: const OutlineInputBorder(),
-                            ),
-                            items: [
-                              for (final protocol
-                                  in ImageGenerationProtocol.values)
-                                DropdownMenuItem(
-                                  value: protocol,
-                                  child: Text(_protocolLabel(protocol)),
+                            const SizedBox(height: 10),
+                            GlassContentCard(
+                              liquidGlass: _liquidGlass,
+                              borderRadius: BorderRadius.circular(14),
+                              child: ExpansionTile(
+                                key: const ValueKey(
+                                  'image-generation-endpoint-advanced',
                                 ),
-                            ],
-                            onChanged: _saving
-                                ? null
-                                : (value) {
-                                    if (value != null) {
-                                      setState(() => _protocol = value);
-                                    }
-                                  },
-                          ),
-                          const SizedBox(height: 10),
-                          GlassContentCard(
-                            liquidGlass: _liquidGlass,
-                            borderRadius: BorderRadius.circular(14),
-                            child: Padding(
-                              padding: const EdgeInsets.all(12),
-                              child: Row(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Icon(
-                                    Icons.route_outlined,
-                                    size: 20,
-                                    color: colors.primary,
+                                initiallyExpanded:
+                                    _endpointPath.text.trim().isNotEmpty ||
+                                    _statusEndpointTemplate.text
+                                        .trim()
+                                        .isNotEmpty,
+                                title: Text(
+                                  _t(
+                                    '端点与轮询（高级）',
+                                    'Endpoints and polling (advanced)',
+                                    'エンドポイントとポーリング（詳細）',
                                   ),
-                                  const SizedBox(width: 10),
-                                  Expanded(
-                                    child: Column(
-                                      crossAxisAlignment:
-                                          CrossAxisAlignment.start,
-                                      children: [
-                                        Text(
-                                          _protocol ==
-                                                  ImageGenerationProtocol.auto
-                                              ? _t(
-                                                  '当前识别：${_protocolLabel(_previewProtocol)}',
-                                                  'Detected: ${_protocolLabel(_previewProtocol)}',
-                                                  '現在の判別：${_protocolLabel(_previewProtocol)}',
-                                                )
-                                              : _protocolLabel(_protocol),
-                                          style: Theme.of(context)
-                                              .textTheme
-                                              .titleSmall,
-                                        ),
-                                        const SizedBox(height: 4),
-                                        Text(
-                                          _endpointSummary(),
-                                          style: TextStyle(
-                                            color: colors.onSurfaceVariant,
-                                            fontSize: 12,
+                                ),
+                                subtitle: Text(
+                                  _t(
+                                    '留空时按所选协议使用安全默认值',
+                                    'Leave blank to use safe protocol defaults',
+                                    '空欄の場合は安全な既定値を使用します',
+                                  ),
+                                ),
+                                childrenPadding: const EdgeInsets.fromLTRB(
+                                  12,
+                                  2,
+                                  12,
+                                  12,
+                                ),
+                                children: [
+                                  _field(
+                                    key: const ValueKey(
+                                      'image-generation-endpoint-path',
+                                    ),
+                                    controller: _endpointPath,
+                                    label: _t(
+                                      '提交端点路径',
+                                      'Submit endpoint path',
+                                      '送信エンドポイントのパス',
+                                    ),
+                                    hint: '/v1/images/generations',
+                                    helper: _t(
+                                      '可填相对路径或完整 HTTPS 地址。留空时由协议自动补全。',
+                                      'Enter a relative path or complete HTTPS URL. Leave blank for protocol defaults.',
+                                      '相対パスまたは完全な HTTPS URL。空欄ならプロトコル既定値を使用します。',
+                                    ),
+                                  ),
+                                  _field(
+                                    key: const ValueKey(
+                                      'image-generation-status-endpoint',
+                                    ),
+                                    controller: _statusEndpointTemplate,
+                                    label: _t(
+                                      '任务状态端点模板',
+                                      'Task status endpoint template',
+                                      'タスク状態 URL テンプレート',
+                                    ),
+                                    hint: '/v1/tasks/{task_id}',
+                                    helper: _t(
+                                      '异步接口可用 {task_id} 作为任务编号占位符。响应自带 status_url 或 Location 时优先使用响应地址。',
+                                      'Use {task_id} as the asynchronous task placeholder. A status_url or Location returned by the service takes priority.',
+                                      '非同期タスク ID は {task_id} で指定します。応答に status_url または Location があれば、そちらを優先します。',
+                                    ),
+                                  ),
+                                  Row(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Expanded(
+                                        child: _field(
+                                          key: const ValueKey(
+                                            'image-generation-poll-interval',
                                           ),
+                                          controller: _pollIntervalSeconds,
+                                          label: _t(
+                                            '轮询间隔',
+                                            'Poll interval',
+                                            '確認間隔',
+                                          ),
+                                          keyboardType: TextInputType.number,
+                                          suffixText: _t('秒', 'sec', '秒'),
                                         ),
-                                      ],
+                                      ),
+                                      const SizedBox(width: 12),
+                                      Expanded(
+                                        child: _field(
+                                          key: const ValueKey(
+                                            'image-generation-poll-attempts',
+                                          ),
+                                          controller: _maxPollAttempts,
+                                          label: _t(
+                                            '最大次数',
+                                            'Max attempts',
+                                            '最大回数',
+                                          ),
+                                          keyboardType: TextInputType.number,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                  Align(
+                                    alignment: Alignment.centerLeft,
+                                    child: Text(
+                                      _t(
+                                        '只轮询已经提交的任务；超时或结果未知时不会换协议重新提交，以免重复计费。',
+                                        'Only an already submitted task is polled. A timeout or unknown outcome is never resubmitted through another protocol.',
+                                        '送信済みタスクだけを確認します。タイムアウトや結果不明時に別プロトコルで再送信しません。',
+                                      ),
+                                      style: TextStyle(
+                                        color: colors.onSurfaceVariant,
+                                        fontSize: 12,
+                                      ),
                                     ),
                                   ),
                                 ],
                               ),
                             ),
-                          ),
-                          const SizedBox(height: 10),
-                          GlassContentCard(
-                            liquidGlass: _liquidGlass,
-                            borderRadius: BorderRadius.circular(14),
-                            child: ExpansionTile(
-                              key: const ValueKey(
-                                'image-generation-endpoint-advanced',
-                              ),
-                              initiallyExpanded:
-                                  _endpointPath.text.trim().isNotEmpty ||
-                                  _statusEndpointTemplate.text
-                                      .trim()
-                                      .isNotEmpty,
-                              title: Text(
-                                _t(
-                                  '端点与轮询（高级）',
-                                  'Endpoints and polling (advanced)',
-                                  'エンドポイントとポーリング（詳細）',
-                                ),
-                              ),
-                              subtitle: Text(
-                                _t(
-                                  '留空时按所选协议使用安全默认值',
-                                  'Leave blank to use safe protocol defaults',
-                                  '空欄の場合は安全な既定値を使用します',
-                                ),
-                              ),
-                              childrenPadding: const EdgeInsets.fromLTRB(
-                                12,
-                                2,
-                                12,
-                                12,
-                              ),
+                            const SizedBox(height: 18),
+                            _sectionTitle(
+                              _t('输出', 'Output', '出力'),
+                              Icons.aspect_ratio_rounded,
+                            ),
+                            Row(
+                              crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                _field(
-                                  key: const ValueKey(
-                                    'image-generation-endpoint-path',
-                                  ),
-                                  controller: _endpointPath,
-                                  label: _t(
-                                    '提交端点路径',
-                                    'Submit endpoint path',
-                                    '送信エンドポイントのパス',
-                                  ),
-                                  hint: '/v1/images/generations',
-                                  helper: _t(
-                                    '可填相对路径或完整 HTTPS 地址。留空时由协议自动补全。',
-                                    'Enter a relative path or complete HTTPS URL. Leave blank for protocol defaults.',
-                                    '相対パスまたは完全な HTTPS URL。空欄ならプロトコル既定値を使用します。',
+                                Expanded(
+                                  child: _field(
+                                    key: const ValueKey(
+                                      'image-generation-width',
+                                    ),
+                                    controller: _width,
+                                    label: _t('宽度', 'Width', '幅'),
+                                    keyboardType: TextInputType.number,
+                                    suffixText: 'px',
                                   ),
                                 ),
-                                _field(
-                                  key: const ValueKey(
-                                    'image-generation-status-endpoint',
-                                  ),
-                                  controller: _statusEndpointTemplate,
-                                  label: _t(
-                                    '任务状态端点模板',
-                                    'Task status endpoint template',
-                                    'タスク状態 URL テンプレート',
-                                  ),
-                                  hint: '/v1/tasks/{task_id}',
-                                  helper: _t(
-                                    '异步接口可用 {task_id} 作为任务编号占位符。响应自带 status_url 或 Location 时优先使用响应地址。',
-                                    'Use {task_id} as the asynchronous task placeholder. A status_url or Location returned by the service takes priority.',
-                                    '非同期タスク ID は {task_id} で指定します。応答に status_url または Location があれば、そちらを優先します。',
-                                  ),
-                                ),
-                                Row(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Expanded(
-                                      child: _field(
-                                        key: const ValueKey(
-                                          'image-generation-poll-interval',
-                                        ),
-                                        controller: _pollIntervalSeconds,
-                                        label: _t(
-                                          '轮询间隔',
-                                          'Poll interval',
-                                          '確認間隔',
-                                        ),
-                                        keyboardType: TextInputType.number,
-                                        suffixText: _t('秒', 'sec', '秒'),
-                                      ),
+                                const SizedBox(width: 12),
+                                Expanded(
+                                  child: _field(
+                                    key: const ValueKey(
+                                      'image-generation-height',
                                     ),
-                                    const SizedBox(width: 12),
-                                    Expanded(
-                                      child: _field(
-                                        key: const ValueKey(
-                                          'image-generation-poll-attempts',
-                                        ),
-                                        controller: _maxPollAttempts,
-                                        label: _t(
-                                          '最大次数',
-                                          'Max attempts',
-                                          '最大回数',
-                                        ),
-                                        keyboardType: TextInputType.number,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                                Align(
-                                  alignment: Alignment.centerLeft,
-                                  child: Text(
-                                    _t(
-                                      '只轮询已经提交的任务；超时或结果未知时不会换协议重新提交，以免重复计费。',
-                                      'Only an already submitted task is polled. A timeout or unknown outcome is never resubmitted through another protocol.',
-                                      '送信済みタスクだけを確認します。タイムアウトや結果不明時に別プロトコルで再送信しません。',
-                                    ),
-                                    style: TextStyle(
-                                      color: colors.onSurfaceVariant,
-                                      fontSize: 12,
-                                    ),
+                                    controller: _height,
+                                    label: _t('高度', 'Height', '高さ'),
+                                    keyboardType: TextInputType.number,
+                                    suffixText: 'px',
                                   ),
                                 ),
                               ],
                             ),
-                          ),
-                          const SizedBox(height: 18),
-                          _sectionTitle(
-                            _t('输出', 'Output', '出力'),
-                            Icons.aspect_ratio_rounded,
-                          ),
-                          Row(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Expanded(
-                                child: _field(
-                                  key: const ValueKey('image-generation-width'),
-                                  controller: _width,
-                                  label: _t('宽度', 'Width', '幅'),
-                                  keyboardType: TextInputType.number,
-                                  suffixText: 'px',
+                            _field(
+                              key: const ValueKey(
+                                'image-generation-aspect-ratio',
+                              ),
+                              controller: _aspectRatio,
+                              label: _t('画面比例', 'Aspect ratio', 'アスペクト比'),
+                              hint: '1:1',
+                              helper: _t(
+                                '部分服务优先使用比例，部分服务优先使用像素尺寸。',
+                                'Some services prefer an aspect ratio; others prefer pixel dimensions.',
+                                'サービスにより、比率またはピクセル寸法が優先されます。',
+                              ),
+                            ),
+                            DropdownButtonFormField<String>(
+                              key: const ValueKey(
+                                'image-generation-output-format',
+                              ),
+                              initialValue: _outputFormat,
+                              decoration: InputDecoration(
+                                labelText: _t('图片格式', 'Image format', '画像形式'),
+                                border: const OutlineInputBorder(),
+                              ),
+                              items: const [
+                                DropdownMenuItem(
+                                  value: 'png',
+                                  child: Text('PNG'),
                                 ),
-                              ),
-                              const SizedBox(width: 12),
-                              Expanded(
-                                child: _field(
-                                  key: const ValueKey(
-                                    'image-generation-height',
-                                  ),
-                                  controller: _height,
-                                  label: _t('高度', 'Height', '高さ'),
-                                  keyboardType: TextInputType.number,
-                                  suffixText: 'px',
+                                DropdownMenuItem(
+                                  value: 'jpg',
+                                  child: Text('JPEG'),
                                 ),
-                              ),
+                                DropdownMenuItem(
+                                  value: 'webp',
+                                  child: Text('WebP'),
+                                ),
+                                DropdownMenuItem(
+                                  value: 'gif',
+                                  child: Text('GIF'),
+                                ),
+                                DropdownMenuItem(
+                                  value: 'avif',
+                                  child: Text('AVIF'),
+                                ),
+                              ],
+                              onChanged: _saving
+                                  ? null
+                                  : (value) {
+                                      if (value != null) {
+                                        setState(() => _outputFormat = value);
+                                      }
+                                    },
+                            ),
+                            if (_error != null) ...[
+                              const SizedBox(height: 14),
+                              _errorBanner(colors),
                             ],
-                          ),
-                          _field(
-                            key: const ValueKey(
-                              'image-generation-aspect-ratio',
-                            ),
-                            controller: _aspectRatio,
-                            label: _t('画面比例', 'Aspect ratio', 'アスペクト比'),
-                            hint: '1:1',
-                            helper: _t(
-                              '部分服务优先使用比例，部分服务优先使用像素尺寸。',
-                              'Some services prefer an aspect ratio; others prefer pixel dimensions.',
-                              'サービスにより、比率またはピクセル寸法が優先されます。',
-                            ),
-                          ),
-                          DropdownButtonFormField<String>(
-                            key: const ValueKey(
-                              'image-generation-output-format',
-                            ),
-                            initialValue: _outputFormat,
-                            decoration: InputDecoration(
-                              labelText: _t('图片格式', 'Image format', '画像形式'),
-                              border: const OutlineInputBorder(),
-                            ),
-                            items: const [
-                              DropdownMenuItem(
-                                value: 'png',
-                                child: Text('PNG'),
-                              ),
-                              DropdownMenuItem(
-                                value: 'jpg',
-                                child: Text('JPEG'),
-                              ),
-                              DropdownMenuItem(
-                                value: 'webp',
-                                child: Text('WebP'),
-                              ),
-                              DropdownMenuItem(
-                                value: 'gif',
-                                child: Text('GIF'),
-                              ),
-                              DropdownMenuItem(
-                                value: 'avif',
-                                child: Text('AVIF'),
-                              ),
-                            ],
-                            onChanged: _saving
-                                ? null
-                                : (value) {
-                                    if (value != null) {
-                                      setState(() => _outputFormat = value);
-                                    }
-                                  },
-                          ),
-                          if (_error != null) ...[
-                            const SizedBox(height: 14),
-                            _errorBanner(colors),
                           ],
-                        ],
+                        ),
                       ),
-                    ),
-                    const Divider(height: 1),
-                    Padding(
-                      padding: const EdgeInsets.fromLTRB(16, 10, 16, 12),
-                      child: Row(
-                        mainAxisAlignment: MainAxisAlignment.end,
-                        children: [
-                          TextButton(
-                            onPressed: _saving
-                                ? null
-                                : () => Navigator.of(context).maybePop(),
-                            child: Text(_t('取消', 'Cancel', 'キャンセル')),
-                          ),
-                          const SizedBox(width: 8),
-                          FilledButton.icon(
-                            key: const ValueKey(
-                              'image-generation-settings-save',
+                      const Divider(height: 1),
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 10, 16, 12),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.end,
+                          children: [
+                            TextButton(
+                              onPressed: _saving
+                                  ? null
+                                  : () => Navigator.of(context).maybePop(),
+                              child: Text(_t('取消', 'Cancel', 'キャンセル')),
                             ),
-                            onPressed: _saving ? null : _save,
-                            icon: _saving
-                                ? const SizedBox.square(
-                                    dimension: 16,
-                                    child: CircularProgressIndicator(
-                                      strokeWidth: 2,
-                                    ),
-                                  )
-                                : const Icon(Icons.save_outlined),
-                            label: Text(
-                              _saving
-                                  ? _t('保存中…', 'Saving…', '保存中…')
-                                  : _t('保存', 'Save', '保存'),
+                            const SizedBox(width: 8),
+                            FilledButton.icon(
+                              key: const ValueKey(
+                                'image-generation-settings-save',
+                              ),
+                              onPressed: _saving ? null : _save,
+                              icon: _saving
+                                  ? const SizedBox.square(
+                                      dimension: 16,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                      ),
+                                    )
+                                  : const Icon(Icons.save_outlined),
+                              label: Text(
+                                _saving
+                                    ? _t('保存中…', 'Saving…', '保存中…')
+                                    : _t('保存', 'Save', '保存'),
+                              ),
                             ),
-                          ),
-                        ],
+                          ],
+                        ),
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
               ),
             ),

@@ -84,22 +84,28 @@ class ShopScreen extends StatelessWidget {
         content: Text(
           bought
               ? language.text(
-                  '已放入背包：${item.name(language)}',
-                  'Added to inventory: ${item.name(language)}',
-                  'バッグに追加：${item.name(language)}',
+                  '已放入珍贵的东西：${item.name(language)}',
+                  'Added to Precious things: ${item.name(language)}',
+                  '大切なものに追加：${item.name(language)}',
                 )
-              : language.text(
-                  '关系点数不足或库存已满',
-                  'Not enough relationship points or inventory is full',
-                  '関係ポイント不足、または所持数が上限です',
-                ),
+              : controller.shopPurchaseBlockReason(item.id) ??
+                    language.text(
+                      '关系点数不足或库存已满',
+                      'Not enough relationship points or inventory is full',
+                      '関係ポイント不足、または所持数が上限です',
+                    ),
         ),
       ),
     );
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => AnimatedBuilder(
+    animation: controller,
+    builder: (context, _) => _buildShop(context),
+  );
+
+  Widget _buildShop(BuildContext context) {
     final language = controller.interfaceLanguage;
     return Scaffold(
       backgroundColor: Colors.transparent,
@@ -149,6 +155,26 @@ class ShopScreen extends StatelessWidget {
                     ),
                   ),
                 ),
+                if (controller.characterState.reconciliationPurchaseBlocked)
+                  SliverToBoxAdapter(
+                    child: Padding(
+                      padding: EdgeInsets.fromLTRB(
+                        horizontalPadding,
+                        0,
+                        horizontalPadding,
+                        16,
+                      ),
+                      child: Text(
+                        controller.shopPurchaseBlockReason(
+                          ShopCatalog.reconciliationVoucherId,
+                        )!,
+                        key: const ValueKey('shop-voucher-lock-reason'),
+                        style: TextStyle(
+                          color: Theme.of(context).colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ),
+                  ),
                 SliverPadding(
                   padding: EdgeInsets.fromLTRB(
                     horizontalPadding,
@@ -234,17 +260,28 @@ class ShopScreen extends StatelessWidget {
                                     ),
                                   ),
                                   Expanded(
-                                    child: FilledButton(
-                                      onPressed: () =>
-                                          _buy(context, item, language),
-                                      style: FilledButton.styleFrom(
-                                        padding: const EdgeInsets.symmetric(
-                                          horizontal: 4,
+                                    child: Tooltip(
+                                      message:
+                                          controller.shopPurchaseBlockReason(
+                                            item.id,
+                                          ) ??
+                                          '',
+                                      child: FilledButton(
+                                        key: ValueKey('shop-buy-${item.id}'),
+                                        onPressed:
+                                            controller.canBuyShopItem(item.id)
+                                            ? () =>
+                                                  _buy(context, item, language)
+                                            : null,
+                                        style: FilledButton.styleFrom(
+                                          padding: const EdgeInsets.symmetric(
+                                            horizontal: 4,
+                                          ),
                                         ),
-                                      ),
-                                      child: Text(
-                                        language.text('购买', 'Buy', '購入'),
-                                        maxLines: 1,
+                                        child: Text(
+                                          language.text('购买', 'Buy', '購入'),
+                                          maxLines: 1,
+                                        ),
                                       ),
                                     ),
                                   ),

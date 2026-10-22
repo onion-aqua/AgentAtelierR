@@ -446,6 +446,7 @@ class _HistoryDialogueEntry extends StatelessWidget {
                   .withValues(alpha: 0.12),
               border: Border.all(
                 color: Theme.of(context).colorScheme.outlineVariant,
+                width: 0,
               ),
             ),
             clipBehavior: Clip.antiAlias,

@@ -78,7 +78,10 @@ void main() {
     await tester.pumpAndSettle();
   }
 
-  Future<AppController> openSettings(WidgetTester tester) async {
+  Future<AppController> openSettings(
+    WidgetTester tester, {
+    bool expandAdvanced = true,
+  }) async {
     final controller = (await tester.runAsync(AppController.load))!;
     addTearDown(controller.dispose);
     tester.view.physicalSize = const Size(360, 850);
@@ -95,6 +98,15 @@ void main() {
       ),
     );
     await openMcpPage(tester);
+    if (!expandAdvanced) return controller;
+    final advanced = find.text('高级选项与连接诊断');
+    await tester.ensureVisible(advanced);
+    await tester.tap(advanced);
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(
+      find.byKey(const ValueKey('fish-mcp-normal-voice')),
+    );
+    await tester.pumpAndSettle();
     return controller;
   }
 
@@ -158,6 +170,26 @@ void main() {
     service.lastDiscoveryAt = DateTime.utc(2026, 10, 15);
   }
 
+  testWidgets('advanced diagnostics are folded and drafts survive toggling', (
+    tester,
+  ) async {
+    await openSettings(tester, expandAdvanced: false);
+    expect(find.text('退出授权'), findsNothing);
+    final field = find.byKey(const ValueKey('fish-mcp-normal-voice'));
+    await tester.enterText(field, 'draft-voice');
+    final advanced = find.text('高级选项与连接诊断');
+    await tester.ensureVisible(advanced);
+    await tester.tap(advanced);
+    await tester.pumpAndSettle();
+    expect(find.text('退出授权'), findsOneWidget);
+    await tester.ensureVisible(advanced);
+    await tester.tap(advanced);
+    await tester.pumpAndSettle();
+    expect(find.text('退出授权'), findsNothing);
+    expect(tester.widget<TextField>(field).controller!.text, 'draft-voice');
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('OAuth state changes refresh MCP settings without another tap', (
     tester,
   ) async {
@@ -168,7 +200,7 @@ void main() {
     await tester.runAsync(() => service.beginAuthorization(launchLogin: false));
     await tester.pump();
     expect(find.text('状态：等待 Fish Audio 授权'), findsOneWidget);
-    expect(find.text('等待浏览器授权（完成后自动刷新）'), findsOneWidget);
+    expect(find.text('等待浏览器授权…'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
@@ -379,10 +411,7 @@ void main() {
     (tester) async {
       SharedPreferences.setMockInitialValues({'fish_mcp_model': 's2.1-pro'});
       final controller = await openSettings(tester);
-      expect(
-        find.text('当前选择仅为草稿，点击“保存并使用 MCP”后下次请求才生效；返回或取消不会保存。'),
-        findsOneWidget,
-      );
+      expect(find.text('保存后，下次语音请求生效。'), findsOneWidget);
       expect(find.text('云端返回模型：未返回模型标识，无法确认已切换'), findsOneWidget);
 
       Future<void> selectModel(String current, String next) async {
@@ -462,7 +491,7 @@ void main() {
       expect(tester.widget<TextField>(voice).enabled, isNot(false));
       expect(tester.widget<TextField>(asmrVoice).enabled, isNot(false));
       expect(find.text(klaudiaFishAudioReferenceId), findsOneWidget);
-      expect(find.text('ASMR 音色留空时沿用普通音色。'), findsOneWidget);
+      expect(find.text('留空时沿用普通音色'), findsOneWidget);
       await tester.enterText(voice, 'normal-voice-id');
       await tester.enterText(asmrVoice, 'asmr-voice-id');
       await tester.tap(find.text('保存并使用 MCP'));

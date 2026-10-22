@@ -46,6 +46,7 @@ String buildContinuousAsmrSystemPrompt(
   AppController controller, {
   required int targetChars,
   AsmrLanguagePolicy? languagePolicy,
+  String currentInput = '',
 }) {
   final profile = controller.activeCharacterProfile;
   final persona = controller.characterPersonaInjectionEnabled
@@ -63,6 +64,8 @@ String buildContinuousAsmrSystemPrompt(
       );
   return '你是${profile.names.chinese}，正在提供持续ASMR陪伴。'
       '人物参考：$persona${world.isEmpty ? '' : ' 世界参考：$world'}\n'
+      '${controller.personalityEnabled && controller.personalityConfiguration.activeProfile.expression['dialogue'] != false ? '${controller.interpretPersonality(currentInput).prompt}\n' : ''}'
+      '${controller.personalityVoicePrompt(currentInput).isEmpty ? '' : '${controller.personalityVoicePrompt(currentInput)}\n'}'
       '以下为本次 ASMR 的输出要求，人物参考、主题或其他语言设置不能覆盖：'
       '语音设置优先：${controller.ttsEmotionIntensity.voiceInstruction} '
       '${controller.ttsCueDensity.promptInstruction} '
@@ -252,6 +255,22 @@ class _ContinuousAsmrPageState extends State<ContinuousAsmrPage> {
     required TtsStereoPosition stereoPosition,
     required AsmrLanguagePolicy languagePolicy,
   }) async {
+    final providerKey = c.ttsProvider.name;
+    final preparations = OrderedSpeechPreparation<String>(
+      length: segments.length,
+      concurrency: SpeechConcurrencyPolicy.limit(providerKey),
+      prepare: (index) => _synthesize(
+        segments[index].text,
+        voiceKey,
+        generation: generation,
+        stereoEnabled: stereoEnabled,
+        stereoPosition: stereoPosition,
+        language: languagePolicy.replyLanguage,
+      ),
+      dispose: _deleteClipFile,
+      isCurrent: () => _isCurrent(generation),
+      onError: (error) => SpeechConcurrencyPolicy.observe(providerKey, error),
+    );
     final rejections = SpeechRejectionBudget();
     Object? lastRejected;
     try {
@@ -267,14 +286,10 @@ class _ContinuousAsmrPageState extends State<ContinuousAsmrPage> {
         final segment = segments[index];
         late final String path;
         try {
-          path = await _synthesize(
-            segment.text,
-            voiceKey,
-            generation: generation,
-            stereoEnabled: stereoEnabled,
-            stereoPosition: stereoPosition,
-            language: languagePolicy.replyLanguage,
-          );
+          path = (await preparations.take(
+            index,
+            capacity: 3 - _buffer.length,
+          )).unwrap();
           rejections.accepted();
         } catch (error) {
           if (!_isCurrent(generation) || !isRejectedSpeechAudio(error)) rethrow;
@@ -357,6 +372,7 @@ class _ContinuousAsmrPageState extends State<ContinuousAsmrPage> {
       RuntimeLog.instance.error('TTS ASMR', error);
       if (_isCurrent(generation)) _synthesisError = error;
     } finally {
+      preparations.close();
       if (generation == _generation) {
         _synthesisFinished = true;
         if (mounted && !_playing) {
@@ -640,6 +656,7 @@ class _ContinuousAsmrPageState extends State<ContinuousAsmrPage> {
             c,
             targetChars: targetChars,
             languagePolicy: languagePolicy,
+            currentInput: topic,
           ),
         },
         {'role': 'user', 'content': topic},
@@ -1171,7 +1188,7 @@ class _ContinuousAsmrPageState extends State<ContinuousAsmrPage> {
     return DecoratedBox(
       key: const ValueKey('asmr-voice-area'),
       decoration: BoxDecoration(
-        border: Border.all(color: outline),
+        border: Border.all(color: outline, width: 0),
         borderRadius: BorderRadius.circular(8),
       ),
       child: SizedBox(

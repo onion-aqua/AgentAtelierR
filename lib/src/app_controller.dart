@@ -9,6 +9,8 @@ import 'app_localization.dart';
 import 'app_theme.dart';
 import 'alchemy_models.dart';
 import 'character_state.dart';
+import 'personality/personality_profile.dart';
+import 'personality/personality_interpreter.dart';
 import 'attachment_thumbnail_store.dart';
 import 'character_catalog.dart';
 import 'character_alarm_coordinator.dart';
@@ -646,6 +648,27 @@ class AppController extends ChangeNotifier {
 
   CharacterCatalog characterCatalog;
   String activeCharacterId = CharacterRuntimeIds.ryza;
+  // A launch greeting belongs to this process, never to a save or preferences.
+  bool _coldLaunchGreetingStarted = false;
+  bool _characterAwaitingWake = false;
+
+  bool get characterAwaitingWake =>
+      _characterAwaitingWake && activeCharacterId == CharacterRuntimeIds.ryza;
+
+  void startColdLaunchGreeting() {
+    if (_coldLaunchGreetingStarted) return;
+    _coldLaunchGreetingStarted = true;
+    _characterAwaitingWake = activeCharacterId == CharacterRuntimeIds.ryza;
+    if (_characterAwaitingWake) notifyListeners();
+  }
+
+  bool wakeCharacter() {
+    if (!characterAwaitingWake) return false;
+    _characterAwaitingWake = false;
+    notifyListeners();
+    return true;
+  }
+
   CharacterRuntimeProfile get activeCharacterProfile =>
       characterRuntimeProfileById(activeCharacterId);
   final Map<String, Map<String, dynamic>> _characterSessions = {};
@@ -716,6 +739,71 @@ class AppController extends ChangeNotifier {
       _llmDialogueSignal.cancelTurn(turn);
 
   CharacterState characterState = CharacterState();
+  final Map<String, PersonalityConfiguration> _personalityConfigurations = {};
+  final Map<String, String> _personalityWarnings = {};
+
+  static String personalityPreferenceKey(String characterId) =>
+      'personality_configuration_v1.$characterId';
+
+  PersonalityConfiguration get personalityConfiguration =>
+      _personalityConfigurations.putIfAbsent(
+        activeCharacterId,
+        () => PersonalityConfiguration.defaults(activeCharacterId),
+      );
+  bool get personalityEnabled => personalityConfiguration.enabled;
+  String? get personalityLoadWarning => _personalityWarnings[activeCharacterId];
+
+  void _loadPersonalityConfigurations() {
+    for (final id in CharacterRuntimeIds.all) {
+      final raw = _preferences.getString(personalityPreferenceKey(id));
+      if (raw == null) continue;
+      try {
+        _personalityConfigurations[id] = PersonalityConfiguration.fromJson(
+          jsonDecode(raw),
+          expectedCharacterId: id,
+        );
+      } on Object {
+        // Do not overwrite a corrupt/future payload during unrelated saves.
+        _personalityWarnings[id] = '人格配置无法读取，已暂时关闭；原始数据仍保留。可重新导入或保存有效配置。';
+      }
+    }
+  }
+
+  Future<void> savePersonalityConfiguration(
+    PersonalityConfiguration configuration,
+  ) async {
+    final id = activeCharacterId;
+    final validated = PersonalityConfiguration.fromJson(
+      configuration.toJson(),
+      expectedCharacterId: id,
+    );
+    if (!await _preferences.setString(
+      personalityPreferenceKey(id),
+      jsonEncode(validated.toJson()),
+    )) {
+      throw StateError('人格配置保存失败，请重试');
+    }
+    _personalityConfigurations[id] = validated;
+    _personalityWarnings.remove(id);
+    notifyListeners();
+  }
+
+  PersonalityInterpretation interpretPersonality(String input) =>
+      PersonalityInterpreter().interpret(
+        personalityConfiguration.activeProfile,
+        enabled: personalityEnabled,
+        input: input,
+        emotion: characterState.emotion,
+        closeness: characterState.values['closeness'] ?? 40,
+      );
+
+  String personalityVoicePrompt(String input) {
+    final preference = interpretPersonality(input).preferences['voice'];
+    if (preference == null || preference.isEmpty) return '';
+    return '【人格语音倾向】$preference 仅作为已支持语音标签的低优先级建议；'
+        '语音模式、语言、标签密度与情感强度设置优先，不改写台词内容。';
+  }
+
   bool settleCharacterState(
     String turn,
     Map<String, dynamic> proposal,
@@ -1783,6 +1871,7 @@ class AppController extends ChangeNotifier {
         dynamicQuests = <DynamicQuest>[];
       }
     }
+    _loadPersonalityConfigurations();
     final rawSessions = _preferences.getString('character_sessions_v1');
     if (rawSessions != null) {
       try {
@@ -2300,6 +2389,15 @@ class AppController extends ChangeNotifier {
         .join('、');
     return [
       prompt,
+      if (personalityEnabled &&
+          personalityConfiguration.activeProfile.expression['dialogue'] !=
+              false)
+        interpretPersonality(currentInput).prompt,
+      if (!independentSpeechPerformance &&
+          fishTtsEnabled &&
+          ttsProvider != TtsProvider.local &&
+          personalityVoicePrompt(currentInput).isNotEmpty)
+        personalityVoicePrompt(currentInput),
       '【虚拟手机联络】如果用户在当前发言中向在场 NPC 请求交换联系方式、添加好友，或使用微信、QQ、短信、SMS、LINE、Discord、Telegram、邮箱等通讯方式，请让对应 NPC 按身份和关系自然回应。使用“角色[精确 npc_id]：”输出该 NPC 自己的台词，明确表示同意、犹豫或拒绝。不要由旁白或其他角色代替本人同意，不声称已经加入联系人；用户会在回复后单独确认。${requestedContacts.isEmpty ? '' : '\n本轮应用根据点名或最近在场发言锁定联系请求目标：$requestedContacts。即使用户没有重复 NPC 名称，也应让该 NPC 自己回应并保留精确角色前缀；可同意、犹豫或拒绝，不要替其决定。'}',
       if (npcMemory.isNotEmpty) npcMemory,
       if (callRecords.isNotEmpty)
@@ -4080,6 +4178,7 @@ $japanesePunctuationRule
     'version': 1,
     'characterId': activeCharacterId,
     'exportedAt': DateTime.now().toIso8601String(),
+    'personalityConfiguration': personalityConfiguration.toJson(),
     'messages': messages
         .map(
           (message) => message.toJson(
@@ -4626,6 +4725,15 @@ $japanesePunctuationRule
     final importedCharacter = normalizeCharacterRuntimeId(
       data['characterId'] as String?,
     );
+    // Personality belongs to a separate configuration bank, not game snapshots.
+    // Only an explicit full backup import restores it. Validate before any state
+    // mutation so a bad profile cannot partially replace a conversation.
+    final importedPersonality = data.containsKey('personalityConfiguration')
+        ? PersonalityConfiguration.fromJson(
+            data['personalityConfiguration'],
+            expectedCharacterId: importedCharacter,
+          )
+        : null;
     var validationCatalog = characterCatalog;
     if (importedCharacter == CharacterRuntimeIds.ryza &&
         characterCatalog.allProfiles.isEmpty &&
@@ -4648,6 +4756,9 @@ $japanesePunctuationRule
 
     if (importedCharacter != activeCharacterId) {
       await setActiveCharacter(importedCharacter);
+    }
+    if (importedPersonality != null) {
+      await savePersonalityConfiguration(importedPersonality);
     }
 
     // Notify listeners before replacing state so active streams and audio can
@@ -6282,22 +6393,72 @@ $japanesePunctuationRule
     return result;
   }
 
-  bool buyShopItem(String id) {
+  String? shopPurchaseBlockReason(String id) {
     final item = ShopCatalog.byId(id);
-    if (item == null ||
-        relationshipPoints < item.price ||
-        (preciousItems[id] ?? 0) >= 9999) {
-      return false;
+    if (item == null) {
+      return interfaceLanguage.text('商品不存在', 'Item unavailable', '商品がありません');
     }
+    if (id == ShopCatalog.reconciliationVoucherId &&
+        characterState.reconciliationPurchaseBlocked) {
+      return interfaceLanguage.text(
+        '誓约之戒丢失后，心情恢复到 −250（含）以上才能购买和好券。当前心情：${characterState.values['mood']}',
+        'After losing the ring, mood must reach −250 or higher to buy a Make-Up Voucher. Current mood: ${characterState.values['mood']}',
+        '指輪の紛失後は気分が −250 以上になると仲直り券を購入できます。現在：${characterState.values['mood']}',
+      );
+    }
+    if (relationshipPoints < item.price) {
+      return interfaceLanguage.text(
+        '关系点数不足',
+        'Not enough relationship points',
+        '関係ポイントが不足しています',
+      );
+    }
+    if ((preciousItems[id] ?? 0) >= 9999) {
+      return interfaceLanguage.text('库存已满', 'Inventory is full', '所持数が上限です');
+    }
+    return null;
+  }
+
+  bool canBuyShopItem(String id) => shopPurchaseBlockReason(id) == null;
+
+  bool buyShopItem(String id) {
+    // Recheck at mutation time as well as when painting the button.
+    if (!canBuyShopItem(id)) return false;
+    final item = ShopCatalog.byId(id)!;
     relationshipPoints -= item.price;
     preciousItems = {...preciousItems, id: (preciousItems[id] ?? 0) + 1};
     _changed();
     return true;
   }
 
+  bool loseOathRing({required int expectedRevision}) {
+    if (expectedRevision != dataRevision ||
+        (preciousItems[ShopCatalog.oathRingId] ?? 0) < 1) {
+      return false;
+    }
+    final remaining = preciousItems[ShopCatalog.oathRingId]! - 1;
+    preciousItems = {...preciousItems};
+    if (remaining == 0) {
+      preciousItems.remove(ShopCatalog.oathRingId);
+    } else {
+      preciousItems[ShopCatalog.oathRingId] = remaining;
+    }
+    characterState = characterState.loseOathRing(
+      interfaceLanguage.text(
+        '丢失了珍视的誓约之戒',
+        'The cherished Ring of Vows was lost',
+        '大切な誓いの指輪をなくした',
+      ),
+    );
+    _changed();
+    return true;
+  }
+
   bool useShopItem(String id) {
     final item = ShopCatalog.byId(id);
-    if (item == null || (preciousItems[id] ?? 0) < 1) return false;
+    if (item == null || item.isKeepsake || (preciousItems[id] ?? 0) < 1) {
+      return false;
+    }
     if (item.resetNegativeStats &&
         !characterState.values.values.any((value) => value < 0)) {
       return false;

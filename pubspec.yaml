@@ -18,7 +18,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # of the product and file versions while build-number is used as the build suffix.
 # Flutter requires three numeric version segments. The public four-part
 # release name is shown in the app and native platform version resources.
-version: 1.0.4+53
+version: 1.0.4+54
 
 environment:
   sdk: ^3.13.2
@@ -84,6 +84,9 @@ flutter:
   # included with your application, so that you can use the icons in
   # the material Icons class.
   uses-material-design: true
+
+  shaders:
+    - shaders/liquid_glass.frag
 
   assets:
     - docs/third_party/ryza-ai-revive-LICENSE.txt

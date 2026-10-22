@@ -20,7 +20,6 @@ abstract interface class LocalCallMicrophone {
 class RecordLocalCallMicrophone implements LocalCallMicrophone {
   AudioRecorder? _recorder;
   AudioRecorder get _audioRecorder => _recorder ??= AudioRecorder();
-  bool _paused = false;
 
   @override
   Future<bool> hasPermission() => _audioRecorder.hasPermission();
@@ -30,7 +29,6 @@ class RecordLocalCallMicrophone implements LocalCallMicrophone {
     if (!await _audioRecorder.isEncoderSupported(AudioEncoder.pcm16bits)) {
       throw StateError('当前设备不支持通话所需的 PCM16 麦克风录音。');
     }
-    _paused = false;
     return _audioRecorder.startStream(
       const RecordConfig(
         encoder: AudioEncoder.pcm16bits,
@@ -38,6 +36,10 @@ class RecordLocalCallMicrophone implements LocalCallMicrophone {
         numChannels: 1,
         echoCancel: true,
         noiseSuppress: true,
+        // CallAudioGuard already owns real-call interruption. A second focus
+        // request from record would pause capture when our AudioTrack starts,
+        // leaving the stream open but silent until a manual mute/unmute.
+        audioInterruption: AudioInterruptionMode.none,
         streamBufferSize: 2048,
         androidConfig: AndroidRecordConfig(
           // Select the communication capture path for device AEC while
@@ -51,19 +53,22 @@ class RecordLocalCallMicrophone implements LocalCallMicrophone {
 
   @override
   Future<void> setPaused(bool paused) async {
-    if (_recorder == null || _paused == paused) return;
+    final recorder = _recorder;
+    if (recorder == null) return;
+    // Native interruption can change this state without a Dart pause call.
+    // Inspect the recorder at explicit capture boundaries instead of trusting
+    // a cache or periodically reclaiming the microphone from other apps.
+    if (await recorder.isPaused() == paused) return;
     if (paused) {
-      await _audioRecorder.pause();
+      await recorder.pause();
     } else {
-      await _audioRecorder.resume();
+      await recorder.resume();
     }
-    _paused = paused;
   }
 
   @override
   Future<void> stop() async {
     await _recorder?.stop();
-    _paused = false;
   }
 
   @override

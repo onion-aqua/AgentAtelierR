@@ -9,6 +9,9 @@ import 'package:url_launcher/url_launcher.dart';
 
 import 'local_call_asr_config.dart';
 import 'call_model_download.dart';
+import '../app_controller.dart' show TtsProvider;
+import '../settings_form.dart';
+import '../glass_ui.dart';
 
 class CallSettings {
   CallSettings({
@@ -17,7 +20,7 @@ class CallSettings {
       tokensPath: '',
       vadModelPath: '',
     ),
-    this.fishModel = 'drama-3',
+    this.fishModel = '',
     Map<String, String> voiceOverrides = const {},
   }) : voiceOverrides = Map.unmodifiable(voiceOverrides);
 
@@ -29,7 +32,7 @@ class CallSettings {
             ? Map<String, dynamic>.from(json['asr'] as Map)
             : const {},
       ),
-      fishModel: json['fishModel'] as String? ?? 'drama-3',
+      fishModel: json['fishModel'] as String? ?? '',
       voiceOverrides: voices is Map
           ? {
               for (final entry in voices.entries)
@@ -41,6 +44,8 @@ class CallSettings {
   }
 
   final LocalCallAsrConfig asr;
+
+  /// Legacy backup fields. Calls ignore these and read the shared TTS settings.
   final String fishModel;
   final Map<String, String> voiceOverrides;
 
@@ -100,17 +105,6 @@ class CallSettingsStore {
     );
     if (!stored) throw StateError('无法保存通话设置，请稍后重试。');
   }
-}
-
-class CallContactOption {
-  const CallContactOption({
-    required this.id,
-    required this.name,
-    this.isMainCharacter = false,
-  });
-  final String id;
-  final String name;
-  final bool isMainCharacter;
 }
 
 enum CallAsrModelFile { senseVoice, tokens, sileroVad }
@@ -229,18 +223,18 @@ class CallAsrModelImporter {
 class RealtimeCallSettingsPage extends StatefulWidget {
   const RealtimeCallSettingsPage({
     super.key,
-    required this.contacts,
-    required this.defaultFishModel,
-    required this.defaultVoice,
+    this.ttsProvider = TtsProvider.fishAudio,
     this.store,
     this.downloader,
+    this.onOpenVoiceSettings,
+    this.liquidGlass = false,
   });
 
-  final List<CallContactOption> contacts;
-  final String defaultFishModel;
-  final String defaultVoice;
+  final TtsProvider ttsProvider;
   final CallSettingsStore? store;
   final CallAsrModelDownloader? downloader;
+  final VoidCallback? onOpenVoiceSettings;
+  final bool liquidGlass;
 
   @override
   State<RealtimeCallSettingsPage> createState() =>
@@ -248,9 +242,7 @@ class RealtimeCallSettingsPage extends StatefulWidget {
 }
 
 class _RealtimeCallSettingsPageState extends State<RealtimeCallSettingsPage> {
-  final _model = TextEditingController();
   final _form = GlobalKey<FormState>();
-  final _voices = <String, TextEditingController>{};
   final _importer = CallAsrModelImporter();
   final _uncommittedFiles = <String>{};
   final _loadedModelFiles = <String>{};
@@ -287,18 +279,9 @@ class _RealtimeCallSettingsPageState extends State<RealtimeCallSettingsPage> {
             settings.asr.vadModelPath,
           }.where((path) => path.isNotEmpty),
         );
-      _model.text = settings.fishModel.isEmpty
-          ? widget.defaultFishModel
-          : settings.fishModel;
     } on Object catch (error) {
       if (!mounted) return;
       _error = '读取通话设置失败：$error';
-      _model.text = widget.defaultFishModel;
-    }
-    for (final contact in widget.contacts) {
-      _voices[contact.id] = TextEditingController(
-        text: _settings.voiceOverrides[contact.id] ?? '',
-      );
     }
     setState(() => _loading = false);
     await _checkReady();
@@ -424,17 +407,10 @@ class _RealtimeCallSettingsPageState extends State<RealtimeCallSettingsPage> {
       _error = null;
     });
     try {
-      final voices = Map<String, String>.from(_settings.voiceOverrides);
-      for (final entry in _voices.entries) {
-        if (entry.value.text.trim().isEmpty) {
-          voices.remove(entry.key);
-        } else {
-          voices[entry.key] = entry.value.text.trim();
-        }
-      }
+      // Retire old overrides when saving; ASR settings are preserved.
       final nextSettings = _settings.copyWith(
-        fishModel: _model.text.trim(),
-        voiceOverrides: voices,
+        fishModel: '',
+        voiceOverrides: const {},
       );
       await _store.save(nextSettings);
       final retained = {
@@ -468,10 +444,6 @@ class _RealtimeCallSettingsPageState extends State<RealtimeCallSettingsPage> {
   @override
   void dispose() {
     _downloader.cancel();
-    _model.dispose();
-    for (final controller in _voices.values) {
-      controller.dispose();
-    }
     for (final path in _uncommittedFiles) {
       _importer.deleteManagedFile(path).ignore();
     }
@@ -504,228 +476,218 @@ class _RealtimeCallSettingsPageState extends State<RealtimeCallSettingsPage> {
   @override
   Widget build(BuildContext context) => PopScope(
     canPop: !_busy,
-    child: Scaffold(
-      appBar: AppBar(
-        title: const Text('实时通话设置'),
-        actions: [
-          TextButton(
-            onPressed: _loading || _busy ? null : _save,
-            child: const Text('保存'),
-          ),
-        ],
-      ),
-      body: _loading
-          ? const Center(child: CircularProgressIndicator())
-          : Form(
-              key: _form,
-              child: ListView(
-                padding: const EdgeInsets.all(20),
-                children: [
-                  const Text(
-                    '本地语音识别',
-                    style: TextStyle(fontSize: 19, fontWeight: FontWeight.bold),
-                  ),
-                  const SizedBox(height: 8),
-                  const Text(
-                    '麦克风 → 本地 Silero VAD 断句 → Sherpa-ONNX SenseVoice 识别。只将识别文字发送给聊天模型，不上传录音。',
-                  ),
-                  _fileTile(
-                    'SenseVoice 模型（推荐 model.int8.onnx）',
-                    _settings.asr.modelPath,
-                    CallAsrModelFile.senseVoice,
-                  ),
-                  _fileTile(
-                    '配套 tokens.txt',
-                    _settings.asr.tokensPath,
-                    CallAsrModelFile.tokens,
-                  ),
-                  _fileTile(
-                    'Silero VAD（silero_vad.onnx）',
-                    _settings.asr.vadModelPath,
-                    CallAsrModelFile.sileroVad,
-                  ),
-                  if (_busy)
-                    LinearProgressIndicator(value: _downloadProgress?.fraction),
-                  if (_downloadProgress != null)
-                    Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 8),
-                      child: Text(_downloadProgress!.message),
-                    ),
-                  if (_readyMessage != null)
-                    Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 8),
-                      child: Text(_readyMessage!),
-                    ),
-                  const SizedBox(height: 8),
-                  DropdownButtonFormField<String>(
-                    initialValue:
-                        LocalCallAsrConfig.supportedLanguages.contains(
-                          _settings.asr.language,
-                        )
-                        ? _settings.asr.language
-                        : 'auto',
-                    decoration: const InputDecoration(labelText: '识别语言'),
-                    items: const [
-                      DropdownMenuItem(value: 'auto', child: Text('自动识别')),
-                      DropdownMenuItem(value: 'zh', child: Text('中文')),
-                      DropdownMenuItem(value: 'ja', child: Text('日文')),
-                      DropdownMenuItem(value: 'en', child: Text('英文')),
-                      DropdownMenuItem(value: 'ko', child: Text('韩文')),
-                      DropdownMenuItem(value: 'yue', child: Text('粤语')),
-                    ],
-                    onChanged: _busy
-                        ? null
-                        : (language) {
-                            final old = _settings.asr;
-                            setState(
-                              () => _settings = _settings.copyWith(
-                                asr: LocalCallAsrConfig(
-                                  modelPath: old.modelPath,
-                                  tokensPath: old.tokensPath,
-                                  vadModelPath: old.vadModelPath,
-                                  language: language ?? 'auto',
-                                  silenceSeconds: old.silenceSeconds,
-                                ),
-                              ),
-                            );
-                          },
-                  ),
-                  const SizedBox(height: 12),
-                  Text(
-                    '停顿 ${_settings.asr.silenceSeconds.toStringAsFixed(2)} 秒后发送',
-                  ),
-                  Slider(
-                    value: _settings.asr.silenceSeconds.clamp(.3, 2),
-                    min: .3,
-                    max: 2,
-                    divisions: 34,
-                    onChanged: _busy
-                        ? null
-                        : (value) {
-                            final old = _settings.asr;
-                            setState(
-                              () => _settings = _settings.copyWith(
-                                asr: LocalCallAsrConfig(
-                                  modelPath: old.modelPath,
-                                  tokensPath: old.tokensPath,
-                                  vadModelPath: old.vadModelPath,
-                                  language: old.language,
-                                  silenceSeconds: value,
-                                ),
-                              ),
-                            );
-                          },
-                  ),
-                  const Text(
-                    '推荐：SenseVoice INT8（2024-07-17）与 Silero VAD。约 156 MB，优先 Gitee，未托管或不可用时自动切换官方 GitHub；自动解压和校验，也可分别导入文件。',
-                  ),
-                  OutlinedButton.icon(
-                    key: const ValueKey('call-download-models'),
-                    onPressed: _downloading
-                        ? _cancelling
-                              ? null
-                              : _cancelDownload
-                        : _busy
-                        ? null
-                        : _downloadModels,
-                    icon: Icon(
-                      _downloading ? Icons.close : Icons.download_outlined,
-                    ),
-                    label: Text(
-                      _downloading
-                          ? _cancelling
-                                ? '正在取消…'
-                                : '取消下载'
-                          : '下载并安装本地模型',
-                    ),
-                  ),
-                  TextButton.icon(
-                    onPressed: _openDocumentation,
-                    icon: const Icon(Icons.open_in_new),
-                    label: const Text('Sherpa-ONNX 官方模型说明'),
-                  ),
-                  const SelectableText(
-                    'https://github.com/k2-fsa/sherpa-onnx/releases/tag/asr-models',
-                    style: TextStyle(fontSize: 12),
-                  ),
-                  const Divider(height: 36),
-                  const Text(
-                    '通话语音',
-                    style: TextStyle(fontSize: 19, fontWeight: FontWeight.bold),
-                  ),
-                  const SizedBox(height: 8),
-                  const Text(
-                    '通话复用现有聊天 LLM 配置和 Fish Audio REST API 密钥。请在原来的 AI 接口和 TTS 设置填写；MCP OAuth 不能代替 REST 密钥。每段回复会产生正常 API 用量。',
-                  ),
-                  const SizedBox(height: 12),
-                  TextFormField(
-                    controller: _model,
-                    enabled: !_busy,
-                    decoration: const InputDecoration(
-                      labelText: 'Fish Audio 通话模型',
-                      helperText: '可填写服务支持的模型 ID',
-                    ),
-                    validator: (value) =>
-                        RegExp(r'^[A-Za-z0-9][A-Za-z0-9._/-]{0,95}$')
-                            .hasMatch(value?.trim() ?? '')
-                        ? null
-                        : '请输入有效的模型 ID',
-                  ),
-                  Wrap(
-                    spacing: 8,
-                    children: [
-                      for (final model in ['s2-pro', 'drama-3'])
-                        ActionChip(
-                          label: Text(model),
-                          onPressed: _busy
-                              ? null
-                              : () => setState(() => _model.text = model),
-                        ),
-                    ],
-                  ),
-                  const SizedBox(height: 16),
-                  const Text(
-                    '联系人音色',
-                    style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold),
-                  ),
-                  const Text(
-                    '莱莎留空时跟随普通模式音色；科洛蒂娅留空时使用应用内置音色。两位联系人也可分别填写音色 ID 覆盖默认设置。',
-                  ),
-                  for (final contact in widget.contacts)
-                    Padding(
-                      padding: const EdgeInsets.only(top: 14),
-                      child: TextFormField(
-                        key: ValueKey('call-voice-${contact.id}'),
-                        controller: _voices[contact.id],
-                        enabled: !_busy,
-                        decoration: InputDecoration(
-                          labelText: '${contact.name} · Fish 音色 ID',
-                          helperText: contact.isMainCharacter
-                              ? '留空跟随主角设置${widget.defaultVoice.isEmpty ? '（当前未配置）' : ''}'
-                              : contact.id == 'claudia'
-                              ? '留空使用应用内置的科洛蒂娅音色'
-                              : '此 NPC 需要独立音色',
-                        ),
-                        validator: (value) =>
-                            (value?.trim().contains(RegExp(r'[\r\n]')) ?? false)
-                            ? '音色 ID 不能包含换行'
-                            : null,
-                      ),
-                    ),
-                  if (_error != null)
-                    Padding(
-                      padding: const EdgeInsets.only(top: 20),
-                      child: Text(
-                        _error!,
-                        style: TextStyle(
-                          color: Theme.of(context).colorScheme.error,
-                        ),
-                      ),
-                    ),
-                  const SizedBox(height: 28),
-                ],
+    child: SettingsFormTheme(
+      child: GlassPageSurface(
+        liquidGlass: widget.liquidGlass,
+        child: Scaffold(
+          backgroundColor: Colors.transparent,
+          appBar: AppBar(
+            backgroundColor: glassPageHeaderColor(context),
+            surfaceTintColor: Colors.transparent,
+            title: const Text('实时通话设置'),
+            actions: [
+              TextButton(
+                onPressed: _loading || _busy ? null : _save,
+                child: const Text('保存'),
               ),
-            ),
+            ],
+          ),
+          body: _loading
+              ? const Center(child: CircularProgressIndicator())
+              : Form(
+                  key: _form,
+                  child: ListView(
+                    padding: const EdgeInsets.all(20),
+                    children: [
+                      const Text(
+                        '本地语音识别',
+                        style: TextStyle(
+                          fontSize: 19,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      const Text('首次使用请下载识别模型。录音在本机识别，只发送文字给聊天模型。'),
+                      if (_busy)
+                        LinearProgressIndicator(
+                          value: _downloadProgress?.fraction,
+                        ),
+                      if (_downloadProgress != null)
+                        Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 8),
+                          child: Text(_downloadProgress!.message),
+                        ),
+                      if (_readyMessage != null)
+                        Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 8),
+                          child: Text(_readyMessage!),
+                        ),
+                      const Text('约 156 MB，优先 Gitee，失败时切换 GitHub；下载后自动解压并校验。'),
+                      OutlinedButton.icon(
+                        key: const ValueKey('call-download-models'),
+                        onPressed: _downloading
+                            ? _cancelling
+                                  ? null
+                                  : _cancelDownload
+                            : _busy
+                            ? null
+                            : _downloadModels,
+                        icon: Icon(
+                          _downloading ? Icons.close : Icons.download_outlined,
+                        ),
+                        label: Text(
+                          _downloading
+                              ? _cancelling
+                                    ? '正在取消…'
+                                    : '取消下载'
+                              : '下载并安装本地模型',
+                        ),
+                      ),
+                      const SettingsSectionHeading(
+                        '收音与断句',
+                        description: '识别语言决定如何听懂你；停顿时间决定何时发送。',
+                      ),
+                      const SizedBox(height: 8),
+                      DropdownButtonFormField<String>(
+                        initialValue:
+                            LocalCallAsrConfig.supportedLanguages.contains(
+                              _settings.asr.language,
+                            )
+                            ? _settings.asr.language
+                            : 'auto',
+                        decoration: const InputDecoration(labelText: '识别语言'),
+                        items: const [
+                          DropdownMenuItem(value: 'auto', child: Text('自动识别')),
+                          DropdownMenuItem(value: 'zh', child: Text('中文')),
+                          DropdownMenuItem(value: 'ja', child: Text('日文')),
+                          DropdownMenuItem(value: 'en', child: Text('英文')),
+                          DropdownMenuItem(value: 'ko', child: Text('韩文')),
+                          DropdownMenuItem(value: 'yue', child: Text('粤语')),
+                        ],
+                        onChanged: _busy
+                            ? null
+                            : (language) {
+                                final old = _settings.asr;
+                                setState(
+                                  () => _settings = _settings.copyWith(
+                                    asr: LocalCallAsrConfig(
+                                      modelPath: old.modelPath,
+                                      tokensPath: old.tokensPath,
+                                      vadModelPath: old.vadModelPath,
+                                      language: language ?? 'auto',
+                                      silenceSeconds: old.silenceSeconds,
+                                    ),
+                                  ),
+                                );
+                              },
+                      ),
+                      const SizedBox(height: 12),
+                      Text(
+                        '停顿 ${_settings.asr.silenceSeconds.toStringAsFixed(2)} 秒后发送',
+                      ),
+                      Slider(
+                        value: _settings.asr.silenceSeconds.clamp(.3, 2),
+                        min: .3,
+                        max: 2,
+                        divisions: 34,
+                        onChanged: _busy
+                            ? null
+                            : (value) {
+                                final old = _settings.asr;
+                                setState(
+                                  () => _settings = _settings.copyWith(
+                                    asr: LocalCallAsrConfig(
+                                      modelPath: old.modelPath,
+                                      tokensPath: old.tokensPath,
+                                      vadModelPath: old.vadModelPath,
+                                      language: old.language,
+                                      silenceSeconds: value,
+                                    ),
+                                  ),
+                                );
+                              },
+                      ),
+                      ExpansionTile(
+                        key: const ValueKey('call-manual-models'),
+                        title: const Text('手动导入与模型说明'),
+                        children: [
+                          const Text(
+                            '推荐 SenseVoice INT8（2024-07-17）与 Silero VAD，模型文件和 tokens 必须配套。',
+                          ),
+                          _fileTile(
+                            'SenseVoice 模型（推荐 model.int8.onnx）',
+                            _settings.asr.modelPath,
+                            CallAsrModelFile.senseVoice,
+                          ),
+                          _fileTile(
+                            '配套 tokens.txt',
+                            _settings.asr.tokensPath,
+                            CallAsrModelFile.tokens,
+                          ),
+                          _fileTile(
+                            'Silero VAD（silero_vad.onnx）',
+                            _settings.asr.vadModelPath,
+                            CallAsrModelFile.sileroVad,
+                          ),
+                          TextButton.icon(
+                            onPressed: _openDocumentation,
+                            icon: const Icon(Icons.open_in_new),
+                            label: const Text('Sherpa-ONNX 官方模型说明'),
+                          ),
+                          const SelectableText(
+                            'https://github.com/k2-fsa/sherpa-onnx/releases/tag/asr-models',
+                            style: TextStyle(fontSize: 12),
+                          ),
+                        ],
+                      ),
+                      const Divider(height: 36),
+                      const Text(
+                        '通话语音',
+                        style: TextStyle(
+                          fontSize: 19,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        key: const ValueKey('call-voice-provider'),
+                        switch (widget.ttsProvider) {
+                          TtsProvider.fishAudioMcp => '当前服务：Fish Audio MCP（OAuth），使用账户积分。不读取 REST API Key，不自动回退 API。',
+                          TtsProvider.fishAudio =>
+                            '当前服务：Fish Audio API（REST），使用 API 额度。',
+                          _ => '当前服务暂不支持通话，请在声音与语音选择 Fish Audio MCP 或 API。',
+                        },
+                      ),
+                      const SizedBox(height: 12),
+                      const Text('模型与普通音色统一使用“声音与语音”的配置；科洛蒂娅使用内置音色。修改后下次通话生效。'),
+                      if (widget.onOpenVoiceSettings != null)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 12),
+                          child: OutlinedButton.icon(
+                            key: const ValueKey('call-open-voice-settings'),
+                            onPressed: _busy
+                                ? null
+                                : widget.onOpenVoiceSettings,
+                            icon: const Icon(Icons.settings_voice_outlined),
+                            label: const Text('前往声音与语音'),
+                          ),
+                        ),
+                      if (_error != null)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 20),
+                          child: Text(
+                            _error!,
+                            style: TextStyle(
+                              color: Theme.of(context).colorScheme.error,
+                            ),
+                          ),
+                        ),
+                      const SizedBox(height: 28),
+                    ],
+                  ),
+                ),
+        ),
+      ),
     ),
   );
 }

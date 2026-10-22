@@ -130,6 +130,33 @@ ThemeData atelierTheme(
       border: InputBorder.none,
       isDense: true,
     ),
+    outlinedButtonTheme: OutlinedButtonThemeData(
+      style: ButtonStyle(
+        side: WidgetStateProperty.resolveWith(
+          (states) => BorderSide(
+            color: states.contains(WidgetState.disabled)
+                ? scheme.onSurface.withValues(alpha: .12)
+                : scheme.outline,
+            width: 0,
+          ),
+        ),
+      ),
+    ),
+    chipTheme: ChipThemeData(
+      side: BorderSide(color: scheme.outlineVariant, width: 0),
+    ),
+    segmentedButtonTheme: SegmentedButtonThemeData(
+      style: ButtonStyle(
+        side: WidgetStateProperty.resolveWith(
+          (states) => BorderSide(
+            color: states.contains(WidgetState.disabled)
+                ? scheme.onSurface.withValues(alpha: .12)
+                : scheme.outline,
+            width: 0,
+          ),
+        ),
+      ),
+    ),
     switchTheme: SwitchThemeData(
       thumbColor: WidgetStateProperty.resolveWith(
         (states) => states.contains(WidgetState.disabled)

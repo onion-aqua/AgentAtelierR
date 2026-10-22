@@ -1490,17 +1490,17 @@ class FishAudioClient {
           'Content-Type': 'application/json',
           'model': model,
         }, jsonEncode(requestBody)),
-        shouldRetryResult: (result) => isRetryableHttpStatus(result.statusCode),
+        maxRetries: 0, // A submitted synthesis may be billable even on timeout.
       );
     } catch (error) {
       if (!isRetryableNetworkError(error)) rethrow;
       // Never include request headers or keys in the user-facing error.
       RuntimeLog.instance.warning(
         'TTS',
-        'Fish Audio 网络请求失败：${error.runtimeType}；主机 ${uri.host}；已用尽重试',
+        'Fish Audio 网络请求失败：${error.runtimeType}；主机 ${uri.host}；未自动重试',
       );
       throw AiServiceException(
-        '无法连接 Fish Audio（${uri.host}），已重试 3 次。请检查网络、代理或防火墙，以及 API 端点是否可达。连接超时并不表示音色 ID 或模型错误。',
+        '无法连接 Fish Audio（${uri.host}），请求结果可能未明，未自动重试。请检查网络、代理或防火墙，以及 API 端点是否可达。连接超时并不表示音色 ID 或模型错误。',
       );
     }
     RuntimeLog.instance.communication(
@@ -2022,7 +2022,7 @@ class GenericTtsClient {
             'instructions': instructions.trim(),
         }),
       ),
-      shouldRetryResult: (result) => isRetryableHttpStatus(result.statusCode),
+      maxRetries: 0, // Do not replay potentially billable synthesis.
     );
     RuntimeLog.instance.communication(
       source: 'TTS',
@@ -2072,6 +2072,8 @@ String _responseMessage(String body) {
   }
 }
 
+int _ttsFileSequence = 0;
+
 Future<String> _writeTemporaryAudio(
   Uint8List bytes,
   String prefix,
@@ -2097,7 +2099,7 @@ Future<String> _writeTemporaryAudio(
   }
   final directory = await getTemporaryDirectory();
   final file = File(
-    '${directory.path}${Platform.pathSeparator}${prefix}_${DateTime.now().millisecondsSinceEpoch}.$extension',
+    '${directory.path}${Platform.pathSeparator}${prefix}_${DateTime.now().microsecondsSinceEpoch}_${_ttsFileSequence++}.$extension',
   );
   await file.writeAsBytes(bytes, flush: true);
   return file.path;

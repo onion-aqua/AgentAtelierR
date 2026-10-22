@@ -310,4 +310,280 @@ void main() {
       expect(controller.lastRecentMemoryMessageId, isNull);
     },
   );
+
+  test('legacy display ids recover once and map shuffled replies by source ref', () async {
+    final controller = await makeController();
+    controller.updateMemorySummary(
+      jsonEncode({
+        'entries': [
+          {'sequence': 10, 'summary': '莱莎说塔奥爱读书', 'source': 'local_ledger'},
+          {'sequence': 25, 'summary': '用户约好明天采集', 'source': 'local_ledger'},
+          {
+            'sequence': 40,
+            'summary': '用户手写的重要事实',
+            'source': 'manual',
+            'translation': 'A fact confirmed by the user.',
+          },
+        ],
+      }),
+    );
+    final original = controller.memorySummary;
+    var repairRequests = 0;
+    var notices = 0;
+    final proposal = await ManualMemoryConsolidation().prepare(
+      controller: controller,
+      onLegacyNumberingRecovery: () => notices++,
+      complete: (messages) async {
+        final input = jsonDecode(messages.last['content']!) as Map;
+        if (messages.first['content']!.contains('重新整理旧版本地')) {
+          repairRequests++;
+          if (repairRequests == 1) {
+            expect((input['entries'] as List).first['sequence'], 10);
+            return '{"entries":[{"sequence":"AM0001","summary":"错误编号"},'
+                '{"sequence":2,"summary":"错误编号"}]}';
+          }
+          expect(notices, 1);
+          final entries = input['entries'] as List;
+          expect(
+            entries.every((entry) => !(entry as Map).containsKey('sequence')),
+            isTrue,
+          );
+          expect(entries.map((entry) => entry['source_ref']), [
+            'legacy_1',
+            'legacy_2',
+          ]);
+          return '{"entries":[{"source_ref":"legacy_2","summary":"双方约好明天采集。"},'
+              '{"source_ref":"legacy_1","summary":"莱莎介绍塔奥爱读书。"}]}';
+        }
+        return '{"recent":[],"entries":[{"sequence":10,"translation":"Tao enjoys reading."},'
+            '{"sequence":25,"translation":"They will gather tomorrow."}]}';
+      },
+    );
+    expect(repairRequests, 2);
+    expect(notices, 1);
+    expect(proposal!.usedLegacyNumberingRecovery, isTrue);
+    expect(controller.memorySummary, original);
+    expect(proposal.repairedEntrySequences, {10, 25});
+    expect(proposal.commit(controller), isTrue);
+    final entries =
+        MemoryTimeline.decode(controller.memorySummary)!['entries'] as List;
+    expect(entries.map((entry) => entry['sequence']), [10, 25, 40]);
+    expect(entries[0]['summary'], '莱莎介绍塔奥爱读书。');
+    expect(entries[1]['summary'], '双方约好明天采集。');
+    expect(entries[2]['summary'], '用户手写的重要事实');
+    expect(entries[2]['source'], 'manual');
+  });
+
+  test(
+    'legacy recovery never guesses duplicate or unknown references',
+    () async {
+      for (final invalid in [
+        '{"entries":[{"source_ref":"unknown","summary":"不能保存"},'
+            '{"source_ref":"legacy_2","summary":"第二条"}]}',
+        '{"entries":[]}',
+        '{"entries":[{"source_ref":"legacy_1","summary":"不能保存"},'
+            '{"source_ref":"legacy_1","summary":"重复"}]}',
+      ]) {
+        final controller = await makeController();
+        controller.updateMemorySummary(
+          jsonEncode({
+            'entries': [
+              {'sequence': 15, 'summary': '保留的事实', 'source': 'local_ledger'},
+              {'sequence': 35, 'summary': '另一条旧事实', 'source': 'local_ledger'},
+            ],
+          }),
+        );
+        final original = controller.memorySummary;
+        var requests = 0;
+        var notices = 0;
+        await expectLater(
+          ManualMemoryConsolidation().prepare(
+            controller: controller,
+            onLegacyNumberingRecovery: () => notices++,
+            complete: (_) async => ++requests == 1
+                ? '{"entries":[{"sequence":1,"summary":"旧编号"}]}'
+                : invalid,
+          ),
+          throwsFormatException,
+        );
+        expect(requests, 2);
+        expect(notices, 1);
+        expect(controller.memorySummary, original);
+        expect(controller.recentMemories, isEmpty);
+        expect(controller.lastRecentMemoryMessageId, isNull);
+      }
+    },
+  );
+
+  test(
+    'changing memory when notified cancels recovery before another request',
+    () async {
+      final controller = await makeController();
+      controller.updateMemorySummary(
+        jsonEncode({
+          'entries': [
+            {'sequence': 12, 'summary': '旧事实', 'source': 'local_ledger'},
+          ],
+        }),
+      );
+      var requests = 0;
+      await expectLater(
+        ManualMemoryConsolidation().prepare(
+          controller: controller,
+          onLegacyNumberingRecovery: () =>
+              controller.updateMemorySummary('新的用户记忆'),
+          complete: (_) async {
+            requests++;
+            return '{"entries":[{"sequence":1,"summary":"旧编号"}]}';
+          },
+        ),
+        throwsStateError,
+      );
+      expect(requests, 1);
+      expect(controller.memorySummary, '新的用户记忆');
+    },
+  );
+
+  test(
+    'later legacy batches use refs directly with only one extra request',
+    () async {
+      final controller = await makeController();
+      controller.updateMemorySummary(
+        jsonEncode({
+          'entries': [
+            for (var index = 1; index <= 9; index++)
+              {
+                'sequence': index * 10,
+                'summary': '原有事实$index',
+                'source': 'local_ledger',
+              },
+          ],
+        }),
+      );
+      var repairs = 0;
+      var notices = 0;
+      final proposal = await ManualMemoryConsolidation().prepare(
+        controller: controller,
+        onLegacyNumberingRecovery: () => notices++,
+        complete: (messages) async {
+          final input = jsonDecode(messages.last['content']!) as Map;
+          if (messages.first['content']!.contains('重新整理旧版本地')) {
+            repairs++;
+            if (repairs == 1) {
+              return '{"entries":[{"sequence":1,"summary":"旧编号"}]}';
+            }
+            return jsonEncode({
+              'entries': [
+                for (final entry in input['entries'] as List)
+                  {
+                    'source_ref': entry['source_ref'],
+                    'summary': entry['summary'],
+                  },
+              ],
+            });
+          }
+          return jsonEncode({
+            'recent': [],
+            'entries': [
+              for (final entry in input['entries'] as List)
+                {
+                  'sequence': entry['sequence'],
+                  'translation': 'Confirmed fact.',
+                },
+            ],
+          });
+        },
+      );
+      expect(repairs, 3);
+      expect(notices, 1);
+      expect(proposal!.repairedEntrySequences, hasLength(9));
+      expect(proposal.commit(controller), isTrue);
+      expect(
+        MemoryTimeline.decode(controller.memorySummary)!['entries'],
+        hasLength(9),
+      );
+    },
+  );
+
+  test(
+    'stale recovery response cannot translate or overwrite a changed save',
+    () async {
+      final controller = await makeController();
+      controller.updateMemorySummary(
+        jsonEncode({
+          'entries': [
+            {'sequence': 12, 'summary': '旧事实', 'source': 'local_ledger'},
+          ],
+        }),
+      );
+      var requests = 0;
+      await expectLater(
+        ManualMemoryConsolidation().prepare(
+          controller: controller,
+          complete: (_) async {
+            requests++;
+            if (requests == 1) {
+              return '{"entries":[{"sequence":"AM0001","summary":"旧编号"}]}';
+            }
+            controller.updateMemorySummary('后来修改的当前记忆');
+            return '{"entries":[{"source_ref":"legacy_1","summary":"迟到的结果"}]}';
+          },
+        ),
+        throwsStateError,
+      );
+      expect(requests, 2);
+      expect(controller.memorySummary, '后来修改的当前记忆');
+      expect(controller.recentMemories, isEmpty);
+    },
+  );
+
+  test('malformed JSON is not treated as a legacy numbering failure', () async {
+    final controller = await makeController();
+    controller.updateMemorySummary(
+      jsonEncode({
+        'entries': [
+          {'sequence': 12, 'summary': '原有事实', 'source': 'local_ledger'},
+        ],
+      }),
+    );
+    final original = controller.memorySummary;
+    var requests = 0;
+    var notices = 0;
+    await expectLater(
+      ManualMemoryConsolidation().prepare(
+        controller: controller,
+        onLegacyNumberingRecovery: () => notices++,
+        complete: (_) async {
+          requests++;
+          return 'not JSON';
+        },
+      ),
+      throwsFormatException,
+    );
+    expect(requests, 1);
+    expect(notices, 0);
+    expect(controller.memorySummary, original);
+  });
+
+  test('valid legacy sequences need neither recovery nor notice', () async {
+    final controller = await makeController();
+    controller.updateMemorySummary(
+      jsonEncode({
+        'entries': [
+          {'sequence': 22, 'summary': '用户喜欢红茶', 'source': 'local_ledger'},
+        ],
+      }),
+    );
+    var notices = 0;
+    final proposal = await ManualMemoryConsolidation().prepare(
+      controller: controller,
+      onLegacyNumberingRecovery: () => notices++,
+      complete: (messages) async =>
+          messages.first['content']!.contains('重新整理旧版本地')
+          ? '{"entries":[{"sequence":22,"summary":"用户喜欢红茶。"}]}'
+          : '{"recent":[],"entries":[{"sequence":22,"translation":"The user likes tea."}]}',
+    );
+    expect(notices, 0);
+    expect(proposal!.usedLegacyNumberingRecovery, isFalse);
+  });
 }

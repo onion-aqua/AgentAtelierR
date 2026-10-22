@@ -21,9 +21,11 @@ bootstrap publication, and is not a reservation or a published release.
 
 The isolated `device-test` channel now has a genuine bootstrap and device
 observations; see [the 2026-10-19 device test record](DEVICE_TEST_2026-10-19.md).
-Production `stable` remains unpublished. Gitee Git raw channel/notes publishing
-was exercised on a separate test branch; this does not mean Gitee Release API
-publishing or a GitHub Release asset update was completed.
+Production `stable` is published. Version 1.0.4.3 uses release sequence 57 and
+Android build 54. Gitee and GitHub Git mirrors carry relative channel pointers
+and notes; signed manifests and immutable artifacts are published at the
+configured self-hosted origin. Gitee Git publication does not imply Gitee
+Release API or attachment publication.
 
 `resource_asset_key_ids` is a non-empty allowlist embedded in the client. A
 signed release may select only one of these already-trusted resource encryption

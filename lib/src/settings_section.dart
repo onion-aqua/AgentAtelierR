@@ -71,16 +71,16 @@ extension SettingsSectionDetails on SettingsSection {
       'モデル、推論、コンテキスト、エージェント',
     ),
     SettingsSection.roleplay => language.text(
-      '人物设定、世界书与 NPC',
-      'Persona, world book and NPCs',
-      '人物設定、ワールドブック、NPC',
+      '人物设定、人格倾向、世界书与 NPC',
+      'Persona, personality, world book and NPCs',
+      '人物設定、性格傾向、ワールドブック、NPC',
     ),
     SettingsSection.data => language.text(
       '长期记忆、本地导入导出与聊天记录',
       'Memory, local import, export and chat history',
       '長期記憶、データの読み込み・書き出し、会話履歴',
     ),
-    SettingsSection.about => 'AgentAtelierR · 1.0.4.2',
+    SettingsSection.about => 'AgentAtelierR · 1.0.4.3',
     SettingsSection.pcAgent => language.text(
       '扫码绑定、前台问答、任务与通知',
       'Pairing, questions, tasks and notifications',

@@ -1002,7 +1002,7 @@ class _FieldPin extends StatelessWidget {
                 decoration: BoxDecoration(
                   color: const Color(0xFFD94C12),
                   borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: Colors.white70),
+                  border: Border.all(color: Colors.white70, width: 0),
                 ),
                 child: Text(
                   language.text('当前地', 'Current', '現在地'),
@@ -1042,7 +1042,7 @@ class _FieldPin extends StatelessWidget {
                 decoration: BoxDecoration(
                   color: Colors.black.withValues(alpha: 0.76),
                   borderRadius: BorderRadius.circular(7),
-                  border: Border.all(color: Colors.white24),
+                  border: Border.all(color: Colors.white24, width: 0),
                 ),
                 child: Text(
                   localizedWorldPlaceName(
@@ -1244,7 +1244,7 @@ class _FieldFocusOverlay extends StatelessWidget {
                             borderRadius: BorderRadius.circular(height * 0.34),
                             border: Border.all(
                               color: const Color(0xFFFFD36A),
-                              width: 2.5,
+                              width: 0,
                             ),
                           ),
                         ),
@@ -1274,7 +1274,10 @@ class _FieldFocusOverlay extends StatelessWidget {
                             decoration: BoxDecoration(
                               color: Colors.black.withValues(alpha: 0.58),
                               borderRadius: BorderRadius.circular(16),
-                              border: Border.all(color: Colors.white24),
+                              border: Border.all(
+                                color: Colors.white24,
+                                width: 0,
+                              ),
                             ),
                             child: Text(
                               npcPreviewLabel,
@@ -1344,7 +1347,7 @@ class _StagePin extends StatelessWidget {
                   decoration: BoxDecoration(
                     color: const Color(0xFFD94C12),
                     borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: Colors.white70),
+                    border: Border.all(color: Colors.white70, width: 0),
                   ),
                   child: Text(
                     language.text('当前地', 'Current', '現在地'),
@@ -1384,9 +1387,9 @@ class _StagePin extends StatelessWidget {
                       ? const Color(0xE636241B)
                       : Colors.black.withValues(alpha: 0.78),
                   borderRadius: BorderRadius.circular(7),
-                  border: Border.all(
-                    color: selected ? const Color(0xFFFFC05A) : Colors.white24,
-                  ),
+                  border: selected
+                      ? Border.all(color: const Color(0xFFFFC05A))
+                      : Border.all(color: Colors.white24, width: 0),
                 ),
                 child: Text(
                   localizedWorldPlaceName(

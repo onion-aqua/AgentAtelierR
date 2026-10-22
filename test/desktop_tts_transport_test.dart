@@ -247,7 +247,7 @@ void main() {
     },
   );
 
-  test('real direct send failure moves the existing Fish retry to proxy without internal replay', () async {
+  test('direct send failure is not replayed; next explicit Fish request uses proxy', () async {
     var directPosts = 0;
     var proxyPosts = 0;
     final probes = <String>[];
@@ -267,6 +267,13 @@ void main() {
       }),
     );
     addTearDown(client.close);
+    await expectLater(
+      FishAudioClient(client: client)
+          .synthesizeBytes(apiKey: 'key', referenceId: 'voice', text: 'hello'),
+      throwsA(isA<AiServiceException>()),
+    );
+    expect(directPosts, 1);
+    expect(proxyPosts, 0);
     expect(
       await FishAudioClient(client: client)
           .synthesizeBytes(apiKey: 'key', referenceId: 'voice', text: 'hello'),
@@ -290,39 +297,52 @@ void main() {
     );
   });
 
-  test('synthesis deadline switches existing retries to proxy after HEAD succeeded', () async {
-    final direct = _AbortOnlyClient();
-    var proxyPosts = 0;
-    final probes = <String>[];
-    final client = DesktopTtsClient(
-      directClient: direct,
-      readSettings: () async => settings,
-      probe: (_, proxy) async {
-        probes.add(proxy);
-        return true;
-      },
-      proxyClientFactory: (_) => MockClient((_) async {
-        proxyPosts++;
-        return http.Response.bytes([1, 2, 3], 200);
-      }),
-    );
-    addTearDown(client.close);
-    final fish = FishAudioClient(
-      client: client,
-      requestTimeout: const Duration(milliseconds: 50),
-    );
-    expect(
-      await fish.synthesizeBytes(
-        apiKey: 'key',
-        referenceId: 'voice',
-        text: 'hello',
-      ),
-      [1, 2, 3],
-    );
-    expect(direct.posts, 1);
-    expect(proxyPosts, 1);
-    expect(probes, ['DIRECT', 'PROXY 127.0.0.1:7890']);
-  });
+  test(
+    'synthesis deadline is not replayed; next explicit request probes proxy',
+    () async {
+      final direct = _AbortOnlyClient();
+      var proxyPosts = 0;
+      final probes = <String>[];
+      final client = DesktopTtsClient(
+        directClient: direct,
+        readSettings: () async => settings,
+        probe: (_, proxy) async {
+          probes.add(proxy);
+          return true;
+        },
+        proxyClientFactory: (_) => MockClient((_) async {
+          proxyPosts++;
+          return http.Response.bytes([1, 2, 3], 200);
+        }),
+      );
+      addTearDown(client.close);
+      final fish = FishAudioClient(
+        client: client,
+        requestTimeout: const Duration(milliseconds: 50),
+      );
+      await expectLater(
+        fish.synthesizeBytes(
+          apiKey: 'key',
+          referenceId: 'voice',
+          text: 'hello',
+        ),
+        throwsA(isA<AiServiceException>()),
+      );
+      expect(direct.posts, 1);
+      expect(proxyPosts, 0);
+      expect(
+        await fish.synthesizeBytes(
+          apiKey: 'key',
+          referenceId: 'voice',
+          text: 'hello',
+        ),
+        [1, 2, 3],
+      );
+      expect(direct.posts, 1);
+      expect(proxyPosts, 1);
+      expect(probes, ['DIRECT', 'PROXY 127.0.0.1:7890']);
+    },
+  );
 
   test('plain cancellation keeps the healthy cached direct route', () async {
     final direct = _AbortOnlyClient();

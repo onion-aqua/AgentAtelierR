@@ -127,6 +127,8 @@ class FishCallTtsStream {
   ) {
     _output = StreamController<Uint8List>(
       onListen: () => unawaited(_run()),
+      onPause: () => _resume ??= Completer<void>(),
+      onResume: _releasePause,
       onCancel: cancel,
     );
   }
@@ -145,6 +147,13 @@ class FishCallTtsStream {
   StreamIterator<List<int>>? _audioIterator;
   bool _cancelled = false;
   bool _submitted = false;
+  Completer<void>? _resume;
+
+  void _releasePause() {
+    final pending = _resume;
+    _resume = null;
+    if (pending != null && !pending.isCompleted) pending.complete();
+  }
 
   Stream<Uint8List> get pcm => _output.stream.where((_) => !_cancelled);
   bool get generationSubmitted => _submitted;
@@ -154,6 +163,7 @@ class FishCallTtsStream {
   Future<void> cancel() async {
     if (_cancelled) return;
     _cancelled = true;
+    _releasePause();
     _abortRequest();
     // Explicitly cancel the body subscription as well as closing its transport.
     // This also releases a paused/timed stream supplied by a custom client.
@@ -222,7 +232,10 @@ class FishCallTtsStream {
       int? pendingByte;
       final iterator = StreamIterator(response.stream.timeout(_chunkTimeout));
       _audioIterator = iterator;
-      while (await iterator.moveNext()) {
+      while (!_cancelled) {
+        final resume = _resume;
+        if (resume != null) await resume.future;
+        if (_cancelled || !await iterator.moveNext()) break;
         final bytes = iterator.current;
         if (_cancelled) return;
         if (bytes.isEmpty) continue;
@@ -241,6 +254,7 @@ class FishCallTtsStream {
         pendingByte = joined.length.isOdd ? joined.last : null;
         final aligned = joined.length - (pendingByte == null ? 0 : 1);
         if (aligned > 0) _output.add(Uint8List.sublistView(joined, 0, aligned));
+        await Future<void>.value();
       }
       if (_cancelled) return;
       if (total == 0 || pendingByte != null) {

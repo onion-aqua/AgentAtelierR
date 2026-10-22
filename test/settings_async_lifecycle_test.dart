@@ -11,6 +11,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:ryza_chat_mvp/src/app_controller.dart';
+import 'package:ryza_chat_mvp/src/memory_timeline.dart';
 import 'package:ryza_chat_mvp/src/settings_detail_page.dart';
 import 'package:ryza_chat_mvp/src/settings_screen.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -383,6 +384,156 @@ void main() {
       expect(tester.takeException(), isNull);
     },
   );
+
+  for (final confirm in [false, true]) {
+    testWidgets(
+      'legacy numbering recovery shows notice and ${confirm ? 'saves only after review' : 'cancel keeps originals'}',
+      (tester) async {
+        final controller = await setup(tester, SettingsSection.data);
+        controller.configureAi(
+          enabled: true,
+          baseUrl: 'https://example.test/v1',
+          model: 'test-model',
+        );
+        controller.configureLongTermMemory(
+          enabled: true,
+          summary: jsonEncode({
+            'entries': [
+              {
+                'sequence': 12,
+                'summary': '莱莎原先说塔奥爱读书',
+                'translation': '原来的译文',
+                'source': 'local_ledger',
+              },
+            ],
+          }),
+        );
+        final original = controller.memorySummary;
+        final originalEditRevision = controller.memoryEditRevision;
+        await tapVisible(tester, find.text('长期记忆'));
+        final recovered = Completer<http.Response>();
+        var requests = 0;
+        http.Response completion(Object content) => http.Response(
+          jsonEncode({
+            'choices': [
+              {
+                'message': {'content': jsonEncode(content)},
+              },
+            ],
+          }),
+          200,
+          headers: {'content-type': 'application/json; charset=utf-8'},
+        );
+        final client = MockClient((request) async {
+          requests++;
+          final body = jsonDecode(request.body) as Map;
+          final messages = body['messages'] as List;
+          final prompt = '${(messages.first as Map)['content']}';
+          final input = jsonDecode(messages.last['content'] as String) as Map;
+          if (requests == 1) {
+            expectSync(prompt, contains('重新整理旧版本地事实记录'));
+            expectSync((input['entries'] as List).single['sequence'], 12);
+            return completion({
+              'entries': [
+                {'sequence': 'AM0001', 'summary': '不能直接套用显示编号'},
+              ],
+            });
+          }
+          if (requests == 2) {
+            expectSync(prompt, contains('source_ref'));
+            expectSync(
+              (input['entries'] as List).single['source_ref'],
+              'legacy_1',
+            );
+            return recovered.future;
+          }
+          expectSync(prompt, contains('只翻译提供的记忆文本'));
+          return completion({
+            'recent': [],
+            'entries': [
+              {
+                'sequence': 12,
+                'translation': 'Ryza described Tao as a book lover.',
+              },
+            ],
+          });
+        });
+        addTearDown(client.close);
+        final callback = tester
+            .widget<TextButton>(
+              find.byKey(const ValueKey('memory-organize-now')),
+            )
+            .onPressed!;
+        final action = http.runWithClient(
+          () async => await (callback as dynamic)(),
+          () => client,
+        );
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 350));
+        expect(requests, 2);
+        expect(find.textContaining('检测到旧版记忆编号不兼容'), findsOneWidget);
+        expect(controller.memorySummary, original);
+        expect(controller.memoryEditRevision, originalEditRevision);
+        expect(
+          find.byKey(const ValueKey('manual-memory-confirm')),
+          findsNothing,
+        );
+
+        recovered.complete(
+          completion({
+            'entries': [
+              {
+                'source_ref': 'legacy_1',
+                'summary': '莱莎介绍了塔奥爱读书的特点。',
+                'category': 'other',
+                'importance': 1,
+              },
+            ],
+          }),
+        );
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 350));
+        expect(requests, 3);
+        expect(
+          find.byKey(const ValueKey('memory-legacy-recovery-notice')),
+          findsOneWidget,
+        );
+        expect(find.textContaining('取消会保留原记忆'), findsOneWidget);
+        expect(controller.memorySummary, original);
+        expect(controller.memoryEditRevision, originalEditRevision);
+        if (confirm) {
+          await tester.tap(find.byKey(const ValueKey('manual-memory-confirm')));
+        } else {
+          await tester.tap(find.widgetWithText(TextButton, '取消').last);
+        }
+        await tester.pumpAndSettle();
+        await action;
+        if (confirm) {
+          final entries =
+              MemoryTimeline.decode(controller.memorySummary)!['entries']
+                  as List;
+          expect(entries.single['sequence'], 12);
+          expect(entries.single['summary'], '莱莎介绍了塔奥爱读书的特点。');
+          expect(
+            entries.single['translation'],
+            'Ryza described Tao as a book lover.',
+          );
+          expect(
+            controller.memoryEditRevision,
+            greaterThan(originalEditRevision),
+          );
+        } else {
+          expect(controller.memorySummary, original);
+          expect(controller.memoryEditRevision, originalEditRevision);
+        }
+        expect(controller.recentMemories, isEmpty);
+        expect(controller.lastRecentMemoryMessageId, isNull);
+        expect(tester.takeException(), isNull);
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pumpAndSettle();
+      },
+    );
+  }
 
   for (final edit in ['text', 'enabled', 'unchanged']) {
     testWidgets(

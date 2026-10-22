@@ -11,6 +11,10 @@ import '../character_runtime_profile.dart';
 import '../chat_segments.dart' show klaudiaFishAudioReferenceId;
 import '../dialogue_language_guard.dart';
 import '../platform_capabilities.dart';
+import '../fish_mcp_service.dart';
+import '../runtime_log.dart';
+import '../speech_preparation.dart';
+import 'call_speech_prefetch.dart';
 import 'call_audio.dart';
 import 'call_audio_priority.dart';
 import 'call_records.dart';
@@ -18,20 +22,10 @@ import 'call_reply.dart';
 import 'call_settings.dart';
 import 'call_ui_models.dart';
 import 'fish_call_tts.dart';
+import 'call_mcp_tts.dart';
 import 'local_call_asr.dart';
 
-class CallSpeech {
-  const CallSpeech(this.pcm, this.cancel);
-  final Stream<Uint8List> pcm;
-  final Future<void> Function() cancel;
-}
-
-typedef CallSpeechFactory = CallSpeech Function(
-  String text,
-  String voice,
-  String model,
-  String apiKey,
-);
+export 'call_speech_prefetch.dart' show CallSpeech, CallSpeechFactory;
 
 /// One foreground call, one generation, one active speaker. Network and ASR
 /// results carry epochs so a hangup/save switch cannot resurrect a call.
@@ -44,12 +38,15 @@ class RealtimeCallController extends CallUiController
     CallReplyBackend? replies,
     CallSettingsStore? settingsStore,
     CallSpeechFactory? speechFactory,
+    CallSpeechFactory? mcpSpeechFactory,
+    Future<void> Function(String model)? prepareMcp,
     Future<String> Function()? readFishKey,
     this.canStart,
   }) : asr = asr ?? LocalCallAsr(),
        output = output ?? AndroidCallPcmOutput(),
        replies = replies ?? const DirectCallReplyBackend(),
        settingsStore = settingsStore ?? CallSettingsStore(),
+       _prepareMcp = prepareMcp ?? _prepareMcpConnection,
        _readFishKey = readFishKey ?? const SecretStore().readFishAudioKey {
     _revision = app.dataRevision;
     _character = app.activeCharacterId;
@@ -66,6 +63,22 @@ class RealtimeCallController extends CallUiController
           );
           return CallSpeech(stream.pcm, stream.cancel);
         };
+    _mcpSpeechFactory =
+        mcpSpeechFactory ??
+        (text, voice, model, _) {
+          final stream = FishMcpCallTtsClient().synthesize(
+            text: text,
+            voiceId: voice,
+            model: model,
+            language: switch (app.characterReplyLanguage) {
+              AppLanguage.chinese => 'zh',
+              AppLanguage.english => 'en',
+              AppLanguage.japanese => 'ja',
+            },
+            speed: app.fishAudioSpeed,
+          );
+          return CallSpeech(stream.pcm, stream.cancel);
+        };
     app.addListener(_appChanged);
     _asrEvents = this.asr.events.listen(_asrEvent);
     AndroidCompanionRuntime.instance.addListener(_externalAudioChanged);
@@ -79,6 +92,9 @@ class RealtimeCallController extends CallUiController
   final Future<String> Function() _readFishKey;
   final bool Function()? canStart;
   late final CallSpeechFactory _speechFactory;
+  late final CallSpeechFactory _mcpSpeechFactory;
+  final Future<void> Function(String model) _prepareMcp;
+  TtsProvider? _provider;
   late final StreamSubscription<LocalCallAsrEvent> _asrEvents;
   final playbackLevel = ValueNotifier<double>(0);
   CallUiPhase _phase = CallUiPhase.idle;
@@ -96,6 +112,7 @@ class RealtimeCallController extends CallUiController
   CallRecord? _record;
   Timer? _clock, _ringTimeout;
   CallSpeech? _speech;
+  CallSpeechPrefetch? _speechPrefetch;
   StreamIterator<String>? _llm;
   StreamIterator<Uint8List>? _audio;
   Future<void>? _finishing;
@@ -110,6 +127,16 @@ class RealtimeCallController extends CallUiController
   int _seconds = 0;
   bool get active => snapshot.isActive;
   bool get speaking => _phase == CallUiPhase.speaking;
+
+  static Future<void> _prepareMcpConnection(String model) async {
+    final service = FishMcpService.instance;
+    if (!service.isReady ||
+        service.generationRouteForModel(model) == 'unavailable') {
+      throw const FormatException(
+        '请先在 Fish Audio MCP 设置中完成 OAuth 连接并读取工具。所选模型必须有可用的 Studio MCP 路径；通话不会自动回退 REST。',
+      );
+    }
+  }
 
   Future<T> _serializeResources<T>(Future<T> Function() operation) {
     final result = Completer<T>();
@@ -186,6 +213,15 @@ class RealtimeCallController extends CallUiController
       active &&
       app.dataRevision == _revision;
   void _appChanged() {
+    if (active && _provider != null && app.ttsProvider != _provider) {
+      unawaited(
+        _finish(
+          CallHistoryStatus.cancelled,
+          '语音服务已切换，本次通话已停止。重新拨打将使用新服务，不会沿用旧计费路径。',
+        ),
+      );
+      return;
+    }
     if (_revision != app.dataRevision || _character != app.activeCharacterId) {
       // Keep the old revision until teardown has finished. Saving an old
       // record with a newly selected save's revision would cross save scopes.
@@ -305,10 +341,20 @@ class RealtimeCallController extends CallUiController
     _interim = '';
     _seconds = 0;
     _muted = false;
+    _provider = app.ttsProvider;
     _phase = CallUiPhase.preparing;
     if (!incoming) _newRecord(false);
     _notify();
     try {
+      if (_provider != TtsProvider.fishAudio &&
+          _provider != TtsProvider.fishAudioMcp) {
+        throw const FormatException(
+          '通话当前支持 Fish Audio API 或 Fish Audio MCP，请在声音与语音设置中选择对应服务。不会自动改用 REST。',
+        );
+      }
+      if (app.characterAwaitingWake) {
+        throw const FormatException('莱莎还在睡觉，请先回到聊天页面，点击“叫醒莱莎”再拨打。');
+      }
       if (canStart?.call() == false) {
         throw const FormatException('请先等待主聊天回复完成，并关闭持续 ASMR。');
       }
@@ -325,27 +371,35 @@ class RealtimeCallController extends CallUiController
       final config = await settingsStore.load();
       await config.asr.validateFiles();
       if (session != _sessionEpoch || _closed) return;
-      _model = config.fishModel.trim().isEmpty
-          ? app.fishAudioModel
-          : config.fishModel;
-      _voice = config.voiceOverrides[id]?.trim() ?? '';
-      if (_voice.isEmpty && id.startsWith('primary:')) {
-        _voice = app.fishAudioReferenceId.trim().isNotEmpty
-            ? app.fishAudioReferenceId.trim()
-            : app.fishMcpVoice.trim();
-      }
-      if (_voice.isEmpty && id == 'claudia') {
-        _voice = klaudiaFishAudioReferenceId;
-      }
+      // Ignore legacy call overrides; use the shared provider configuration.
+      _model = _provider == TtsProvider.fishAudioMcp
+          ? app.fishMcpModel
+          : app.fishAudioModel;
+      _voice = id == 'claudia'
+          ? klaudiaFishAudioReferenceId
+          : id.startsWith('primary:')
+          ? (_provider == TtsProvider.fishAudioMcp
+                ? app.fishMcpVoice.trim()
+                : app.fishAudioReferenceId.trim())
+          : '';
       if (_voice.isEmpty) {
-        throw const FormatException('请在电话设置中为这位联系人填写 Fish Audio 音色 ID。');
+        throw const FormatException('请在“声音与语音”的当前服务中填写普通音色 ID。');
       }
-      _fishKey = await _readFishKey();
-      if (_fishKey.trim().isEmpty) {
-        throw const FormatException(
-          '实时通话需要 Fish Audio REST API Key，请在原 TTS 设置中填写。MCP OAuth 不能替代此密钥。',
-        );
+      _fishKey = '';
+      if (_provider == TtsProvider.fishAudioMcp) {
+        await _prepareMcp(_model);
+      } else {
+        _fishKey = await _readFishKey();
+        if (_fishKey.trim().isEmpty) {
+          throw const FormatException(
+            'Fish Audio API 通话需要 REST API Key，请在对应语音设置中填写。',
+          );
+        }
       }
+      RuntimeLog.instance.info(
+        'RealtimeCall',
+        '通话语音服务=${_provider!.label}, model=${_model.isEmpty ? 'service_default' : _model}; 自动回退关闭',
+      );
       if (session != _sessionEpoch || _closed) return;
       CallAudioPriority.instance.value = true;
       _phase = CallUiPhase.dialing;
@@ -537,25 +591,50 @@ class RealtimeCallController extends CallUiController
     _pendingRecordIndex = null;
     var rawLength = 0;
     Object? speechError;
+    final providerKey = _provider!.name;
+    final prefetch = _speechPrefetch = CallSpeechPrefetch(
+      concurrency: SpeechConcurrencyPolicy.limit(providerKey),
+      isCurrent: () => _current(session, turn),
+      onError: (error) {
+        SpeechConcurrencyPolicy.observe(providerKey, error);
+        speechError ??= error;
+        if (_current(session, turn)) unawaited(_llm?.cancel());
+      },
+    );
     Future<void> tail = Future.value();
     void enqueue(String sentence) {
-      tail = tail
-          .then((_) async {
-            if (!_current(session, turn) || speechError != null) return;
-            await _speak(
-              sentence,
-              session,
-              turn,
-              onDrained: () {
-                spoken.write(sentence);
-                _persistPendingRecordProgress();
-              },
-            );
-          })
-          .catchError((Object e) {
-            speechError ??= e;
-            if (_current(session, turn)) unawaited(_llm?.cancel());
-          });
+      final prepared = prefetch.add(
+        () => (_provider == TtsProvider.fishAudioMcp
+            ? _mcpSpeechFactory
+            : _speechFactory)(sentence, _voice, _model, _fishKey),
+      );
+      tail = tail.then((_) async {
+        final speech = await prepared.ready.future;
+        try {
+          if (!_current(session, turn) ||
+              speechError != null ||
+              speech == null) {
+            return;
+          }
+          await _speak(
+            speech,
+            session,
+            turn,
+            onDrained: () {
+              spoken.write(sentence);
+              _persistPendingRecordProgress();
+            },
+          );
+        } catch (error) {
+          // Stop admission before release can start another paid sentence.
+          speechError ??= error;
+          SpeechConcurrencyPolicy.observe(providerKey, error);
+          await prefetch.cancel();
+          if (_current(session, turn)) unawaited(_llm?.cancel());
+        } finally {
+          await prefetch.release(prepared);
+        }
+      });
     }
 
     try {
@@ -630,6 +709,9 @@ class RealtimeCallController extends CallUiController
           await _finish(CallHistoryStatus.failed, _safeError(resumeError));
         }
       }
+    } finally {
+      await prefetch.cancel();
+      if (identical(_speechPrefetch, prefetch)) _speechPrefetch = null;
     }
   }
 
@@ -690,7 +772,7 @@ class RealtimeCallController extends CallUiController
   }
 
   Future<void> _speak(
-    String sentence,
+    CallSpeech speech,
     int session,
     int turn, {
     required VoidCallback onDrained,
@@ -704,7 +786,6 @@ class RealtimeCallController extends CallUiController
       if (!_speaker) await output.setSpeaker(false);
       if (!_current(session, turn)) return;
     }
-    final speech = _speechFactory(sentence, _voice, _model, _fishKey);
     _speech = speech;
     final audio = StreamIterator(speech.pcm);
     _audio = audio;
@@ -798,7 +879,10 @@ class RealtimeCallController extends CallUiController
     _audio = null;
     final speech = _speech;
     _speech = null;
+    final prefetch = _speechPrefetch;
+    _speechPrefetch = null;
     await Future.wait([
+      if (prefetch != null) prefetch.cancel().catchError((Object _) {}),
       if (llm != null) llm.cancel().catchError((Object _) {}),
       if (audio != null) audio.cancel().catchError((Object _) {}),
       if (speech != null) speech.cancel().catchError((Object _) {}),
@@ -986,7 +1070,9 @@ class RealtimeCallController extends CallUiController
     _notify();
   }
 
-  String _safeError(Object e) => e is FishCallTtsException
+  String _safeError(Object e) => e is FishMcpException
+      ? 'Fish Audio MCP：${e.message}（${e.code}）；未回退 API，未自动重试。'
+      : e is FishCallTtsException
       ? e.message
       : e is FormatException
       ? e.message

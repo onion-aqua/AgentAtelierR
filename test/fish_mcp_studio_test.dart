@@ -271,6 +271,64 @@ void main() {
   setUp(() => SharedPreferences.setMockInitialValues({}));
 
   test(
+    'parallel Studio synthesis shares initialization and keeps unique blocks',
+    () async {
+      final paid = <String, Completer<CallToolResult>>{};
+      final bothSubmitted = Completer<void>();
+      final harness = await _Harness.create(
+        client: _StudioClient(
+          intercept: (request) async {
+            if (request.name != 'studio_generate' ||
+                request.arguments['dry_run'] == true) {
+              return null;
+            }
+            final block =
+                (request.arguments['blocks'] as List).single as String;
+            final result = paid[block] = Completer<CallToolResult>();
+            if (paid.length == 2) bothSubmitted.complete();
+            return result.future;
+          },
+        ),
+      );
+      final first = harness.synthesize(text: '最初の文です。');
+      final second = harness.synthesize(text: '次の文です。');
+      await bothSubmitted.future.timeout(const Duration(seconds: 3));
+      final keys = paid.keys.toList();
+      CallToolResult completed(String block) => _data({
+        'status': 'done',
+        'results': [
+          {
+            'anchor': block,
+            'audio_url': 'https://platform.r2.fish.audio/local/$block.mp3',
+          },
+        ],
+      });
+      paid[keys.last]!.complete(completed(keys.last));
+      final secondPath = await second;
+      paid[keys.first]!.complete(completed(keys.first));
+      final firstPath = await first;
+      expect(firstPath, isNot(secondPath));
+      expect(
+        harness.client.requests
+            .where((r) => r.name == 'studio_create_project')
+            .length,
+        1,
+      );
+      expect(
+        harness.client.requests
+            .where((r) => r.name == 'studio_write_blocks')
+            .length,
+        2,
+      );
+      expect(paid.length, 2);
+      expect(harness.downloads.map((r) => r.url.path), [
+        '/local/${keys.last}.mp3',
+        '/local/${keys.first}.mp3',
+      ]);
+    },
+  );
+
+  test(
     'Drama 3 follows confirmed Studio configuration and only its new block',
     () async {
       final harness = await _Harness.create();

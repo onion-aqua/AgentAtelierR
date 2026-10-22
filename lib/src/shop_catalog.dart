@@ -16,6 +16,7 @@ class ShopItem {
     required this.effectJa,
     required this.statChanges,
     this.resetNegativeStats = false,
+    this.isKeepsake = false,
   });
 
   final String id;
@@ -32,6 +33,7 @@ class ShopItem {
   final String effectJa;
   final Map<String, int> statChanges;
   final bool resetNegativeStats;
+  final bool isKeepsake;
 
   String name(AppLanguage language) => language.text(nameZh, nameEn, nameJa);
   String description(AppLanguage language) =>
@@ -41,6 +43,8 @@ class ShopItem {
 }
 
 class ShopCatalog {
+  static const oathRingId = 'oath_ring';
+  static const reconciliationVoucherId = 'reconciliation_voucher';
   static const items = <ShopItem>[
     ShopItem(
       id: 'ryza_gift',
@@ -102,6 +106,23 @@ class ShopCatalog {
       effectEn: 'Mood +100',
       effectJa: '気分 +100',
       statChanges: {'mood': 100},
+    ),
+    ShopItem(
+      id: oathRingId,
+      price: 4999,
+      imageAsset: 'assets/images/shop/oath-ring.png',
+      nameZh: '誓约之戒',
+      nameEn: 'Ring of Vows',
+      nameJa: '誓いの指輪',
+      descriptionZh: '将彼此的约定珍藏在一枚戒指中。购买后放入「珍贵的东西」，不会作为消耗品使用。请好好保管，这是莱莎十分珍视的约定。',
+      descriptionEn: 'A ring holding a promise between you and Ryza. Stored in Precious things after purchase, it is a keepsake rather than a consumable. Please keep this cherished promise safe.',
+      descriptionJa:
+          '二人の約束を込めた指輪。購入後は「大切なもの」に保管され、消費はされません。ライザが大切にしている約束を、どうかなくさないでください。',
+      effectZh: '确认丢失后心情 −500；心情恢复到 −250（含）以上前，无法购买和好券。',
+      effectEn: 'Confirmed loss: Mood −500. Make-Up Vouchers cannot be purchased until mood reaches −250 or higher.',
+      effectJa: '紛失を確定すると気分 −500。気分が −250 以上に回復するまで仲直り券は購入できません。',
+      statChanges: {},
+      isKeepsake: true,
     ),
   ];
 

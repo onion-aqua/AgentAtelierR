@@ -265,7 +265,7 @@ void main() {
       glass.value = true;
       await tester.pump();
       for (final surface in surfaces) {
-        expect(_surfaceFillDecoration(tester, surface).gradient, isNotNull);
+        expect(_surfaceHasGradient(tester, surface), isTrue);
       }
       expect(tester.getRect(surfaces.last), dockBefore);
 

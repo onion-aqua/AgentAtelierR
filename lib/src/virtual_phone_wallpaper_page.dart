@@ -486,6 +486,7 @@ class _VirtualPhoneWallpaperPageState extends State<VirtualPhoneWallpaperPage> {
           side: BorderSide(
             color: Theme.of(context).colorScheme.outlineVariant
                 .withValues(alpha: .6),
+            width: 0,
           ),
         ),
         clipBehavior: Clip.antiAlias,
@@ -518,10 +519,9 @@ class _VirtualPhoneWallpaperPageState extends State<VirtualPhoneWallpaperPage> {
             .withValues(alpha: .8),
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(14),
-          side: BorderSide(
-            color: selected ? const Color(0xFF9ECCFF) : Colors.white24,
-            width: selected ? 3 : 1,
-          ),
+          side: selected
+              ? const BorderSide(color: Color(0xFF9ECCFF), width: 3)
+              : const BorderSide(color: Colors.white24, width: 0),
         ),
         clipBehavior: Clip.antiAlias,
         child: InkWell(

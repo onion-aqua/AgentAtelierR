@@ -515,14 +515,29 @@ void main() {
     await tester.enterText(_draft('claudia'), '玻璃切换时的草稿');
     final state = tester.state(find.byType(NpcMessagesPage));
     final chats = controller.npcChats.toJson();
-    expect(find.byType(BackdropFilter), findsNothing);
+    expect(
+      find.byWidgetPredicate(
+        (widget) => widget is BackdropFilter && widget.enabled,
+      ),
+      findsNothing,
+    );
     glass.value = true;
     await tester.pumpAndSettle();
-    expect(find.byType(BackdropFilter), findsWidgets);
+    expect(
+      find.byWidgetPredicate(
+        (widget) => widget is BackdropFilter && widget.enabled,
+      ),
+      findsWidgets,
+    );
     expect(tester.state(find.byType(NpcMessagesPage)), same(state));
     glass.value = false;
     await tester.pumpAndSettle();
-    expect(find.byType(BackdropFilter), findsNothing);
+    expect(
+      find.byWidgetPredicate(
+        (widget) => widget is BackdropFilter && widget.enabled,
+      ),
+      findsNothing,
+    );
     expect(
       tester.widget<TextField>(_draft('claudia')).controller!.text,
       '玻璃切换时的草稿',

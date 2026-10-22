@@ -1,8 +1,11 @@
 import 'dart:math' as math;
+import 'dart:ui' as ui;
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+
+import 'glass_ui.dart';
 
 /// An app window expands from its launcher icon inside the phone Navigator.
 /// Page contents keep their final layout throughout the transition, so text
@@ -18,6 +21,7 @@ class VirtualPhoneAppRoute extends PageRoute<void> {
     this.originRectResolver,
     this.canHandleBackGesture,
     this.reduceMotion = false,
+    this.desktopBackdrop = false,
   }) : super(allowSnapshotting: false);
 
   final Rect originRect;
@@ -28,10 +32,15 @@ class VirtualPhoneAppRoute extends PageRoute<void> {
   final Rect Function()? originRectResolver;
   final bool Function()? canHandleBackGesture;
   final bool reduceMotion;
+  final bool desktopBackdrop;
   bool _gestureActive = false;
   bool _settlingGesture = false;
   NavigatorState? _gestureNavigator;
   AnimationStatusListener? _settleListener;
+
+  // Shared by the window and phone status bar, including interactive back.
+  static double visualProgress(double progress) =>
+      Curves.easeOutCubic.transform(progress.clamp(0.0, 1.0));
 
   @override
   Duration get transitionDuration =>
@@ -41,6 +50,8 @@ class VirtualPhoneAppRoute extends PageRoute<void> {
       reduceMotion ? Duration.zero : const Duration(milliseconds: 320);
   @override
   bool get maintainState => true;
+  @override
+  bool get opaque => !desktopBackdrop;
   @override
   Color? get barrierColor => null;
   @override
@@ -305,9 +316,7 @@ class _PhoneAppTransitionState extends State<_PhoneAppTransition>
         final route = widget.route;
         final t = route.reduceMotion
             ? 1.0
-            : Curves.easeOutCubic.transform(
-                widget.animation.value.clamp(0.0, 1.0),
-              );
+            : VirtualPhoneAppRoute.visualProgress(widget.animation.value);
         final rect = Rect.lerp(_origin(size), Offset.zero & size, t)!;
         final contentOpacity = const Interval(
           .12,
@@ -316,6 +325,16 @@ class _PhoneAppTransitionState extends State<_PhoneAppTransition>
         ).transform(t);
         final iconOpacity = 1 - const Interval(0, .30).transform(t);
         final enabled = route.canHandleEdgeBackGesture;
+        final glass = GlassStyleScope.resolve(context);
+        final desktopGlass = route.desktopBackdrop && glass;
+        final theme = Theme.of(context);
+        final backingOpacity = !glass
+            ? 1.0
+            : desktopGlass
+            ? theme.brightness == Brightness.dark
+                  ? .76
+                  : .72
+            : .84;
         return Stack(
           clipBehavior: Clip.none,
           children: [
@@ -336,42 +355,58 @@ class _PhoneAppTransitionState extends State<_PhoneAppTransition>
                   ),
                   child: ClipRRect(
                     borderRadius: BorderRadius.circular(16 * (1 - t)),
-                    child: ColoredBox(
-                      color: Color.lerp(route.iconBackground, Colors.black, t)!,
-                      child: Stack(
-                        fit: StackFit.expand,
-                        children: [
-                          IgnorePointer(
-                            ignoring:
-                                !widget.animation.isCompleted ||
-                                route._gestureActive,
-                            child: Opacity(
-                              opacity: contentOpacity,
-                              child: FittedBox(
-                                fit: BoxFit.cover,
-                                alignment: Alignment.topCenter,
-                                child: SizedBox(
-                                  width: size.width,
-                                  height: size.height,
-                                  child: widget.child,
-                                ),
-                              ),
-                            ),
+                    // Blur the desktop before painting app contents, outside
+                    // their animated opacity/save layer. One filter per app.
+                    child: _PhoneAppBackdrop(
+                      desktop: route.desktopBackdrop,
+                      enabled: desktopGlass,
+                      progress: t,
+                      child: ColoredBox(
+                        // Light app text must never land on the icon's dark
+                        // backing. Keep a theme-matched contrast layer while
+                        // letting a little wallpaper through for refraction.
+                        color: Color.lerp(
+                          route.iconBackground,
+                          theme.colorScheme.surface.withValues(
+                            alpha: backingOpacity,
                           ),
-                          if (iconOpacity > 0)
+                          t,
+                        )!,
+                        child: Stack(
+                          fit: StackFit.expand,
+                          children: [
                             IgnorePointer(
-                              child: Center(
-                                child: Opacity(
-                                  opacity: iconOpacity,
-                                  child: Icon(
-                                    route.icon,
-                                    color: route.iconForeground,
-                                    size: 29,
+                              ignoring:
+                                  !widget.animation.isCompleted ||
+                                  route._gestureActive,
+                              child: Opacity(
+                                opacity: contentOpacity,
+                                child: FittedBox(
+                                  fit: BoxFit.cover,
+                                  alignment: Alignment.topCenter,
+                                  child: SizedBox(
+                                    width: size.width,
+                                    height: size.height,
+                                    child: widget.child,
                                   ),
                                 ),
                               ),
                             ),
-                        ],
+                            if (iconOpacity > 0)
+                              IgnorePointer(
+                                child: Center(
+                                  child: Opacity(
+                                    opacity: iconOpacity,
+                                    child: Icon(
+                                      route.icon,
+                                      color: route.iconForeground,
+                                      size: 29,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                          ],
+                        ),
                       ),
                     ),
                   ),
@@ -408,4 +443,34 @@ class _PhoneAppTransitionState extends State<_PhoneAppTransition>
       },
     ),
   );
+}
+
+/// Keep the desktop filter mounted across live glass changes, without adding
+/// an unused filter to other apps or rebuilding their existing forms.
+class _PhoneAppBackdrop extends StatelessWidget {
+  const _PhoneAppBackdrop({
+    required this.desktop,
+    required this.enabled,
+    required this.progress,
+    required this.child,
+  });
+
+  final bool desktop;
+  final bool enabled;
+  final double progress;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) => !desktop
+      ? child
+      : BackdropFilter(
+          key: const ValueKey('virtual-phone-settings-desktop-blur'),
+          enabled: enabled,
+          filter: ui.ImageFilter.blur(
+            sigmaX: 24 * progress,
+            sigmaY: 24 * progress,
+            tileMode: TileMode.clamp,
+          ),
+          child: child,
+        );
 }

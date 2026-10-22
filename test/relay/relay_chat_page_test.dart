@@ -455,7 +455,12 @@ void main() {
       final (service, conversations) = await _create(transport);
       await _mount(tester, service, conversations, glass: glass);
       final state = tester.state(find.byType(RelayChatPage));
-      expect(find.byType(BackdropFilter), findsNothing);
+      expect(
+        find.byWidgetPredicate(
+          (widget) => widget is BackdropFilter && widget.enabled,
+        ),
+        findsNothing,
+      );
       final historyButton = tester.getRect(
         find.byKey(const ValueKey('relay-chat-history')),
       );
@@ -471,7 +476,12 @@ void main() {
       glass.value = true;
       await tester.pumpAndSettle();
       expect(tester.state(find.byType(RelayChatPage)), same(state));
-      expect(find.byType(BackdropFilter), findsNWidgets(2));
+      expect(
+        find.byWidgetPredicate(
+          (widget) => widget is BackdropFilter && widget.enabled,
+        ),
+        findsNWidgets(2),
+      );
       expect(
         tester
             .widget<TextField>(
@@ -519,7 +529,12 @@ void main() {
         transport.calls.where((call) => call['path'] == '/v1/actions'),
         isEmpty,
       );
-      expect(find.byType(BackdropFilter), findsNothing);
+      expect(
+        find.byWidgetPredicate(
+          (widget) => widget is BackdropFilter && widget.enabled,
+        ),
+        findsNothing,
+      );
       expect(tester.takeException(), isNull);
       await _dispose(tester, service, conversations);
     },

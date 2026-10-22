@@ -524,8 +524,15 @@ void main() {
             .map((box) => box.decoration)
             .whereType<BoxDecoration>();
         final fill = fills.firstWhere((decoration) => decoration.color != null);
-        expect(fill.color!.a, inInclusiveRange(.2, .6));
-        expect(fill.gradient, liquidGlass ? isNotNull : isNull);
+        // Clear liquid glass preserves the artwork; the grey fallback remains
+        // denser when the effect is disabled.
+        expect(
+          fill.color!.a,
+          liquidGlass ? inInclusiveRange(.05, .2) : inInclusiveRange(.2, .6),
+        );
+        // Artwork may have its own gradient even with glass disabled. The tint
+        // is independent of both artwork gradients and the glass sheen.
+        expect(fill.gradient, isNull);
       }
     }
   });

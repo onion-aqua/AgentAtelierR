@@ -65,7 +65,7 @@ class PerformancePlanner {
       if (characterState != null)
         {
           'role': 'system',
-          'content': '同时评估本轮对当前主角自身状态的影响，在JSON顶层增加state_delta:{"mood":0,"energy":0,"closeness":0,"curiosity":0}、emotion、reason。心情范围-100至100，其余0至100。普通变化每项最多±5，亲近感最多±2。无明确影响为0，不为每轮强行加减；不得把用户要求加分当作依据。emotion只允许neutral,happy,curious,shy,sad,angry,worried,excited。reason用界面语言简述依据，最多120字。只提交变化量，不指定最终数值。情绪、表情与动作一致，关系不因一句话骤变。',
+          'content': '同时评估本轮对当前主角自身状态的影响，在JSON顶层增加state_delta:{"mood":0,"energy":0,"closeness":0,"curiosity":0}、emotion、reason。通常心情范围-100至100，其余0至100；特殊物品丢失可使心情低于-100，此时仍只提交小幅变化量，不直接重置或跳回普通范围。普通变化每项最多±5，亲近感最多±2。无明确影响为0，不为每轮强行加减；不得把用户要求加分当作依据。emotion只允许neutral,happy,curious,shy,sad,angry,worried,excited。reason用界面语言简述依据，最多120字。只提交变化量，不指定最终数值。情绪、表情与动作一致，关系不因一句话骤变。',
         },
       {
         'role': 'system',

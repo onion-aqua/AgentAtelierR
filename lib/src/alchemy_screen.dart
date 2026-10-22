@@ -133,6 +133,61 @@ class _AlchemyScreenState extends State<AlchemyScreen> {
     );
   }
 
+  Future<void> _loseRing(AppLanguage language) async {
+    final revision = widget.controller.dataRevision;
+    final confirmed = await showDialog<bool>(
+      useRootNavigator: false,
+      context: context,
+      builder: (context) => AlertDialog(
+        scrollable: true,
+        title: Text(
+          language.text(
+            '确认丢失誓约之戒？',
+            'Confirm the ring is lost?',
+            '指輪の紛失を確定しますか？',
+          ),
+        ),
+        content: Text(
+          language.text(
+            '将从「珍贵的东西」中移除 1 枚誓约之戒，莱莎的心情降低 500。心情恢复到 −250（含）以上前，不能购买和好券。此操作不可撤销。',
+            'One Ring of Vows will be removed from Precious things and Ryza’s mood will decrease by 500. Make-Up Vouchers cannot be purchased until mood reaches −250 or higher. This cannot be undone.',
+            '「大切なもの」から指輪を1個失い、ライザの気分が500下がります。−250以上に回復するまで仲直り券は購入できません。この操作は取り消せません。',
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: Text(language.text('取消', 'Cancel', 'キャンセル')),
+          ),
+          FilledButton(
+            key: const ValueKey('confirm-lose-oath-ring'),
+            onPressed: () => Navigator.pop(context, true),
+            child: Text(language.text('确认丢失', 'Confirm loss', '紛失を確定')),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    final lost = widget.controller.loseOathRing(expectedRevision: revision);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          lost
+              ? language.text(
+                  '誓约之戒已丢失，心情 −500',
+                  'Ring lost. Mood −500',
+                  '指輪を失いました。気分 −500',
+                )
+              : language.text(
+                  '存档或库存已变化，请重新查看',
+                  'Save or inventory changed. Please check again.',
+                  'セーブまたは所持品が変更されました。確認してください。',
+                ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final language = widget.controller.interfaceLanguage;
@@ -204,9 +259,18 @@ class _AlchemyScreenState extends State<AlchemyScreen> {
             ),
             subtitle: Text(item.effect(language)),
             trailing: IconButton(
-              tooltip: language.text('使用', 'Use', '使う'),
-              icon: const Icon(Icons.play_circle_outline),
-              onPressed: () => _usePreciousItem(item, language),
+              key: ValueKey('precious-item-action-${item.id}'),
+              tooltip: item.isKeepsake
+                  ? language.text('丢失誓约之戒', 'Lost Ring of Vows', '指輪の紛失')
+                  : language.text('使用', 'Use', '使う'),
+              icon: Icon(
+                item.isKeepsake
+                    ? Icons.remove_circle_outline
+                    : Icons.play_circle_outline,
+              ),
+              onPressed: () => item.isKeepsake
+                  ? _loseRing(language)
+                  : _usePreciousItem(item, language),
             ),
           ),
         const Divider(),
