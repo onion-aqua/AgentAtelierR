@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 
 import 'app_localization.dart';
 import 'glass_ui.dart';
 import 'platform_capabilities.dart';
+import 'phone_desktop_snapshot.dart';
 import 'virtual_phone_app_route.dart';
 import 'virtual_phone_chrome.dart';
 import 'virtual_phone_wallpaper_image.dart';
@@ -335,51 +337,58 @@ class VirtualPhoneLauncher extends StatelessWidget {
   };
 
   Future<void> _open(BuildContext context) async {
-    await showGeneralDialog<void>(
-      context: context,
-      barrierDismissible: true,
-      barrierLabel: MaterialLocalizations.of(context).modalBarrierDismissLabel,
-      barrierColor: Colors.black.withValues(alpha: .72),
-      transitionDuration: const Duration(milliseconds: 220),
-      pageBuilder: (dialogContext, animation, secondaryAnimation) => SafeArea(
-        left: false,
-        right: false,
-        bottom: false,
-        child: SizedBox.expand(
-          child: _VirtualPhoneCard(
-            language: language,
-            liquidGlass: liquidGlass,
-            pages: pages,
-            callbackFor: _callbackFor,
-            homeInfo: homeInfo,
-            fullBleedApps: fullBleedApps,
-            pageManagedBackApps: pageManagedBackApps,
-            updates: updates,
-            homeInfoBuilder: homeInfoBuilder,
-            shortcutLabel: shortcutLabel,
-            shortcutIcon: shortcutIcon,
-            shortcutPicker: shortcutPicker,
-            statusInfo: statusInfo,
-            statusInfoBuilder: statusInfoBuilder,
-            wallpapers: wallpapers,
-            liquidGlassBuilder: liquidGlassBuilder,
-            languageBuilder: languageBuilder,
-            imageGenerationUpdates: imageGenerationUpdates,
-            imageGenerationActiveBuilder: imageGenerationActiveBuilder,
-            imageGenerationUnreadBuilder: imageGenerationUnreadBuilder,
-          ),
-        ),
+    await Navigator.of(context, rootNavigator: true).push<void>(
+      PageRouteBuilder<void>(
+        opaque: true,
+        barrierDismissible: true,
+        barrierLabel: MaterialLocalizations.of(context)
+            .modalBarrierDismissLabel,
+        barrierColor: Colors.black.withValues(alpha: .72),
+        transitionDuration: const Duration(milliseconds: 220),
+        pageBuilder: (dialogContext, animation, secondaryAnimation) =>
+            ColoredBox(
+              color: Colors.black,
+              child: SafeArea(
+                left: false,
+                right: false,
+                bottom: false,
+                child: SizedBox.expand(
+                  child: _VirtualPhoneCard(
+                    language: language,
+                    liquidGlass: liquidGlass,
+                    pages: pages,
+                    callbackFor: _callbackFor,
+                    homeInfo: homeInfo,
+                    fullBleedApps: fullBleedApps,
+                    pageManagedBackApps: pageManagedBackApps,
+                    updates: updates,
+                    homeInfoBuilder: homeInfoBuilder,
+                    shortcutLabel: shortcutLabel,
+                    shortcutIcon: shortcutIcon,
+                    shortcutPicker: shortcutPicker,
+                    statusInfo: statusInfo,
+                    statusInfoBuilder: statusInfoBuilder,
+                    wallpapers: wallpapers,
+                    liquidGlassBuilder: liquidGlassBuilder,
+                    languageBuilder: languageBuilder,
+                    imageGenerationUpdates: imageGenerationUpdates,
+                    imageGenerationActiveBuilder: imageGenerationActiveBuilder,
+                    imageGenerationUnreadBuilder: imageGenerationUnreadBuilder,
+                  ),
+                ),
+              ),
+            ),
+        transitionsBuilder: (context, animation, secondaryAnimation, child) {
+          final curve = animation.drive(CurveTween(curve: Curves.easeOutCubic));
+          return FadeTransition(
+            opacity: curve,
+            child: ScaleTransition(
+              scale: Tween<double>(begin: .94, end: 1).animate(curve),
+              child: child,
+            ),
+          );
+        },
       ),
-      transitionBuilder: (context, animation, secondaryAnimation, child) {
-        final curve = animation.drive(CurveTween(curve: Curves.easeOutCubic));
-        return FadeTransition(
-          opacity: curve,
-          child: ScaleTransition(
-            scale: Tween<double>(begin: .94, end: 1).animate(curve),
-            child: child,
-          ),
-        );
-      },
     );
   }
 
@@ -446,6 +455,7 @@ class _VirtualPhoneCard extends StatefulWidget {
 
 class _VirtualPhoneCardState extends State<_VirtualPhoneCard> {
   final _navigatorKey = GlobalKey<NavigatorState>();
+  final _desktopCaptureKey = GlobalKey();
   final _iconKeys = <VirtualPhoneApp, GlobalKey>{
     for (final app in VirtualPhoneApp.values)
       app: GlobalKey(debugLabel: 'virtual-phone-icon-${app.name}'),
@@ -559,7 +569,28 @@ class _VirtualPhoneCardState extends State<_VirtualPhoneCard> {
       WidgetsBinding.instance.addPostFrameCallback((_) => callback());
       return;
     }
+    if (app == VirtualPhoneApp.settings) {
+      _navOpening = true;
+      // Capture after the current paint (including a pressed launcher icon),
+      // before the settings route covers the desktop.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted || _closing || !navigator.mounted) return;
+        _pushApp(app, navigator, builder);
+      });
+      WidgetsBinding.instance.ensureVisualUpdate();
+      return;
+    }
+    _pushApp(app, navigator, builder);
+  }
+
+  void _pushApp(
+    VirtualPhoneApp app,
+    NavigatorState navigator,
+    VirtualPhonePageBuilder? builder,
+  ) {
     final origin = _iconRect(app);
+    final boundary = _desktopCaptureKey.currentContext?.findRenderObject();
+    final viewport = _navigatorKey.currentContext?.findRenderObject();
     final route = VirtualPhoneAppRoute(
       settings: RouteSettings(name: '/virtual-phone/${app.name}'),
       originRect: origin,
@@ -571,6 +602,12 @@ class _VirtualPhoneCardState extends State<_VirtualPhoneCard> {
       iconForeground: Colors.white,
       reduceMotion: MediaQuery.disableAnimationsOf(context),
       desktopBackdrop: app == VirtualPhoneApp.settings,
+      desktopSnapshot:
+          app == VirtualPhoneApp.settings &&
+              boundary is RenderRepaintBoundary &&
+              viewport is RenderBox
+          ? capturePhoneDesktop(boundary, viewport)
+          : null,
       canHandleBackGesture: () =>
           mounted && (ModalRoute.of(context)?.isCurrent ?? false),
       builder: (context) => _buildAppPage(context, app, builder),
@@ -713,91 +750,83 @@ class _VirtualPhoneCardState extends State<_VirtualPhoneCard> {
                       ),
                       child: VirtualPhoneScope(
                         goHome: _goHome,
-                        child: Stack(
-                          fit: StackFit.expand,
-                          children: [
-                            _buildLiveWallpaper(),
-                            SafeArea(
-                              top: false,
-                              child: Column(
-                                children: [
-                                  _buildLiveStatusBar(),
-                                  Expanded(
-                                    child: LayoutBuilder(
-                                      builder: (context, constraints) => MediaQuery(
-                                        data: MediaQuery.of(
-                                          context,
-                                        ).copyWith(size: constraints.biggest),
-                                        child: ScaffoldMessenger(
-                                          child: Navigator(
-                                            key: _navigatorKey,
-                                            onGenerateRoute: (_) =>
-                                                PageRouteBuilder<void>(
-                                                  settings: const RouteSettings(
-                                                    name: '/virtual-phone',
-                                                  ),
-                                                  transitionDuration:
-                                                      Duration.zero,
-                                                  maintainState: true,
-                                                  pageBuilder: (
-                                                    context,
-                                                    _,
-                                                    _,
-                                                  ) => _buildLiveHome(context),
-                                                  transitionsBuilder:
-                                                      (
-                                                        context,
-                                                        _,
-                                                        secondaryAnimation,
-                                                        child,
-                                                      ) {
-                                                        if (MediaQuery.disableAnimationsOf(
-                                                          context,
-                                                        )) {
-                                                          return child;
-                                                        }
-                                                        final progress =
-                                                            secondaryAnimation.drive(
-                                                              CurveTween(
-                                                                curve: Curves
-                                                                    .easeOutCubic,
-                                                              ),
-                                                            );
-                                                        return FadeTransition(
-                                                          opacity: progress
-                                                              .drive(
-                                                                Tween<double>(
-                                                                  begin: 1,
-                                                                  end: .88,
-                                                                ),
-                                                              ),
-                                                          child:
-                                                              ScaleTransition(
-                                                                scale: progress
-                                                                    .drive(
-                                                                      Tween<
-                                                                        double
-                                                                      >(
-                                                                        begin:
-                                                                            1,
-                                                                        end:
-                                                                            .97,
-                                                                      ),
-                                                                    ),
-                                                                child: child,
-                                                              ),
-                                                        );
-                                                      },
+                        child: RepaintBoundary(
+                          key: _desktopCaptureKey,
+                          child: Stack(
+                            fit: StackFit.expand,
+                            children: [
+                              _buildLiveWallpaper(),
+                              SafeArea(
+                                top: false,
+                                child: Column(
+                                  children: [
+                                    _buildLiveStatusBar(),
+                                    Expanded(
+                                      child: LayoutBuilder(
+                                        builder: (context, constraints) => MediaQuery(
+                                          data: MediaQuery.of(
+                                            context,
+                                          ).copyWith(size: constraints.biggest),
+                                          child: ScaffoldMessenger(
+                                            child: Navigator(
+                                              key: _navigatorKey,
+                                              onGenerateRoute: (_) => PageRouteBuilder<void>(
+                                                settings: const RouteSettings(
+                                                  name: '/virtual-phone',
                                                 ),
+                                                transitionDuration:
+                                                    Duration.zero,
+                                                maintainState: true,
+                                                pageBuilder: (context, _, _) =>
+                                                    _buildLiveHome(context),
+                                                transitionsBuilder:
+                                                    (
+                                                      context,
+                                                      _,
+                                                      secondaryAnimation,
+                                                      child,
+                                                    ) {
+                                                      if (MediaQuery.disableAnimationsOf(
+                                                        context,
+                                                      )) {
+                                                        return child;
+                                                      }
+                                                      final progress =
+                                                          secondaryAnimation.drive(
+                                                            CurveTween(
+                                                              curve: Curves
+                                                                  .easeOutCubic,
+                                                            ),
+                                                          );
+                                                      return FadeTransition(
+                                                        opacity: progress.drive(
+                                                          Tween<double>(
+                                                            begin: 1,
+                                                            end: .88,
+                                                          ),
+                                                        ),
+                                                        child: ScaleTransition(
+                                                          scale: progress.drive(
+                                                            Tween<double>(
+                                                              begin: 1,
+                                                              end: .97,
+                                                            ),
+                                                          ),
+                                                          child: child,
+                                                        ),
+                                                      );
+                                                    },
+                                              ),
+                                            ),
                                           ),
                                         ),
                                       ),
                                     ),
-                                  ),
-                                ],
+                                  ],
+                                ),
                               ),
-                            ),
-                          ],
+                            ],
+                          ),
                         ),
                       ),
                     ),

@@ -134,7 +134,11 @@ void main() {
         harness.store.tasks.single.id,
       );
       await tester.pump(const Duration(milliseconds: 300));
-      expect(find.text(imageMessage.attachments.single.name), findsOneWidget);
+      // Chat history stays mounted while the opaque phone avoids painting it.
+      expect(
+        find.text(imageMessage.attachments.single.name, skipOffstage: false),
+        findsOneWidget,
+      );
       expect(
         find.byWidgetPredicate(
           (widget) =>
@@ -143,6 +147,7 @@ void main() {
                   widget.image is ResizeImage &&
                       (widget.image as ResizeImage).imageProvider
                           is MemoryImage),
+          skipOffstage: false,
         ),
         findsWidgets,
       );
@@ -367,6 +372,7 @@ void main() {
 
 Future<void> _openPhoneHome(WidgetTester tester) async {
   await tester.tap(find.byIcon(Icons.smartphone_rounded));
+  await tester.pump(); // Lay out the opaque phone route before its transition.
   await tester.pump(const Duration(milliseconds: 400));
   expect(
     find.byKey(const ValueKey('virtual-phone-app-imageGeneration')),

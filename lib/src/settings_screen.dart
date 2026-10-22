@@ -416,9 +416,9 @@ class SettingsScreenState extends State<SettingsScreen> {
                   subtitle: Text(
                     controller.liquidGlassChatUi
                         ? language.text(
-                            '透光玻璃、背景折射与触摸流光；不支持折射时使用兼容效果',
-                            'Clear glass, backdrop refraction and touch highlights; compatible effects on other renderers',
-                            '透明ガラス・背景屈折・タッチの光沢。未対応環境では互換効果を使用',
+                            '轻量半透明玻璃与细边高光；设置背景使用缓存模糊',
+                            'Light translucent glass with fine highlights; settings use a cached blurred backdrop',
+                            '軽量な半透明ガラスと細いハイライト。設定背景にはぼかしキャッシュを使用',
                           )
                         : language.text(
                             '保留动态浮层，仅关闭模糊并使用普通半透明材质',

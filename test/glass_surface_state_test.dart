@@ -6,7 +6,7 @@ import 'package:ryza_chat_mvp/src/liquid_glass_optics.dart';
 
 void main() {
   testWidgets(
-    'nested glass samples the backdrop once and touch does not rebuild filters',
+    'lightweight glass has no shader or touch ticker and reuses its filter',
     (tester) async {
       await tester.pumpWidget(
         MaterialApp(
@@ -60,7 +60,8 @@ void main() {
       );
       for (var i = 0; i < 12; i++) {
         await tester.pump(const Duration(milliseconds: 16));
-        // Paint-only animation must retain every BackdropFilter widget and filter.
+        expect(tester.binding.transientCallbackCount, 0);
+        // Touch must not schedule glint frames or reconstruct filter layers.
         final current = tester
             .widgetList<BackdropFilter>(find.byType(BackdropFilter))
             .toList();

@@ -22,6 +22,7 @@ class VirtualPhoneAppRoute extends PageRoute<void> {
     this.canHandleBackGesture,
     this.reduceMotion = false,
     this.desktopBackdrop = false,
+    this.desktopSnapshot,
   }) : super(allowSnapshotting: false);
 
   final Rect originRect;
@@ -33,6 +34,9 @@ class VirtualPhoneAppRoute extends PageRoute<void> {
   final bool Function()? canHandleBackGesture;
   final bool reduceMotion;
   final bool desktopBackdrop;
+
+  /// Owned by this route and released after its closing transition.
+  final ui.Image? desktopSnapshot;
   bool _gestureActive = false;
   bool _settlingGesture = false;
   NavigatorState? _gestureNavigator;
@@ -51,7 +55,7 @@ class VirtualPhoneAppRoute extends PageRoute<void> {
   @override
   bool get maintainState => true;
   @override
-  bool get opaque => !desktopBackdrop;
+  bool get opaque => true;
   @override
   Color? get barrierColor => null;
   @override
@@ -180,6 +184,7 @@ class VirtualPhoneAppRoute extends PageRoute<void> {
   @override
   void dispose() {
     _stopGesture();
+    desktopSnapshot?.dispose();
     super.dispose();
   }
 }
@@ -332,8 +337,8 @@ class _PhoneAppTransitionState extends State<_PhoneAppTransition>
             ? 1.0
             : desktopGlass
             ? theme.brightness == Brightness.dark
-                  ? .76
-                  : .72
+                  ? .58
+                  : .64
             : .84;
         return Stack(
           clipBehavior: Clip.none,
@@ -355,12 +360,12 @@ class _PhoneAppTransitionState extends State<_PhoneAppTransition>
                   ),
                   child: ClipRRect(
                     borderRadius: BorderRadius.circular(16 * (1 - t)),
-                    // Blur the desktop before painting app contents, outside
-                    // their animated opacity/save layer. One filter per app.
+                    // Reuse the preblurred desktop; scrolling never samples
+                    // the live scene or hidden home icon filters.
                     child: _PhoneAppBackdrop(
                       desktop: route.desktopBackdrop,
                       enabled: desktopGlass,
-                      progress: t,
+                      snapshot: route.desktopSnapshot,
                       child: ColoredBox(
                         // Light app text must never land on the icon's dark
                         // backing. Keep a theme-matched contrast layer while
@@ -445,36 +450,48 @@ class _PhoneAppTransitionState extends State<_PhoneAppTransition>
   );
 }
 
-/// Keep the desktop filter mounted across live glass changes, without adding
-/// an unused filter to other apps or rebuilding their existing forms.
+/// Keep the same content element path across live glass changes. The blurred
+/// texture is independent of scrolling, theme tint, and nested settings forms.
 class _PhoneAppBackdrop extends StatelessWidget {
   const _PhoneAppBackdrop({
     required this.desktop,
     required this.enabled,
-    required this.progress,
+    required this.snapshot,
     required this.child,
   });
 
   final bool desktop;
   final bool enabled;
-  final double progress;
+  final ui.Image? snapshot;
   final Widget child;
 
   @override
   Widget build(BuildContext context) => !desktop
       ? child
-      : BackdropFilter(
+      : Stack(
           key: const ValueKey('virtual-phone-settings-desktop-blur'),
-          enabled: enabled,
-          filter: ui.ImageFilter.blur(
-            sigmaX: 24 * progress,
-            sigmaY: 24 * progress,
-            tileMode: TileMode.clamp,
-          ),
-          child: GlassBackdropScope(
-            active: enabled,
-            persistentRouteBackdrop: true,
-            child: child,
-          ),
+          fit: StackFit.expand,
+          children: [
+            Positioned.fill(
+              child: RepaintBoundary(
+                child: ColoredBox(
+                  color: Theme.of(context).colorScheme.surface,
+                  child: RawImage(
+                    key: const ValueKey(
+                      'virtual-phone-settings-desktop-snapshot',
+                    ),
+                    image: enabled ? snapshot : null,
+                    fit: BoxFit.fill,
+                    filterQuality: FilterQuality.low,
+                  ),
+                ),
+              ),
+            ),
+            GlassBackdropScope(
+              active: enabled,
+              persistentRouteBackdrop: true,
+              child: child,
+            ),
+          ],
         );
 }

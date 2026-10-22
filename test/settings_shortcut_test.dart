@@ -225,8 +225,8 @@ void main() {
       expect(find.byKey(const ValueKey('virtual-phone-back')), findsOneWidget);
       expect(
         find.byKey(const ValueKey('virtual-phone-home-clock')),
-        // The desktop remains painted beneath the settings glass.
-        findsOneWidget,
+        // The cached desktop replaces hidden live home rendering.
+        findsNothing,
       );
       expect(
         find.byKey(const ValueKey('virtual-phone-home-clock')).hitTestable(),

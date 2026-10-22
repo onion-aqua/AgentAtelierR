@@ -4,6 +4,40 @@ import 'package:ryza_chat_mvp/src/app_localization.dart';
 import 'package:ryza_chat_mvp/src/virtual_phone.dart';
 
 void main() {
+  testWidgets(
+    'phone stops painting the covered scene and preserves its state',
+    (tester) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: Column(
+              children: [
+                const TextField(),
+                VirtualPhoneLauncher(
+                  language: AppLanguage.chinese,
+                  liquidGlass: true,
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+      await tester.enterText(find.byType(TextField), 'draft');
+      final state = tester.state(find.byType(TextField));
+      await tester.tap(find.byIcon(Icons.smartphone_rounded));
+      await tester.pumpAndSettle();
+      expect(find.byType(TextField), findsNothing);
+      expect(
+        tester.state(find.byType(TextField, skipOffstage: false)),
+        same(state),
+      );
+      await tester.binding.handlePopRoute();
+      await tester.pumpAndSettle();
+      expect(tester.state(find.byType(TextField)), same(state));
+      expect(find.text('draft'), findsOneWidget);
+    },
+  );
+
   testWidgets('status assets stay visible and update inside a phone app', (
     tester,
   ) async {

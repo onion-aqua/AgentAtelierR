@@ -239,22 +239,25 @@ void main() {
   }
 
   testWidgets(
-    'settings blur the retained desktop through nested detail routes',
+    'settings reuse a cached desktop without live filters while scrolling',
     (tester) async {
       final environment = await _mount(tester);
       final desktop = find.byKey(const ValueKey('virtual-phone-home-clock'));
       final blur = find.byKey(_desktopBlurKey);
-      // The home route must paint underneath the translucent settings page.
-      // maintainState alone is insufficient: an opaque route makes it offstage.
-      expect(desktop, findsOneWidget);
+      // The opaque settings route stops painting hidden home glass.
+      expect(desktop, findsNothing);
       expect(blur, findsOneWidget);
-      final filter = tester.widget<BackdropFilter>(blur);
-      expect(filter.enabled, isTrue);
-      expect(
-        filter.filter,
-        ui.ImageFilter.blur(sigmaX: 24, sigmaY: 24, tileMode: TileMode.clamp),
+      final snapshotFinder = find.byKey(
+        const ValueKey('virtual-phone-settings-desktop-snapshot'),
       );
-      final retainedFilter = tester.renderObject<RenderBackdropFilter>(blur);
+      final snapshot = tester.widget<RawImage>(snapshotFinder).image;
+      expect(snapshot, isNotNull);
+      expect(snapshot!.height, lessThanOrEqualTo(640));
+      await tester.drag(find.byType(ListView).first, const Offset(0, -320));
+      await tester.pumpAndSettle();
+      expect(tester.widget<RawImage>(snapshotFinder).image, same(snapshot));
+      await tester.drag(find.byType(ListView).first, const Offset(0, 320));
+      await tester.pumpAndSettle();
       expect(
         tester
             .widgetList<BackdropFilter>(
@@ -270,11 +273,8 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.text('主题'));
       await tester.pumpAndSettle();
-      expect(desktop, findsOneWidget);
-      expect(
-        tester.renderObject<RenderBackdropFilter>(blur),
-        same(retainedFilter),
-      );
+      expect(desktop, findsNothing);
+      expect(tester.widget<RawImage>(snapshotFinder).image, same(snapshot));
       await _expectReadable(tester, 'desktop-blur-detail', ['浅色模式', '暗色模式']);
       final detailGlass = find.byKey(const ValueKey('settings-detail-glass'));
       expect(
@@ -291,19 +291,11 @@ void main() {
       );
       environment.controller.setLiquidGlassChatUi(false);
       await tester.pumpAndSettle();
-      expect(tester.widget<BackdropFilter>(blur).enabled, isFalse);
-      expect(
-        tester.renderObject<RenderBackdropFilter>(blur),
-        same(retainedFilter),
-      );
+      expect(tester.widget<RawImage>(snapshotFinder).image, isNull);
       expect(find.text('浅色模式'), findsOneWidget);
       environment.controller.setLiquidGlassChatUi(true);
       await tester.pumpAndSettle();
-      expect(tester.widget<BackdropFilter>(blur).enabled, isTrue);
-      expect(
-        tester.renderObject<RenderBackdropFilter>(blur),
-        same(retainedFilter),
-      );
+      expect(tester.widget<RawImage>(snapshotFinder).image, same(snapshot));
       await _expectReadable(tester, 'desktop-blur-restored', ['浅色模式', '暗色模式']);
     },
   );

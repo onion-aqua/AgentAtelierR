@@ -182,15 +182,8 @@ class GlassSurface extends StatelessWidget {
               : Colors.white.withValues(alpha: .20),
           width: 0,
         ),
-        boxShadow: liquidGlass
-            ? [
-                BoxShadow(
-                  color: Colors.black.withValues(alpha: darkMode ? .08 : .04),
-                  blurRadius: 14,
-                  offset: const Offset(0, 5),
-                ),
-              ]
-            : null,
+        // Keep scrolling surfaces flat: no per-card shadow blur passes.
+        boxShadow: null,
       ),
       // Colour and gradient in one BoxDecoration multiply their alphas. Draw
       // the sheen separately so the tint keeps its intended contrast.
