@@ -10,32 +10,44 @@ Future<T?> pushSettingsPage<T>({
   required BuildContext context,
   required AppController controller,
   required WidgetBuilder builder,
-}) => Navigator.of(context).push<T>(
-  PageRouteBuilder<T>(
-    opaque: false,
-    settings: const RouteSettings(name: '/settings/detail'),
-    transitionDuration: const Duration(milliseconds: 240),
-    reverseTransitionDuration: const Duration(milliseconds: 180),
-    pageBuilder: (context, animation, secondaryAnimation) => _SettingsPageScope(
-      controller: controller,
-      child: SettingsFormTheme(child: Builder(builder: builder)),
+}) {
+  final persistentBackdrop = GlassBackdropScope.persistsAcrossRoutes(context);
+  return Navigator.of(context).push<T>(
+    PageRouteBuilder<T>(
+      opaque: false,
+      settings: const RouteSettings(name: '/settings/detail'),
+      transitionDuration: const Duration(milliseconds: 240),
+      reverseTransitionDuration: const Duration(milliseconds: 180),
+      pageBuilder: (context, animation, secondaryAnimation) =>
+          _SettingsPageScope(
+            controller: controller,
+            child: AnimatedBuilder(
+              animation: controller,
+              child: SettingsFormTheme(child: Builder(builder: builder)),
+              builder: (context, child) => GlassBackdropScope(
+                active: persistentBackdrop && controller.liquidGlassChatUi,
+                persistentRouteBackdrop: persistentBackdrop,
+                child: child!,
+              ),
+            ),
+          ),
+      transitionsBuilder: (context, animation, secondaryAnimation, child) {
+        if (MediaQuery.disableAnimationsOf(context)) return child;
+        final curve = animation.drive(CurveTween(curve: Curves.easeOutCubic));
+        return FadeTransition(
+          opacity: curve,
+          child: SlideTransition(
+            position: Tween(
+              begin: const Offset(0, .035),
+              end: Offset.zero,
+            ).animate(curve),
+            child: child,
+          ),
+        );
+      },
     ),
-    transitionsBuilder: (context, animation, secondaryAnimation, child) {
-      if (MediaQuery.disableAnimationsOf(context)) return child;
-      final curve = animation.drive(CurveTween(curve: Curves.easeOutCubic));
-      return FadeTransition(
-        opacity: curve,
-        child: SlideTransition(
-          position: Tween(
-            begin: const Offset(0, .035),
-            end: Offset.zero,
-          ).animate(curve),
-          child: child,
-        ),
-      );
-    },
-  ),
-);
+  );
+}
 
 class _SettingsPageScope extends InheritedNotifier<AppController> {
   const _SettingsPageScope({

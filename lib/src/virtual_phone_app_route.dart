@@ -471,6 +471,10 @@ class _PhoneAppBackdrop extends StatelessWidget {
             sigmaY: 24 * progress,
             tileMode: TileMode.clamp,
           ),
-          child: child,
+          child: GlassBackdropScope(
+            active: enabled,
+            persistentRouteBackdrop: true,
+            child: child,
+          ),
         );
 }

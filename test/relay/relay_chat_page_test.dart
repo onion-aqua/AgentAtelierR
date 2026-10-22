@@ -480,7 +480,7 @@ void main() {
         find.byWidgetPredicate(
           (widget) => widget is BackdropFilter && widget.enabled,
         ),
-        findsNWidgets(2),
+        findsOneWidget,
       );
       expect(
         tester

@@ -1,8 +1,89 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ryza_chat_mvp/src/glass_ui.dart';
+import 'package:ryza_chat_mvp/src/liquid_glass_optics.dart';
 
 void main() {
+  testWidgets(
+    'nested glass samples the backdrop once and touch does not rebuild filters',
+    (tester) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: GlassSurface(
+              liquidGlass: true,
+              borderRadius: BorderRadius.zero,
+              child: ListView(
+                children: List.generate(
+                  8,
+                  (i) => GlassSurface(
+                    key: ValueKey('card-$i'),
+                    liquidGlass: true,
+                    child: SizedBox(height: 100, child: Text('Card $i')),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(
+        tester
+            .widgetList<BackdropFilter>(find.byType(BackdropFilter))
+            .where((f) => f.enabled)
+            .length,
+        1,
+      );
+      final fullPage = tester.widget<LiquidGlassOptics>(
+        find.byType(LiquidGlassOptics).first,
+      );
+      expect(fullPage.borderRadius, BorderRadius.zero);
+      expect(
+        tester
+            .widget<BackdropFilter>(find.byType(BackdropFilter).first)
+            .filter
+            .toString(),
+        isNot(contains('shader')),
+      );
+      final filters = tester
+          .widgetList<BackdropFilter>(find.byType(BackdropFilter))
+          .toList();
+      final element = tester.element(find.byType(LiquidGlassOptics).at(1));
+      final filterRender = tester.renderObject<RenderBackdropFilter>(
+        find.byType(BackdropFilter).at(1),
+      );
+      final layerBefore = filterRender.filterConfig;
+      final gesture = await tester.startGesture(
+        tester.getCenter(find.byKey(const ValueKey('card-1'))),
+      );
+      for (var i = 0; i < 12; i++) {
+        await tester.pump(const Duration(milliseconds: 16));
+        // Paint-only animation must retain every BackdropFilter widget and filter.
+        final current = tester
+            .widgetList<BackdropFilter>(find.byType(BackdropFilter))
+            .toList();
+        for (var j = 0; j < filters.length; j++) {
+          expect(current[j], same(filters[j]));
+        }
+        expect(filterRender.filterConfig, same(layerBefore));
+        expect(element.dirty, isFalse);
+      }
+      await gesture.up();
+      await tester.drag(find.byType(ListView), const Offset(0, -230));
+      await tester.pumpAndSettle();
+      expect(
+        tester
+            .widgetList<BackdropFilter>(find.byType(BackdropFilter))
+            .where((f) => f.enabled)
+            .length,
+        1,
+      );
+      expect(tester.takeException(), isNull);
+    },
+  );
+
   testWidgets('live glass toggle preserves draft, selection and focus', (
     tester,
   ) async {

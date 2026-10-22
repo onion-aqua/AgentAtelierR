@@ -4,6 +4,33 @@ import 'liquid_glass_optics.dart';
 
 enum GlassTone { dark, light }
 
+/// A page/route has already sampled its backdrop. Descendant cards only need
+/// their tint and sheen; sampling the same full screen again is expensive.
+class GlassBackdropScope extends InheritedWidget {
+  const GlassBackdropScope({
+    super.key,
+    required this.active,
+    this.persistentRouteBackdrop = false,
+    required super.child,
+  });
+  final bool active;
+  final bool persistentRouteBackdrop;
+  static bool persistsAcrossRoutes(BuildContext context) =>
+      context
+          .dependOnInheritedWidgetOfExactType<GlassBackdropScope>()
+          ?.persistentRouteBackdrop ??
+      false;
+  static bool of(BuildContext context) =>
+      context
+          .dependOnInheritedWidgetOfExactType<GlassBackdropScope>()
+          ?.active ??
+      false;
+  @override
+  bool updateShouldNotify(GlassBackdropScope oldWidget) =>
+      active != oldWidget.active ||
+      persistentRouteBackdrop != oldWidget.persistentRouteBackdrop;
+}
+
 /// Keeps surfaces in open routes and dialogs in sync with the global switch.
 /// Placing the scope above the Navigator avoids capturing a stale preference
 /// when a page is opened or a confirmation dialog is constructed.
@@ -122,6 +149,8 @@ class GlassSurface extends StatelessWidget {
       fallback: this.liquidGlass,
     );
     final accent = Theme.of(context).colorScheme.primary;
+    final inheritedBackdrop = GlassBackdropScope.of(context);
+    final needsBackdrop = backdropBlur && blurSigma > 0 && !inheritedBackdrop;
     final darkMode = tone == null
         ? Theme.of(context).brightness == Brightness.dark
         : tone == GlassTone.dark;
@@ -222,8 +251,14 @@ class GlassSurface extends StatelessWidget {
           borderRadius: borderRadius,
           dark: darkMode,
           blurSigma: blurSigma,
-          filterBackdrop: backdropBlur && blurSigma > 0,
-          child: material,
+          filterBackdrop: needsBackdrop,
+          child: GlassBackdropScope(
+            active: inheritedBackdrop || (liquidGlass && needsBackdrop),
+            persistentRouteBackdrop: GlassBackdropScope.persistsAcrossRoutes(
+              context,
+            ),
+            child: material,
+          ),
         ),
       ),
     );

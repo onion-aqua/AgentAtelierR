@@ -188,7 +188,7 @@ void main() {
         expect(
           requested,
           Uri.parse(
-            'https://github.com/onion-aqua/AgentAtelierR/releases/latest',
+            'https://github.com/onion-aqua/AgentAtelierR/releases/tag/v1.0.4.2',
           ),
         );
         final copyableUrl = find.byWidgetPredicate(

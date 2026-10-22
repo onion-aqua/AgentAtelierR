@@ -255,6 +255,15 @@ void main() {
         ui.ImageFilter.blur(sigmaX: 24, sigmaY: 24, tileMode: TileMode.clamp),
       );
       final retainedFilter = tester.renderObject<RenderBackdropFilter>(blur);
+      expect(
+        tester
+            .widgetList<BackdropFilter>(
+              find.descendant(of: blur, matching: find.byType(BackdropFilter)),
+            )
+            .where((filter) => filter.enabled),
+        isEmpty,
+        reason: 'Settings must reuse the route blur instead of nesting a full-screen shader or card filters',
+      );
       await tester.tap(
         find.byKey(const ValueKey('settings-category-appearance')),
       );
@@ -267,6 +276,19 @@ void main() {
         same(retainedFilter),
       );
       await _expectReadable(tester, 'desktop-blur-detail', ['浅色模式', '暗色模式']);
+      final detailGlass = find.byKey(const ValueKey('settings-detail-glass'));
+      expect(
+        tester
+            .widgetList<BackdropFilter>(
+              find.descendant(
+                of: detailGlass,
+                matching: find.byType(BackdropFilter),
+              ),
+            )
+            .where((filter) => filter.enabled),
+        isEmpty,
+        reason: 'A pushed detail page reuses the persistent phone route blur',
+      );
       environment.controller.setLiquidGlassChatUi(false);
       await tester.pumpAndSettle();
       expect(tester.widget<BackdropFilter>(blur).enabled, isFalse);
