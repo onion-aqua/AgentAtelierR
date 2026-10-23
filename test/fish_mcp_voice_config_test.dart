@@ -83,24 +83,34 @@ void main() {
     },
   );
 
-  test(
-    'blank ASMR configuration falls back to ordinary voice or cloud default',
-    () async {
-      final controller = await load();
-      controller.configureFishMcp(
-        model: '',
-        voice: 'ordinary-voice',
-        asmrVoice: '  ',
-        autoFallback: false,
-      );
-      controller.setTtsVoiceMode(TtsVoiceMode.asmr);
-      expect(controller.activeFishMcpVoice, 'ordinary-voice');
-      expect(controller.fishMcpVoiceForMode(asmr: true), 'ordinary-voice');
-      expect(controller.hasVoiceForMode(TtsVoiceMode.asmr), isTrue);
-      controller.configureFishMcp(model: '', voice: '', autoFallback: false);
-      expect(controller.activeFishMcpVoice, isEmpty);
-    },
-  );
+  test('blank Ryza voice configurations resolve the built-in ordinary and ASMR voices', () async {
+    final controller = await load();
+    controller.configureFishMcp(
+      model: '',
+      voice: 'ordinary-voice',
+      asmrVoice: '  ',
+      autoFallback: false,
+    );
+    controller.setTtsVoiceMode(TtsVoiceMode.asmr);
+    expect(
+      controller.activeFishMcpVoice,
+      AppController.defaultFishAudioAsmrReferenceId,
+    );
+    expect(
+      controller.fishMcpVoiceForMode(asmr: true),
+      AppController.defaultFishAudioAsmrReferenceId,
+    );
+    expect(controller.hasVoiceForMode(TtsVoiceMode.asmr), isTrue);
+    controller.configureFishMcp(model: '', voice: '', autoFallback: false);
+    expect(
+      controller.activeFishMcpVoice,
+      AppController.defaultFishAudioAsmrReferenceId,
+    );
+    expect(
+      controller.fishMcpVoiceForMode(asmr: false),
+      AppController.defaultFishAudioReferenceId,
+    );
+  });
 
   test('omitting ASMR on an ordinary update preserves it; explicit blank clears it', () async {
     final controller = await load();
@@ -124,7 +134,10 @@ void main() {
       autoFallback: false,
     );
     expect(controller.fishMcpAsmrVoice, isEmpty);
-    expect(controller.fishMcpVoiceForMode(asmr: true), 'new-ordinary');
+    expect(
+      controller.fishMcpVoiceForMode(asmr: true),
+      AppController.defaultFishAudioAsmrReferenceId,
+    );
   });
 
   test('separate voices and mode survive controller restart', () async {
@@ -147,7 +160,7 @@ void main() {
   });
 
   test(
-    'legacy preferences retain ordinary voice as the ASMR fallback',
+    'legacy preferences retire the old voice and resolve built-in ASMR',
     () async {
       SharedPreferences.setMockInitialValues({
         'tts_provider': 'fishAudioMcp',
@@ -156,7 +169,11 @@ void main() {
       });
       final controller = await load();
       expect(controller.fishMcpAsmrVoice, isEmpty);
-      expect(controller.activeFishMcpVoice, 'legacy-voice');
+      expect(controller.fishMcpVoice, isEmpty);
+      expect(
+        controller.activeFishMcpVoice,
+        AppController.defaultFishAudioAsmrReferenceId,
+      );
     },
   );
 

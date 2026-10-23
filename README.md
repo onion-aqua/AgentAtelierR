@@ -8,7 +8,7 @@ AgentAtelierR 是以 Android 为主要开发平台的 Flutter AI 角色互动项
 
 ## 当前版本与适用范围
 
-当前源码版本为 **AgentAtelierR 1.0.4.3**，展示版本 `1.0.4.3`，内部 Flutter 构建号 `1.0.4+55`。本次 Android stable 发布使用序号 59，更新人格倾向、TTS 并行准备、通话、设置与玻璃效果、旧记忆兼容及冷启动唤醒；使用方法见 [1.0.4.3 更新内容](docs/CHANGELOG_1.0.4.3.md)。Android 程序更新需按系统提示确认安装，覆盖安装保留原用户目录中的存档和聊天记录。Windows 最新完整包仍为 [1.0.4.2](docs/CHANGELOG_1.0.4.2_WINDOWS.md)，本次仅发布 Android 包。以下功能以当前源码为准；具体效果受设备、模型和服务能力影响。
+当前源码版本为 **AgentAtelierR 1.0.4.4**，展示版本 `1.0.4.4`，内部 Flutter 构建号 `1.0.4+58`。本次 Android stable 发布使用序号 61，更新主界面语音通话入口、内置音色、ASMR 模型适配和 Fish Audio MCP 自动连接；使用方法见 [1.0.4.4 更新内容](docs/CHANGELOG_1.0.4.4.md)。Android 程序更新需按系统提示确认安装，覆盖安装保留原用户目录中的存档和聊天记录。Windows 最新完整包仍为 [1.0.4.2](docs/CHANGELOG_1.0.4.2_WINDOWS.md)，本次仅发布 Android 包。以下功能以当前源码为准；具体效果受设备、模型和服务能力影响。
 
 > 正式版提供使用加密构建脚本生成的 **release APK**，启用 Dart 混淆。当前仍沿用 Android 调试签名以兼容已有安装，并非商店正式签名包。旧版 debug 测试包的卡顿与不稳定表现不能代表 release 包。
 

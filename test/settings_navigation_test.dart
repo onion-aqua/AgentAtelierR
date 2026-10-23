@@ -122,6 +122,11 @@ void main() {
           controller.setShowMicrophoneButton(true);
           controller.setUnlockInputWhileReplying(true);
           await tester.pump();
+          await tester.scrollUntilVisible(
+            find.widgetWithText(SwitchListTile, '显示麦克风按钮'),
+            140,
+            scrollable: find.byType(Scrollable).first,
+          );
           expect(
             tester
                 .widget<SwitchListTile>(
@@ -129,6 +134,11 @@ void main() {
                 )
                 .value,
             isTrue,
+          );
+          await tester.scrollUntilVisible(
+            find.widgetWithText(SwitchListTile, '回复时解锁输入框'),
+            140,
+            scrollable: find.byType(Scrollable).first,
           );
           expect(
             tester

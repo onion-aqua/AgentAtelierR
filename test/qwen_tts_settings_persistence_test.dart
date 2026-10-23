@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ryza_chat_mvp/src/app_controller.dart';
 import 'package:ryza_chat_mvp/src/qwen_tts_config.dart';
+import 'package:ryza_chat_mvp/src/tts_voice_settings_migration.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
@@ -50,49 +51,68 @@ void main() {
     restored.dispose();
   });
 
+  test('legacy preferences clear voice overrides while keeping model and default options', () async {
+    SharedPreferences.setMockInitialValues({
+      'dashscope_tts_model': 'qwen3-tts-flash',
+      'dashscope_tts_voice': 'previous-normal',
+      'dashscope_tts_asmr_voice': 'previous-asmr',
+      'dashscope_tts_base_url': 'https://configured.example/generation',
+    });
+    final controller = await AppController.load();
+
+    expect(
+      controller.dashScopeTtsOptions.toJson(),
+      const QwenTtsOptions().toJson(),
+    );
+    expect(controller.dashScopeTtsModel, 'qwen3-tts-flash');
+    expect(controller.dashScopeTtsVoice, 'Cherry');
+    expect(controller.dashScopeTtsAsmrVoice, isEmpty);
+    expect(
+      controller.dashScopeTtsBaseUrl,
+      'https://configured.example/generation',
+    );
+
+    controller.dispose();
+  });
+
   test(
-    'older preferences keep configured model and voices with default options',
+    'current voice revision keeps new Qwen voices and configured options',
     () async {
       SharedPreferences.setMockInitialValues({
-        'dashscope_tts_model': 'qwen3-tts-flash',
-        'dashscope_tts_voice': 'previous-normal',
-        'dashscope_tts_asmr_voice': 'previous-asmr',
-        'dashscope_tts_base_url': 'https://configured.example/generation',
+        TtsVoiceSettingsMigration.preferenceKey:
+            TtsVoiceSettingsMigration.revision,
+        'dashscope_tts_model': 'qwen-audio-3.1-tts-flash',
+        'dashscope_tts_voice': 'new-normal',
+        'dashscope_tts_asmr_voice': 'new-asmr',
+        'dashscope_tts_options': jsonEncode(options.toJson()),
       });
       final controller = await AppController.load();
+      addTearDown(controller.dispose);
 
-      expect(
-        controller.dashScopeTtsOptions.toJson(),
-        const QwenTtsOptions().toJson(),
-      );
-      expect(controller.dashScopeTtsModel, 'qwen3-tts-flash');
-      expect(controller.dashScopeTtsVoice, 'previous-normal');
-      expect(controller.dashScopeTtsAsmrVoice, 'previous-asmr');
-      expect(
-        controller.dashScopeTtsBaseUrl,
-        'https://configured.example/generation',
-      );
-
-      controller.dispose();
+      expect(controller.dashScopeTtsModel, 'qwen-audio-3.1-tts-flash');
+      expect(controller.dashScopeTtsVoice, 'new-normal');
+      expect(controller.dashScopeTtsAsmrVoice, 'new-asmr');
+      expect(controller.dashScopeTtsOptions.toJson(), options.toJson());
     },
   );
 
-  test(
-    'older backups and other provider settings preserve Qwen options',
-    () async {
-      final controller = await AppController.load();
-      _configureQwen(controller, options: options);
-      _configureQwen(controller);
-      expect(controller.dashScopeTtsOptions.toJson(), options.toJson());
+  test('legacy backups clear old voices while preserving model and existing Qwen options', () async {
+    final controller = await AppController.load();
+    _configureQwen(controller, options: options);
+    _configureQwen(controller);
+    expect(controller.dashScopeTtsOptions.toJson(), options.toJson());
 
-      final oldBackup = controller.exportData();
-      (oldBackup['preferences'] as Map).remove('dashscope_tts_options');
-      await controller.importData(oldBackup);
-      expect(controller.dashScopeTtsOptions.toJson(), options.toJson());
+    final oldBackup = controller.exportData();
+    oldBackup.remove(TtsVoiceSettingsMigration.backupKey);
+    (oldBackup['preferences'] as Map).remove('dashscope_tts_options');
+    await controller.importData(oldBackup);
+    expect(controller.dashScopeTtsOptions.toJson(), options.toJson());
+    expect(controller.dashScopeTtsModel, 'qwen3-tts-instruct-flash');
+    expect(controller.dashScopeTtsVoice, 'Cherry');
+    expect(controller.dashScopeTtsAsmrVoice, isEmpty);
 
-      controller.dispose();
-    },
-  );
+    controller.dispose();
+  });
 
   test('malformed saved Qwen option JSON restores defaults', () async {
     SharedPreferences.setMockInitialValues({

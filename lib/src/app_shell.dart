@@ -10,6 +10,8 @@ import 'app_localization.dart';
 import 'alarm_screen.dart';
 import 'alchemy_screen.dart';
 import 'chat_screen.dart';
+import 'fish_mcp_restore_coordinator.dart';
+import 'fish_mcp_service.dart';
 import 'frame_rate_controller.dart';
 import 'foreground_dialog_coordinator.dart';
 import 'glass_ui.dart';
@@ -90,6 +92,7 @@ class _AppShellState extends State<AppShell>
     with WidgetsBindingObserver, TickerProviderStateMixin {
   late final RelayService _relay;
   late final ForegroundDialogCoordinator _dialogCoordinator;
+  FishMcpRestoreCoordinator? _fishMcpRestore;
   UpdateRuntime? _updates;
   bool _ownsUpdates = false;
   bool _startupUpdateCheckScheduled = false;
@@ -132,6 +135,7 @@ class _AppShellState extends State<AppShell>
       duration: const Duration(milliseconds: 280),
     );
     WidgetsBinding.instance.addObserver(this);
+    _initializeFishMcpRestore();
     _companionStopped = _companionRuntime.stopRequested;
     _companionRuntime.addListener(_handleCompanionRuntimeChange);
     _relay = widget.relayService ?? RelayService.production();
@@ -154,9 +158,33 @@ class _AppShellState extends State<AppShell>
   @override
   void didUpdateWidget(AppShell oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (oldWidget.controller != widget.controller) {
+      _fishMcpRestore?.dispose();
+      _initializeFishMcpRestore();
+    }
     if (!oldWidget.startupUpdateCheckReady && widget.startupUpdateCheckReady) {
       _maybeScheduleStartupUpdateCheck();
     }
+  }
+
+  void _initializeFishMcpRestore() {
+    final controller = widget.controller;
+    final coordinator = FishMcpRestoreCoordinator(
+      settings: controller,
+      isEligible: () =>
+          controller.fishTtsEnabled &&
+          controller.ttsProvider == TtsProvider.fishAudioMcp,
+      restoreConnection: () => FishMcpService.instance.restoreConnection(),
+      initiallyForeground:
+          WidgetsBinding.instance.lifecycleState == null ||
+          WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed,
+      onError: (_, _) =>
+          RuntimeLog.instance.warning('Fish MCP', '已有授权自动恢复未完成，可在语音设置重新连接'),
+    );
+    _fishMcpRestore = coordinator;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!_disposed && _fishMcpRestore == coordinator) coordinator.start();
+    });
   }
 
   Future<void> _initializeUpdates() async {
@@ -185,6 +213,7 @@ class _AppShellState extends State<AppShell>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    _fishMcpRestore?.setForeground(state == AppLifecycleState.resumed);
     unawaited(_relay.setForeground(state == AppLifecycleState.resumed));
     if (state != AppLifecycleState.resumed) {
       _activePointers.clear();
@@ -218,6 +247,7 @@ class _AppShellState extends State<AppShell>
   @override
   void dispose() {
     _disposed = true;
+    _fishMcpRestore?.dispose();
     _companionRuntime.removeListener(_handleCompanionRuntimeChange);
     WidgetsBinding.instance.removeObserver(this);
     if (widget.relayService == null) _relay.dispose();

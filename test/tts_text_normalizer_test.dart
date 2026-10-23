@@ -37,7 +37,7 @@ void main() {
     );
   });
 
-  test('ASMR retains one clear whisper and bounded pauses', () {
+  test('ASMR keeps one whisper baseline and never promotes breathing', () {
     final text = normalizeFishAudioSynthesisText(
       '[very breathy voice][unvoiced whispering]おやすみ。[long pause][inhale]明日も会おう。[whispering][pause]',
       asmr: true,

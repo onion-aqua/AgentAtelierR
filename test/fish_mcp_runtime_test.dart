@@ -6,12 +6,18 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:mcp_dart/mcp_dart.dart';
+import 'package:ryza_chat_mvp/src/app_controller.dart';
+import 'package:ryza_chat_mvp/src/chat_segments.dart';
+import 'package:ryza_chat_mvp/src/fish_drama3_tags.dart';
 import 'package:ryza_chat_mvp/src/fish_mcp_service.dart';
+import 'package:ryza_chat_mvp/src/tts_text_normalizer.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 // These tests exercise the complete local service path. The ID3 bytes only
 // identify an MP3 container; playback and provider generation are not invoked.
 const _mp3 = <int>[0x49, 0x44, 0x33, 4, 0, 0, 0, 0, 0, 0];
+const _s2WhisperCue =
+    '[whispering intimately into the microphone, hushed and clearly articulated throughout]';
 
 Tool _tool({
   String name = 'text_to_speech',
@@ -36,7 +42,7 @@ CallToolResult _inlineResult() => CallToolResult(
 );
 
 // This fixture deliberately uses the public text_to_speech schema without a
-// model field, so an explicit Drama 3 selection must use the real Studio path.
+// model field, so an explicit model selection must use the real Studio path.
 _FakeMcpClient _studioTagClient() {
   Tool studioTool(String name, Map<String, dynamic> properties) => Tool(
     name: name,
@@ -262,6 +268,149 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   SharedPreferences.setMockInitialValues({});
 
+  test('ASMR emotion off reaches ordinary MCP with a whole-script whisper and the new built-in voice', () async {
+    const original =
+        '今日はここでゆっくり休もう。窓の外には静かな夜が広がっているよ。'
+        '明日もまた会えるから、今は何も急がなくて大丈夫。'
+        '目を閉じたまま、今日あった楽しいことをひとつだけ思い出してみて。'
+        '最後の言葉まで近くで話しているから、安心して聞いていてね。';
+    final harness = await _Harness.create(
+      client: _FakeMcpClient(
+        pages: {
+          null: ListToolsResult(
+            tools: [
+              _tool(
+                properties: {
+                  'voice_id': {'type': 'string'},
+                },
+              ),
+            ],
+          ),
+        },
+      ),
+    );
+    await harness.service.discoverTools();
+    final prepared = normalizeFishAudioSynthesisText(
+      applyFishEmotionIntensityPerSentence(
+        original,
+        TtsEmotionIntensity.off,
+        asmr: true,
+      ),
+      asmr: true,
+    );
+    await harness.service.synthesize(
+      text: prepared,
+      voice: AppController.resolveFishAudioAsmrReferenceId(''),
+    );
+    expect(harness.client.requests, hasLength(1));
+    final request = harness.client.requests.single;
+    expect(request.name, 'text_to_speech');
+    expect(request.arguments['voice_id'], '1380fd182e0f44639df49e1ae8feeed8');
+    final text = request.arguments['text'] as String;
+    expect(text, prepared);
+    expect(text, startsWith('[whispering]'));
+    expect(RegExp(r'\[whispering\]').allMatches(text), hasLength(1));
+    expect(
+      text,
+      isNot(
+        matches(RegExp(r'soft|panting|gasping|breath|\[relaxed\]|\[happy\]')),
+      ),
+    );
+    expect(text.replaceAll(RegExp(r'\[[^\[\]\r\n]+\]|\s+'), ''), original);
+  });
+
+  for (final legacyLocalControls in [false, true]) {
+    test(
+      'ASMR Drama 3 ${legacyLocalControls ? 'replaces old local soft controls' : 'uses a stable full-script whisper'} in its single Studio generation',
+      () async {
+        const original =
+            '今日はここでゆっくり休もう。秘密だよ。'
+            '目を閉じたまま、今日あった楽しいことをひとつだけ思い出してみて。'
+            '明日もまた会えるから、今は何も急がなくて大丈夫。'
+            '最後の言葉まで近くで話しているから、安心して聞いていてね。';
+        final source = legacyLocalControls
+            ? '[soft]今日はここでゆっくり休もう。[whisper]秘密だよ。'
+                  '[soft]目を閉じたまま、今日あった楽しいことをひとつだけ思い出してみて。'
+                  '明日もまた会えるから、今は何も急がなくて大丈夫。'
+                  '最後の言葉まで近くで話しているから、安心して聞いていてね。'
+            : original;
+        final harness = await _Harness.create(
+          client: _studioTagClient(),
+          onDownload: (_) => http.Response.bytes(
+            _mp3,
+            200,
+            headers: {'content-type': 'audio/mpeg'},
+          ),
+        );
+        await harness.service.discoverTools();
+        final prepared = normalizeFishAudioSynthesisText(
+          applyFishEmotionIntensityPerSentence(
+            source,
+            TtsEmotionIntensity.off,
+            asmr: true,
+            drama3: true,
+          ),
+          asmr: true,
+        );
+        await harness.service.synthesize(
+          text: prepared,
+          voice: AppController.resolveFishAudioAsmrReferenceId(''),
+          model: 'drama-3',
+        );
+        final writes = harness.client.requests.where(
+          (request) => request.name == 'studio_write_blocks',
+        );
+        expect(writes, hasLength(1));
+        final block = (writes.single.arguments['ops'] as List).single as Map;
+        expect(block['voice'], '1380fd182e0f44639df49e1ae8feeed8');
+        final text = block['text'] as String;
+        expect(text, startsWith('<whisper>'));
+        expect(text, endsWith('</whisper>'));
+        expect(RegExp(r'<whisper>').allMatches(text), hasLength(1));
+        expect(RegExp(r'</whisper>').allMatches(text), hasLength(1));
+        expect(
+          text,
+          isNot(
+            matches(
+              RegExp(r'soft|panting|gasping|breath|\[relaxed\]|\[happy\]'),
+            ),
+          ),
+        );
+        expect(
+          stripFishDrama3Tags(text)
+              .replaceAll(RegExp(r'\[[^\[\]\r\n]+\]|\s+'), ''),
+          original,
+        );
+        expect(compileFishDrama3Text(text), text);
+        expect(
+          text
+              .substring('<whisper>'.length, text.length - '</whisper>'.length)
+              .replaceAll(RegExp(r'\s+'), ''),
+          original,
+        );
+        final creations = harness.client.requests.where(
+          (request) => request.name == 'studio_create_project',
+        );
+        expect(
+          creations.single.arguments['default_voice_id'],
+          '1380fd182e0f44639df49e1ae8feeed8',
+        );
+        final generations = harness.client.requests.where(
+          (request) => request.name == 'studio_generate',
+        );
+        expect(
+          generations.where((request) => request.arguments['dry_run'] == true),
+          hasLength(1),
+        );
+        expect(
+          generations.where((request) => request.arguments['dry_run'] != true),
+          hasLength(1),
+        );
+        expect(harness.downloads, hasLength(1));
+      },
+    );
+  }
+
   test(
     'MCP normalizes breathing tags before sending its single generation',
     () async {
@@ -340,10 +489,10 @@ void main() {
     },
   );
 
-  test('default and S2.1 Pro keep their original bracket cues', () async {
+  test('default and unknown models keep their original bracket cues', () async {
     final harness = await _Harness.create();
     await harness.service.discoverTools();
-    for (final model in <String?>[null, 's2.1-pro']) {
+    for (final model in <String?>[null, 'unknown-model']) {
       await harness.service.synthesize(
         text: '[happy][whispering]こんにちは。[emphasis]大切です。',
         model: model,
@@ -362,6 +511,124 @@ void main() {
     );
     expect(harness.downloads, isEmpty);
   });
+
+  for (final model in ['s2-pro', 's2.1-pro', 's2.1-pro-free']) {
+    test(
+      'S2 Studio $model preserves the backend and descriptive whisper in one generation',
+      () async {
+        const original = '今日はここでゆっくり休もう。最後まで近くで話しているよ。';
+        final harness = await _Harness.create(
+          client: _studioTagClient(),
+          onDownload: (_) => http.Response.bytes(
+            _mp3,
+            200,
+            headers: {'content-type': 'audio/mpeg'},
+          ),
+        );
+        await harness.service.discoverTools();
+        final prepared = normalizeFishAudioSynthesisText(
+          applyFishEmotionIntensityPerSentence(
+            original,
+            TtsEmotionIntensity.off,
+            asmr: true,
+          ),
+          asmr: true,
+        );
+        final path = await harness.service.synthesize(
+          text: prepared,
+          voice: AppController.resolveFishAudioAsmrReferenceId(
+            '',
+            model: model,
+          ),
+          model: model,
+        );
+        expect(path, endsWith('.mp3'));
+        final backendUpdates = harness.client.requests.where(
+          (request) =>
+              request.name == 'studio_update_project' &&
+              request.arguments.containsKey('default_backend'),
+        );
+        expect(backendUpdates, hasLength(1));
+        expect(backendUpdates.single.arguments['default_backend'], model);
+        final creations = harness.client.requests.where(
+          (request) => request.name == 'studio_create_project',
+        );
+        expect(creations, hasLength(1));
+        expect(
+          creations.single.arguments['default_voice_id'],
+          'c5de0b3f9ac54e08b21fb63120e4ebdb',
+        );
+        final writes = harness.client.requests.where(
+          (request) => request.name == 'studio_write_blocks',
+        );
+        expect(writes, hasLength(1));
+        final block = (writes.single.arguments['ops'] as List).single as Map;
+        expect(block['voice'], 'c5de0b3f9ac54e08b21fb63120e4ebdb');
+        final text = block['text'] as String;
+        expect(text, '$_s2WhisperCue今日はここでゆっくり休もう。 最後まで近くで話しているよ。');
+        expect(text, isNot(contains('[whispering]')));
+        expect(text, isNot(contains('<whisper>')));
+        expect(text.replaceAll(RegExp(r'\[[^\[\]\r\n]+\]|\s+'), ''), original);
+        final generations = harness.client.requests.where(
+          (request) => request.name == 'studio_generate',
+        );
+        expect(
+          generations.where((request) => request.arguments['dry_run'] == true),
+          hasLength(1),
+        );
+        expect(
+          generations.where((request) => request.arguments['dry_run'] != true),
+          hasLength(1),
+        );
+        expect(
+          harness.client.requests.where(
+            (request) => request.name == 'text_to_speech',
+          ),
+          isEmpty,
+        );
+        expect(harness.downloads, hasLength(1));
+        final report = jsonDecode(harness.service.diagnosticReport) as Map;
+        expect(
+          (report['last_request'] as Map)['speech_tag_format'],
+          's2_descriptive_brackets',
+        );
+        expect((report['last_request'] as Map)['requested_model'], model);
+        expect(harness.service.lastConfiguredBackend, model);
+      },
+    );
+  }
+
+  for (final asmr in [false, true]) {
+    test(
+      'S2 MCP ${asmr ? 'ASMR density off' : 'ordinary speech'} does not introduce delivery cues',
+      () async {
+        const original = '明日も会おう。待っているよ。';
+        final prepared = normalizeFishAudioSynthesisText(
+          applyFishEmotionIntensityPerSentence(
+            asmr ? '[soft tone]明日も会おう。[whispering]待っているよ。' : original,
+            TtsEmotionIntensity.off,
+            asmr: asmr,
+            density: asmr ? TtsCueDensity.off : TtsCueDensity.normal,
+          ),
+          asmr: asmr,
+        );
+        final harness = await _Harness.create();
+        await harness.service.discoverTools();
+        await harness.service.synthesize(text: prepared, model: 's2.1-pro');
+        expect(harness.client.requests, hasLength(1));
+        expect(
+          harness.client.requests.single.arguments['text'],
+          '明日も会おう。 待っているよ。',
+        );
+        expect(
+          harness.client.requests.single.arguments['text'],
+          isNot(contains('[')),
+        );
+        expect(harness.client.requests.single.arguments['model'], 's2.1-pro');
+        expect(harness.downloads, isEmpty);
+      },
+    );
+  }
 
   test('empty Drama 3 wrappers cannot submit a generation', () async {
     final harness = await _Harness.create(client: _studioTagClient());

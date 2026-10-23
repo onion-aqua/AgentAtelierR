@@ -17,6 +17,7 @@ import 'mimo_tts_client.dart';
 import 'mimo_tts_config.dart';
 import 'platform_slider.dart';
 import 'speech_loudness.dart';
+import 'hidden_voice_id_field.dart';
 
 class MimoTtsSettingsDialog extends StatefulWidget {
   const MimoTtsSettingsDialog({super.key, required this.controller});
@@ -362,10 +363,15 @@ class _MimoTtsSettingsDialogState extends State<MimoTtsSettingsDialog> {
                 ),
               ],
               if (_model == MimoTtsConfig.presetModel)
-                _field(
-                  _voice,
-                  t('预置音色', 'Preset voice', 'プリセット音声'),
-                  hint: 'mimo_default / 冰糖 / 茉莉 / Mia / Chloe',
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 12),
+                  child: HiddenVoiceIdField(
+                    fieldKey: const ValueKey('mimo-preset-voice'),
+                    controller: _voice,
+                    enabled: !_busy,
+                    labelText: t('预置音色', 'Preset voice', 'プリセット音声'),
+                    resetValue: 'mimo_default',
+                  ),
                 ),
               _field(
                 _instructions,

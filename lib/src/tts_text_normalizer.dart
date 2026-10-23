@@ -1,3 +1,5 @@
+import 'fish_asmr_delivery.dart';
+
 /// Reduces long repeated punctuation runs before synthesis. This keeps the
 /// visible assistant message untouched while preventing TTS engines from
 /// over-extending pauses, sighs, or emphatic sounds.
@@ -54,14 +56,14 @@ String normalizeFishAudioSynthesisText(String text, {bool asmr = false}) {
     final whisper = lower.contains('whisper');
     if (breath || whisper) {
       // Compound emotion directions may include breath timing. Preserve their
-      // emotion clause while replacing the delivery with a single soft cue.
+      // emotion clause while keeping only an explicitly requested whisper.
       final first = name.split(',').first.trim();
       final emotional = RegExp(
         r'^(?:(?:slightly|very|extremely|clearly|intensely)\s+)?(?:happy|sad|angry|relaxed|calm|curious|worried|hopeful|excited|confident|shy|surprised|empathetic|friendly|grateful|relieved|nervous)\b',
         caseSensitive: false,
       ).hasMatch(first);
       final emotion = emotional ? '[$first]' : '';
-      if ((asmr || whisper) && !whisperAdded) {
+      if (whisper && !whisperAdded) {
         whisperAdded = true;
         return '$emotion[whispering]';
       }
@@ -92,5 +94,6 @@ String normalizeFishAudioSynthesisText(String text, {bool asmr = false}) {
     name = name.replaceAll(RegExp(r'\s+'), ' ');
     return '[$name]';
   });
-  return result.replaceAll(RegExp(r'[ \t]{2,}'), ' ').trim();
+  final cleaned = result.replaceAll(RegExp(r'[ \t]{2,}'), ' ').trim();
+  return asmr ? scopeFishAsmrDelivery(cleaned, addWhisperBase: false) : cleaned;
 }

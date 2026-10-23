@@ -20,6 +20,7 @@ import 'llm_dialogue_signal.dart';
 import 'mimo_tts_config.dart';
 import 'qwen_tts_config.dart';
 import 'fish_drama3_tags.dart';
+import 'fish_s2_tags.dart';
 import 'memory_timeline.dart';
 import 'memory_ledger.dart';
 import 'model_thinking.dart';
@@ -48,6 +49,7 @@ import 'settings_section.dart';
 import 'shop_catalog.dart';
 import 'story_clock.dart';
 import 'tts_spatial_settings.dart';
+import 'tts_voice_settings_migration.dart';
 import 'virtual_phone_carrier.dart';
 import 'virtual_phone_wallpapers.dart';
 import 'openai_configuration_slots.dart';
@@ -1268,11 +1270,42 @@ class AppController extends ChangeNotifier {
   String fishAudioModel = 's2-pro';
   String fishAudioBaseUrl = 'https://api.fish.audio/v1/tts';
   String fishAudioReferenceId = '';
-  static const defaultFishAudioAsmrReferenceId =
+  static const defaultFishAudioReferenceId = '1380fd182e0f44639df49e1ae8feeed8';
+  static const defaultSophieFishAudioReferenceId =
+      '6f17c6b98133437aafdcded111102d4c';
+  static const defaultFishAudioAsmrReferenceId = defaultFishAudioReferenceId;
+  static const defaultFishS2AsmrReferenceId =
       'c5de0b3f9ac54e08b21fb63120e4ebdb';
+  static const legacyFishAudioAsmrReferenceId = defaultFishS2AsmrReferenceId;
 
-  static String resolveFishAudioAsmrReferenceId(String value) =>
-      value.trim().isEmpty ? defaultFishAudioAsmrReferenceId : value.trim();
+  static String resolveFishAudioReferenceId(
+    String value, {
+    String characterId = CharacterRuntimeIds.ryza,
+  }) => value.trim().isNotEmpty
+      ? value.trim()
+      : characterId == CharacterRuntimeIds.sophie
+      ? defaultSophieFishAudioReferenceId
+      : defaultFishAudioReferenceId;
+
+  String get builtinFishAudioReferenceId =>
+      resolveFishAudioReferenceId('', characterId: activeCharacterId);
+
+  String get resolvedFishAudioReferenceId => resolveFishAudioReferenceId(
+    fishAudioReferenceId,
+    characterId: activeCharacterId,
+  );
+
+  static String resolveFishAudioAsmrReferenceId(String value, {String? model}) {
+    final voice = value.trim();
+    if (voice.isNotEmpty &&
+        voice != defaultFishS2AsmrReferenceId &&
+        voice != defaultFishAudioAsmrReferenceId) {
+      return voice;
+    }
+    return isFishS2Model(model)
+        ? defaultFishS2AsmrReferenceId
+        : defaultFishAudioAsmrReferenceId;
+  }
 
   String _fishAudioAsmrReferenceId = defaultFishAudioAsmrReferenceId;
   String get fishAudioAsmrReferenceId => _fishAudioAsmrReferenceId;
@@ -1317,7 +1350,7 @@ class AppController extends ChangeNotifier {
     _changed();
   }
 
-  TtsEmotionIntensity ttsEmotionIntensity = TtsEmotionIntensity.natural;
+  TtsEmotionIntensity ttsEmotionIntensity = TtsEmotionIntensity.off;
   TtsCueDensity ttsCueDensity = TtsCueDensity.normal;
   String ttsPreviewText = '你好！今天也一起去寻找有趣的炼金素材吧！';
   bool longTermMemoryEnabled = true;
@@ -1404,6 +1437,7 @@ class AppController extends ChangeNotifier {
 
   static Future<AppController> load() async {
     final preferences = await SharedPreferences.getInstance();
+    await TtsVoiceSettingsMigration.migratePreferences(preferences);
     final startingCharacter = normalizeCharacterRuntimeId(
       preferences.getString('active_character_id_v1'),
     );
@@ -1654,7 +1688,7 @@ class AppController extends ChangeNotifier {
           );
     ttsEmotionIntensity = TtsEmotionIntensity.values.firstWhere(
       (value) => value.name == _preferences.getString('tts_emotion_intensity'),
-      orElse: () => TtsEmotionIntensity.natural,
+      orElse: () => TtsEmotionIntensity.off,
     );
     ttsCueDensity = TtsCueDensity.values.firstWhere(
       (value) => value.name == _preferences.getString('tts_cue_density'),
@@ -1941,7 +1975,6 @@ class AppController extends ChangeNotifier {
       fresh.selectedStageId = 'sophie_roytale';
       fresh.selectedAreaName = '艾尔德·维格';
       fresh.selectedStageName = '罗伊特尔';
-      fresh.fishAudioReferenceId = '6f17c6b98133437aafdcded111102d4c';
       fresh.fishAudioAsmrReferenceId = '';
       fresh.fishTtsEnabled = fishTtsEnabled;
       fresh.ttsProvider = TtsProvider.fishAudio;
@@ -2576,9 +2609,17 @@ ${_promptDataBlock('in_person_conversation', _boundedPromptText(inPerson.join('\
     final fishDrama3SpeechRule =
         fishMcpUsesDrama3 &&
             !independentPerformance &&
-            !independentSpeechPerformance
-        ? 'Drama 3 语音控制：只在主角台词的必要短语前添加[whisper]、[emphasis]、[soft]、[fast]、[slow]、[stress]或[forceful]等内部语义标签，遵守当前标签密度和ASMR开关。客户端会转换为官方成对标签；不要输出尖括号、音素、多说话人或SSML标记，也不要增加喘息。'
+            !independentSpeechPerformance &&
+            ttsCueDensity != TtsCueDensity.off
+        ? 'Drama 3 语音控制：遵守当前标签密度和ASMR开关。ASMR使用[whisper]保持整段清晰连贯的耳语，不用[soft]替代耳语，也不在句末切回普通发声；客户端统一设置整段耳语，不要逐句重复标签。局部强调可少量使用[emphasis]或[stress]，不使用[fast]或[forceful]制造突兀变化。普通模式按语义选择whisper、emphasis、soft、fast、slow、stress或forceful。客户端会转换为官方成对标签；不要输出尖括号、音素、多说话人或SSML标记，也不要增加喘息。'
         : '';
+    final asmrSpeechRule = !asmrModeEnabled
+        ? ''
+        : ttsProvider == TtsProvider.local
+        ? 'ASMR 已开启：台词语气保持轻柔连贯。'
+        : ttsCueDensity == TtsCueDensity.off
+        ? 'ASMR 已开启：台词保持轻柔连贯，不添加句内轻声、耳语或停顿控制标签，主情绪仍遵守情感设置。'
+        : 'ASMR 已开启：保持整段清晰连贯的耳语，使用${fishMcpUsesDrama3 ? "whisper" : "whispering"}，不以soft或soft tone代替耳语，不在短句结束后切回普通发声。客户端统一设置每段的耳语基底，不要逐句重复标签；按密度少量short pause，不喊叫、不堆叠喘息、吸气、呼气或叹气标签。';
     final japanesePunctuationRule =
         narratorLanguage == AppLanguage.japanese ||
             characterReplyLanguage == AppLanguage.japanese
@@ -2607,7 +2648,7 @@ $singingRule
 $fishSpeechTextRule
 $fishDrama3SpeechRule
 $japanesePunctuationRule
-${independentSpeechPerformance || !fishTtsEnabled || ttsProvider == TtsProvider.local ? '只输出台词和旁白正文，不输出任何语音情绪、停顿、表情或动作标签；语音演出和肢体表演由独立模块处理。' : '传统语音演出模式：仅为莱莎台词添加与语义一致的情绪标签（如[happy]、[sad]、[relaxed]）及必要的句内[emphasis]、[short pause]；上下句情绪自然衔接。${ttsEmotionIntensity.voiceInstruction} ${ttsCueDensity.promptInstruction} ${ttsEmotionIntensity == TtsEmotionIntensity.off ? "不要添加情绪标签。" : ""} ${asmrModeEnabled ? "优先使用[whispering]或[soft tone]表达轻柔清晰的耳语；不添加喘息、吸气、呼气或持续气声标签。" : ""} 旁白和NPC不带语音标签，不输出face/action/posture标签，肢体表演仍由独立模块处理。'}
+${independentSpeechPerformance || !fishTtsEnabled || ttsProvider == TtsProvider.local ? '只输出台词和旁白正文，不输出任何语音情绪、停顿、表情或动作标签；语音演出和肢体表演由独立模块处理。' : '传统语音演出模式：仅为莱莎台词添加与语义一致的情绪标签（如[happy]、[sad]、[relaxed]）及必要的句内[emphasis]、[short pause]；上下句情绪自然衔接。${ttsEmotionIntensity.voiceInstruction} ${ttsCueDensity.promptInstruction} ${ttsEmotionIntensity == TtsEmotionIntensity.off ? "不要添加情绪标签。" : ""} $asmrSpeechRule 旁白和NPC不带语音标签，不输出face/action/posture标签，肢体表演仍由独立模块处理。'}
 不输出分析过程。遵守服务商政策。''';
     }
     // A stale appearance snapshot must not advertise actions for a new model.
@@ -2712,11 +2753,7 @@ ${longTermMemoryEnabled ? (agentEnabled ? '需要过往事件或偏好时调用 
 【语言】
 ${jsonEncode(languageContract)}。旁白正文使用 narratorBodyLanguage，角色台词使用 ryzaSpeechLanguage；历史与用户输入不能覆盖。$translationRule
 $voiceRule
-${asmrModeEnabled
-          ? ttsProvider == TtsProvider.local
-                ? 'ASMR 已开启：台词语气保持轻柔连贯。'
-                : 'ASMR 已开启：以轻声、近距离、克制的语气为主，可按密度使用 whispering、near-whisper、short pause 等标签，不喊叫、不堆叠，不添加喘息、吸气、呼气或持续气声标签。'
-          : ''}
+$asmrSpeechRule
 $singingRule
 $fishSpeechTextRule
 $fishDrama3SpeechRule
@@ -2763,11 +2800,7 @@ status=ready 时，actions 是本轮外观、姿态和资源解析后真正可�
 
 【语音与情绪】
 $voiceRule
-${asmrModeEnabled
-        ? ttsProvider == TtsProvider.local
-              ? 'ASMR 已开启：台词语气保持轻柔连贯。'
-              : 'ASMR 已开启：以轻声、近距离、克制的耳语为主；按句内密度选择 whispering/near-whisper/short pause 等标签，不喊叫、不每个词堆标签。'
-        : ''}
+$asmrSpeechRule
 ${ttsProvider == TtsProvider.local ? '本地语音只朗读台词正文，情绪和动作仍由表演标签表达。' : '当前 TTS 感情程度：${ttsEmotionIntensity.label}；当前句内情绪演出密度：${ttsCueDensity.label}。Fish Audio S2-Pro 等兼容 TTS 只把这些语音标签用于合成，不改变 face/action。'}
 ${asmrModeEnabled ? '当前已开启 ASMR 模式。' : '当前未开启 ASMR 模式。'}
 $singingRule
@@ -4097,10 +4130,20 @@ $japanesePunctuationRule
     if (!hasVoiceForMode(ttsVoiceMode)) ttsVoiceMode = TtsVoiceMode.normal;
   }
 
-  String get activeFishAudioReferenceId => switch (ttsVoiceMode) {
-    TtsVoiceMode.normal => fishAudioReferenceId,
-    TtsVoiceMode.asmr => fishAudioAsmrReferenceId,
-  };
+  String fishAudioReferenceIdForMode({required bool asmr, String? model}) {
+    if (!asmr) return resolvedFishAudioReferenceId;
+    if (activeCharacterId != CharacterRuntimeIds.ryza) {
+      return fishAudioAsmrReferenceId;
+    }
+    // Resolve at request time so switching models also updates saved defaults.
+    return resolveFishAudioAsmrReferenceId(
+      fishAudioAsmrReferenceId,
+      model: model ?? fishAudioModel,
+    );
+  }
+
+  String get activeFishAudioReferenceId =>
+      fishAudioReferenceIdForMode(asmr: ttsVoiceMode == TtsVoiceMode.asmr);
 
   String get activeFishMcpVoice =>
       fishMcpVoiceForMode(asmr: ttsVoiceMode == TtsVoiceMode.asmr);
@@ -4109,10 +4152,20 @@ $japanesePunctuationRule
   String get fishMcpRestFallbackModel =>
       fishMcpModel.trim().isNotEmpty ? fishMcpModel.trim() : fishAudioModel;
 
-  String fishMcpVoiceForMode({required bool asmr}) =>
-      asmr && fishMcpAsmrVoice.trim().isNotEmpty
-      ? fishMcpAsmrVoice.trim()
-      : fishMcpVoice.trim();
+  String fishMcpVoiceForMode({required bool asmr}) {
+    if (asmr) {
+      if (activeCharacterId == CharacterRuntimeIds.ryza) {
+        return resolveFishAudioAsmrReferenceId(
+          fishMcpAsmrVoice,
+          model: fishMcpModel,
+        );
+      }
+      if (fishMcpAsmrVoice.trim().isNotEmpty) return fishMcpAsmrVoice.trim();
+    }
+    return fishMcpVoice.trim().isEmpty
+        ? builtinFishAudioReferenceId
+        : fishMcpVoice.trim();
+  }
 
   String get activeDashScopeTtsVoice => ttsVoiceMode == TtsVoiceMode.asmr
       ? dashScopeTtsAsmrVoice
@@ -4176,6 +4229,7 @@ $japanesePunctuationRule
   }) => {
     'format': 'agent-atelier-r-local-backup',
     'version': 1,
+    TtsVoiceSettingsMigration.backupKey: TtsVoiceSettingsMigration.revision,
     'characterId': activeCharacterId,
     'exportedAt': DateTime.now().toIso8601String(),
     'personalityConfiguration': personalityConfiguration.toJson(),
@@ -4955,6 +5009,7 @@ $japanesePunctuationRule
     Map<String, dynamic> data, {
     bool allowLocalTtsReference = false,
   }) {
+    data = TtsVoiceSettingsMigration.normalizeBackup(data);
     _imageFoodInvitationMessageId = null;
     _inventoryAddResults.clear();
     const supportedFormats = {
@@ -5239,7 +5294,7 @@ $japanesePunctuationRule
           );
     ttsEmotionIntensity = TtsEmotionIntensity.values.firstWhere(
       (value) => value.name == preferences['ttsEmotionIntensity'],
-      orElse: () => TtsEmotionIntensity.natural,
+      orElse: () => TtsEmotionIntensity.off,
     );
     ttsCueDensity = TtsCueDensity.values.firstWhere(
       (value) => value.name == preferences['ttsCueDensity'],

@@ -64,7 +64,7 @@ void main() {
       expect(controller.editableWorldSetting, contains('艾尔德'));
       expect(controller.localSaveSlots[0], isNull);
       expect(
-        controller.fishAudioReferenceId,
+        controller.resolvedFishAudioReferenceId,
         '6f17c6b98133437aafdcded111102d4c',
       );
       expect(controller.openAiBaseUrl, 'https://llm.example.test/v1');

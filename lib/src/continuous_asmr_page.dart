@@ -73,13 +73,13 @@ String buildContinuousAsmrSystemPrompt(
       '${controller.ttsCueDensity == TtsCueDensity.off ? "不要句内气声、耳语或停顿标签。" : ""} '
       '一次写完本次要朗读的完整稿件，围绕用户主题自然发展并收束，'
       '原文目标约$targetChars字。不要输出提纲、编号、独立旁白段、分析或动作标签；'
-      '不要要求用户回复，不重复开场。语气轻柔、慢节奏，不编造现实感知。'
+      '不要要求用户回复，不重复开场。保持整段清晰连贯的耳语，舒缓自然，不编造现实感知。'
       '${controller.ttsCueDensity == TtsCueDensity.off
           ? ''
           : controller.fishMcpUsesDrama3
-          ? 'Drama 3 发声使用内部语义标签[whisper]或[soft]，需要局部强调才用[emphasis]或[stress]，少量[short pause]；只输出方括号标记，客户端会转换为官方局部成对标签，不输出尖括号、音素或多说话人标记。'
-          : '可以使用[whispering]与少量[short pause]；'}'
-      '轻声耳语也要保持清晰连贯的文字发音，不要使用喘息、吸气、呼气、叹气或其他气声表演标签，不要把台词改写成呼吸音。'
+          ? 'Drama 3 发声使用[whisper]保持整段耳语，不用[soft]代替耳语，不在句末恢复普通发声。客户端统一设置每段的耳语基底，不逐句重复标签；需要局部强调才用[emphasis]或[stress]，少量[short pause]。只输出方括号标记，客户端会转换为官方成对标签，不输出尖括号、音素或多说话人标记。'
+          : '使用[whispering]保持整段耳语，不用[soft tone]代替耳语，不在句末恢复普通发声。客户端统一设置每段的耳语基底，不逐句重复标签，可少量[short pause]。'}'
+      '耳语也要保持清晰连贯的文字发音，不要使用喘息、吸气、呼气、叹气或其他呼吸表演标签，不要把台词改写成呼吸音。'
       '台词中不要在省略号后添加独立喘息促音，如“……っ、”“…っ。”；普通词语和引述中的促音，如“待って”“……って言った”，照常保留。'
       '遵守服务商政策。${policy.promptInstruction}';
 }
@@ -610,11 +610,24 @@ class _ContinuousAsmrPageState extends State<ContinuousAsmrPage> {
         return result;
       }
 
-      if (key.isEmpty ||
-          (c.ttsProvider.requiresApiKey && voiceKey.isEmpty) ||
-          (c.ttsProvider == TtsProvider.fishAudioMcp &&
-              !FishMcpService.instance.isReady)) {
+      if (key.isEmpty || (c.ttsProvider.requiresApiKey && voiceKey.isEmpty)) {
         throw const FormatException('API Key 未配置');
+      }
+      if (c.ttsProvider == TtsProvider.fishAudioMcp) {
+        setState(
+          () => _status = t(
+            '正在恢复 Fish Audio MCP 连接…',
+            'Restoring Fish Audio MCP connection…',
+            'Fish Audio MCP 接続を復元中…',
+          ),
+        );
+        final connected = await FishMcpService.instance.restoreConnection();
+        ensureCurrent();
+        if (!connected) {
+          throw const FormatException(
+            'Fish Audio MCP 未恢复连接，请在语音设置中检查 OAuth 授权后重试。',
+          );
+        }
       }
       if (c.ttsProvider == TtsProvider.local) {
         final readinessText = switch (languagePolicy.replyLanguage) {
@@ -903,8 +916,10 @@ class _ContinuousAsmrPageState extends State<ContinuousAsmrPage> {
     final plainText = ttsText.replaceAll(RegExp(r'\[[^\]]*\]'), '');
     final emotionIntensity = c.ttsEmotionIntensity;
     final voiceDirection =
-        'Speak in ${language.promptLabel}, softly in an intimate whisper, '
-        'with clear connected words and natural pacing.';
+        'Speak in ${language.promptLabel} in a sustained close whisper '
+        'throughout the entire passage, with clear connected words and natural '
+        'pacing. Do not switch to ordinary voiced speech, add breathing sounds '
+        'or panting, or replace the words with sound effects.';
     final fishText = normalizeFishAudioSynthesisText(
       applyFishEmotionIntensityPerSentence(
         ttsText,
@@ -918,8 +933,24 @@ class _ContinuousAsmrPageState extends State<ContinuousAsmrPage> {
     Future<String> synthesizeMcp() async {
       final voice = c.fishMcpVoiceForMode(asmr: true).trim();
       final text = fishText;
+      final service = FishMcpService.instance;
+      final connected = service.isReady || await service.restoreConnection();
+      if (!_isCurrent(generation)) {
+        throw FishMcpException(
+          stage: 'cancelled',
+          code: 'request_cancelled',
+          message: 'ASMR 请求已取消，未提交生成。',
+        );
+      }
+      if (!connected) {
+        throw FishMcpException(
+          stage: 'connection',
+          code: 'oauth_restore_failed',
+          message: 'Fish Audio MCP 未恢复连接，请在语音设置中检查 OAuth 授权后重试。',
+        );
+      }
       try {
-        return await FishMcpService.instance.synthesize(
+        return await service.synthesize(
           isCurrent: () => _isCurrent(generation),
           text: text,
           voice: voice.isEmpty ? null : voice,
@@ -943,10 +974,14 @@ class _ContinuousAsmrPageState extends State<ContinuousAsmrPage> {
         }
         final fallbackKey = await const SecretStore().readFishAudioKey();
         if (!_isCurrent(generation)) rethrow;
-        if (fallbackKey.isEmpty || c.activeFishAudioReferenceId.isEmpty) {
+        final fallbackModel = c.fishMcpRestFallbackModel;
+        final fallbackVoice = c.fishAudioReferenceIdForMode(
+          asmr: true,
+          model: fallbackModel,
+        );
+        if (fallbackKey.isEmpty || fallbackVoice.isEmpty) {
           rethrow;
         }
-        final fallbackModel = c.fishMcpRestFallbackModel;
         RuntimeLog.instance.warning(
           'TTS',
           'Fish MCP 未提交生成请求，ASMR 按已启用的设置回退 Fish Audio REST，'
@@ -955,7 +990,7 @@ class _ContinuousAsmrPageState extends State<ContinuousAsmrPage> {
         actualProvider = TtsProvider.fishAudio;
         return FishAudioClient().synthesize(
           apiKey: fallbackKey,
-          referenceId: c.activeFishAudioReferenceId,
+          referenceId: fallbackVoice,
           model: fallbackModel,
           format: playbackFormat,
           latency: c.fishAudioLatency,
@@ -970,7 +1005,7 @@ class _ContinuousAsmrPageState extends State<ContinuousAsmrPage> {
     Future<String> synthesizeOnce() => switch (provider) {
       TtsProvider.fishAudio => FishAudioClient().synthesize(
         apiKey: apiKey,
-        referenceId: c.activeFishAudioReferenceId,
+        referenceId: c.fishAudioReferenceIdForMode(asmr: true),
         model: c.fishAudioModel,
         format: playbackFormat,
         latency: c.fishAudioLatency,

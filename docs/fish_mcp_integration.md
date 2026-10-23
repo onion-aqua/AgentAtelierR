@@ -8,6 +8,8 @@
 - 新增 `Fish Audio MCP（OAuth）` TTS Provider，聊天和持续 ASMR 共用现有音频缓存、响度均衡、立体声和 Spine 播放流程。
 - 使用 Fish Audio OAuth Authorization Code + PKCE（S256）。首次点击设置页的“登录并探测 tools/list”时才进行动态客户端注册和浏览器授权。
 - OAuth access token、refresh token、有效期和客户端 ID 使用独立的安全存储命名空间；普通 API 服务导出不会包含这些内容。
+- 启用 MCP 语音后，首帧显示完成、返回应用前台或切换到 MCP 时自动恢复已有授权；聊天、持续 ASMR、通话和试音也会在使用前检查连接。恢复不阻塞启动加载，不注册新客户端或弹出浏览器，授权失效时提示用户重新登录。
+- 并发恢复共用一次连接和工具发现，同一连接的过期令牌刷新也会合并。手动断开或退出后，本次运行不自动重连；重新点击连接即可恢复。自动恢复只涉及授权、初始化和工具发现，不重发已提交的语音生成请求。
 - 授权回调使用 `fishmcp://oauth/callback`。Android 已配置 intent-filter，Windows 使用 `app_links` 的同一自定义 scheme；Windows 启动时会在当前用户注册 `fishmcp` URL 协议。
 - 授权后先执行 `tools/list`，保存工具名、描述和完整 input schema；未完成工具探测时，生成请求会被阻止。
 - 按真实工具 schema 选择生成路径：“服务默认”使用 `text_to_speech`；明确模型优先使用完整的 Studio MCP 工具和项目 `default_backend`。Studio 不完整但普通工具真实声明模型字段时，才使用普通工具的该字段。不再改写 `additionalProperties` 或附带未声明的模型参数。
@@ -15,7 +17,11 @@
 - MCP 连接失败不会自动删除现有 Fish REST 配置。设置页保留 MCP 失败回退开关字段，原有 Provider 可随时切回。
 - MCP 模型提供下拉选择：`s2.1-pro`、`drama-3`，兼容已保存的自定义值；“服务默认”不指定模型。设置页显示当前草稿对应的实际生成路径及缺失的 Studio 工具。下拉选项不代表账号具有相应模型权益。
 - 模型和音色修改先作为本页草稿，点击“保存并使用 MCP”后下次调用才生效；返回或取消不会自动保存。模型下方区分最近请求、Studio 已确认的后端配置及云端返回模型；配置读回不冒充实际推理模型证明。草稿与最近请求不同时会标明旧记录不能作为本次选择的结果。
-- 普通音色与 ASMR 音色分别设置，ASMR 留空沿用普通音色；持续 ASMR 始终优先使用 ASMR 音色。已有单音色配置兼容为普通音色，新字段支持持久化与普通配置备份。科洛蒂娅固定音色 ID 在页面只读显示，MCP 模式下和主角共用当前 MCP 模型与连接，仅为真实台词生成语音。
+- 普通音色与 ASMR 音色分别设置，莱莎未自定义时使用各自内置音色；持续 ASMR 始终使用 ASMR 音色。音色 ID 输入框不回显已保存值，留空保留当前配置，填写后保存可替换，也可恢复默认。科洛蒂娅固定音色已内置，MCP 模式下和主角共用当前 MCP 模型与连接，仅为真实台词生成语音。
+- 莱莎普通模式使用新的内置音色；ASMR 在 `s2-pro`、`s2.1-pro`、`s2.1-pro-free` 下使用原专用 ASMR 音色，Drama 3 继续使用新的内置音色。按当前请求模型动态选择，兼容已保存的新旧内置值，其他自定义 ASMR 音色优先。聊天、持续 ASMR、设置试听和允许的 REST 回退采用同一规则。ASMR 使用整段耳语：兼容模式发送一次 `[whispering]`，Drama 3 转成覆盖整段的 `<whisper>…</whisper>`；呼吸与喘息标签继续清理。情感关闭仍保持耳语，标签密度关闭时不补发声标签。
+- `s2-pro`、`s2.1-pro`、`s2.1-pro-free` 在最终发送前把耳语标签转换为一次更明确的自然语言描述，强调贴近麦克风、低声、清楚咬字和持续耳语；转换放在通用清洗之后，避免描述又被压缩成单词标签。REST 与 MCP Studio 共用这项适配，普通未标注的台词和已验证的 Drama 3 成对标签流程保持原有格式。S2 的自然语言控制效果仍需实际试听确认。
+
+S2 标签依据：[Emotion Control](https://docs.fish.audio/developer-guide/core-features/emotions.md) 与 [Models Overview](https://docs.fish.audio/developer-guide/models-pricing/models-overview.md)。S2 使用方括号自由描述；圆括号属于旧版 S1。
 
 ## 2026-10-15 StateError 修复
 

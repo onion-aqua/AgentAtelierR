@@ -48,6 +48,7 @@ import 'conversation_collections_page.dart';
 import 'conversation_history_page.dart';
 import 'tts_spatial_settings.dart';
 import 'speech_loudness.dart';
+import 'hidden_voice_id_field.dart';
 import 'companion_runtime_settings.dart';
 import 'update/update_center_page.dart';
 import 'update/update_runtime.dart';
@@ -429,7 +430,9 @@ class SettingsScreenState extends State<SettingsScreen> {
                 ),
                 SwitchListTile(
                   value: controller.showMicrophoneButton,
-                  onChanged: controller.setShowMicrophoneButton,
+                  onChanged: AppPlatformCapabilities.supportsRealtimeCalls
+                      ? controller.setShowMicrophoneButton
+                      : null,
                   secondary: const Icon(Icons.mic_none_rounded),
                   title: Text(
                     language.text(
@@ -440,9 +443,9 @@ class SettingsScreenState extends State<SettingsScreen> {
                   ),
                   subtitle: Text(
                     language.text(
-                      '语音输入尚未接入，默认隐藏',
-                      'Voice input is not available yet',
-                      '音声入力はまだ利用できません',
+                      '点击主界面麦克风，与莱莎语音通话',
+                      'Tap the main chat microphone to talk with Ryza',
+                      '会話画面のマイクからライザと音声会話',
                     ),
                   ),
                 ),
@@ -1420,9 +1423,9 @@ class SettingsScreenState extends State<SettingsScreen> {
                   title: const Text('AgentAtelierR'),
                   subtitle: Text(
                     language.text(
-                      '版本 1.0.4.3',
-                      'Version 1.0.4.3',
-                      'バージョン 1.0.4.3',
+                      '版本 1.0.4.4',
+                      'Version 1.0.4.4',
+                      'バージョン 1.0.4.4',
                     ),
                   ),
                 ),
@@ -2052,22 +2055,18 @@ class SettingsScreenState extends State<SettingsScreen> {
                       ),
                     ),
                     const SizedBox(height: 12),
-                    TextField(
+                    HiddenVoiceIdField(
+                      fieldKey: const ValueKey('fish-normal-voice'),
                       controller: referenceId,
-                      decoration: const InputDecoration(
-                        labelText: 'Voice model ID / reference_id',
-                        helperText: 'Fish Audio 声音库或自建声音模型的 ID',
-                        border: OutlineInputBorder(),
-                      ),
+                      labelText: '普通音色 ID',
+                      helperText: '已内置普通音色；留空保留当前配置，可输入自己的 ID 后保存。',
                     ),
                     const SizedBox(height: 12),
-                    TextField(
+                    HiddenVoiceIdField(
+                      fieldKey: const ValueKey('fish-asmr-voice'),
                       controller: asmrReferenceId,
-                      decoration: const InputDecoration(
-                        labelText: 'ASMR 模式 Voice model ID',
-                        helperText: '留空使用默认 ASMR 音色；仅在开启 ASMR 模式时使用',
-                        border: OutlineInputBorder(),
-                      ),
+                      labelText: 'ASMR 模式音色 ID',
+                      helperText: '已内置 ASMR 音色；留空保留当前配置，仅在 ASMR 模式使用。',
                     ),
                     const SizedBox(height: 12),
                     Wrap(
@@ -2178,14 +2177,22 @@ class SettingsScreenState extends State<SettingsScreen> {
                             ? apiKey.text.trim()
                             : await const SecretStore().readFishAudioKey();
                         if (!context.mounted) return;
-                        final referenceForTest =
-                            switch (controller.ttsVoiceMode) {
-                              TtsVoiceMode.normal => referenceId.text.trim(),
-                              TtsVoiceMode.asmr =>
-                                AppController.resolveFishAudioAsmrReferenceId(
-                                  asmrReferenceId.text,
-                                ),
-                            };
+                        final referenceForTest = switch (controller
+                            .ttsVoiceMode) {
+                          TtsVoiceMode.normal =>
+                            AppController.resolveFishAudioReferenceId(
+                              referenceId.text,
+                              characterId: controller.activeCharacterId,
+                            ),
+                          TtsVoiceMode.asmr =>
+                            controller.activeCharacterId ==
+                                    CharacterRuntimeIds.ryza
+                                ? AppController.resolveFishAudioAsmrReferenceId(
+                                    asmrReferenceId.text,
+                                    model: model,
+                                  )
+                                : asmrReferenceId.text.trim(),
+                        };
                         if (key.isEmpty || referenceForTest.isEmpty) {
                           setDialogState(
                             () => testError =
@@ -2440,7 +2447,7 @@ class SettingsScreenState extends State<SettingsScreen> {
                         subtitle: Text(
                           service.errorMessage ??
                               '官方端点：${FishMcpService.endpoint}\n'
-                                  '需要 Fish Audio 账号 OAuth 授权。',
+                                  '首次需要 OAuth 授权，之后启动或返回应用时自动连接。',
                         ),
                       ),
                     ),
@@ -2484,24 +2491,18 @@ class SettingsScreenState extends State<SettingsScreen> {
                       description: '聊天和通话共用；ASMR 可单独指定音色。',
                     ),
                     const SizedBox(height: 8),
-                    TextField(
-                      key: const ValueKey('fish-mcp-normal-voice'),
+                    HiddenVoiceIdField(
+                      fieldKey: const ValueKey('fish-mcp-normal-voice'),
                       controller: voice,
-                      decoration: const InputDecoration(
-                        labelText: '普通音色 ID',
-                        hintText: '留空时交由官方工具处理',
-                        border: OutlineInputBorder(),
-                      ),
+                      labelText: '普通音色 ID',
+                      helperText: '已内置普通音色；留空保留当前配置，可输入自己的 ID 后保存。',
                     ),
                     const SizedBox(height: 8),
-                    TextField(
-                      key: const ValueKey('fish-mcp-asmr-voice'),
+                    HiddenVoiceIdField(
+                      fieldKey: const ValueKey('fish-mcp-asmr-voice'),
                       controller: asmrVoice,
-                      decoration: const InputDecoration(
-                        labelText: 'ASMR 音色 ID',
-                        hintText: '留空时沿用普通音色',
-                        border: OutlineInputBorder(),
-                      ),
+                      labelText: 'ASMR 音色 ID',
+                      helperText: '已内置 ASMR 音色；留空保留已保存的配置。',
                     ),
                     const SizedBox(height: 8),
                     DropdownButtonFormField<String>(
@@ -2561,10 +2562,8 @@ class SettingsScreenState extends State<SettingsScreen> {
                             ),
                             const SettingsOptionCard(
                               child: ListTile(
-                                title: Text('科洛蒂娅固定音色 ID'),
-                                subtitle: SelectableText(
-                                  klaudiaFishAudioReferenceId,
-                                ),
+                                title: Text('科洛蒂娅固定音色'),
+                                subtitle: Text('已内置，无需填写'),
                               ),
                             ),
                             const SizedBox(height: 8),
@@ -3031,15 +3030,15 @@ class SettingsScreenState extends State<SettingsScreen> {
                     ),
                   ],
                   const SizedBox(height: 12),
-                  TextField(
-                    key: const ValueKey('qwen-voice'),
+                  HiddenVoiceIdField(
+                    fieldKey: const ValueKey('qwen-voice'),
                     enabled: !creatingVoice,
                     controller: voice,
-                    decoration: const InputDecoration(
-                      labelText: '系统音色 / Voice ID',
-                      hintText: 'Cherry',
-                      border: OutlineInputBorder(),
-                    ),
+                    labelText: '系统音色 / Voice ID',
+                    emptyValueDescription: '请先选择系统音色或输入自定义 ID',
+                    resetValue:
+                        QwenTtsConfig.voicesForModel(model.text).firstOrNull ??
+                        '',
                     onChanged: (_) => setDialogState(() {}),
                   ),
                   if (model.text.startsWith('qwen-audio-3.0-'))
@@ -3348,7 +3347,7 @@ class SettingsScreenState extends State<SettingsScreen> {
                           const SizedBox(width: 8),
                           Expanded(
                             child: Text(
-                              '创建成功，已自动填入 Voice ID\n$createdVoiceId',
+                              '创建成功，已配置新音色；保存设置后生效。',
                               style: const TextStyle(
                                 fontWeight: FontWeight.w600,
                               ),
@@ -3358,16 +3357,13 @@ class SettingsScreenState extends State<SettingsScreen> {
                       ),
                     ),
                   const SizedBox(height: 12),
-                  TextField(
-                    key: const ValueKey('qwen-asmr-voice'),
+                  HiddenVoiceIdField(
+                    fieldKey: const ValueKey('qwen-asmr-voice'),
                     enabled: !creatingVoice,
                     controller: asmrVoice,
-                    decoration: const InputDecoration(
-                      labelText: 'ASMR 模式 Voice ID',
-                      helperText: '填写后可开启 ASMR 模式；须与普通音色使用相同合成模型',
-                      helperMaxLines: 2,
-                      border: OutlineInputBorder(),
-                    ),
+                    labelText: 'ASMR 模式 Voice ID',
+                    emptyValueDescription: '尚未配置 ASMR 音色',
+                    helperText: '留空保留当前配置；须与普通音色使用相同合成模型。',
                   ),
                   const SizedBox(height: 12),
                   DropdownButtonFormField<String>(
@@ -3769,21 +3765,19 @@ class SettingsScreenState extends State<SettingsScreen> {
                     ),
                   ),
                   const SizedBox(height: 12),
-                  TextField(
+                  HiddenVoiceIdField(
+                    fieldKey: const ValueKey('generic-normal-voice'),
                     controller: voice,
-                    decoration: const InputDecoration(
-                      labelText: 'Voice ID / 音色',
-                      border: OutlineInputBorder(),
-                    ),
+                    labelText: 'Voice ID / 音色',
+                    resetValue: 'alloy',
                   ),
                   const SizedBox(height: 12),
-                  TextField(
+                  HiddenVoiceIdField(
+                    fieldKey: const ValueKey('generic-asmr-voice'),
                     controller: asmrVoice,
-                    decoration: const InputDecoration(
-                      labelText: 'ASMR 模式 Voice ID',
-                      helperText: '可选；仅在主页开启 ASMR 模式时使用并校验',
-                      border: OutlineInputBorder(),
-                    ),
+                    labelText: 'ASMR 模式 Voice ID',
+                    emptyValueDescription: '尚未配置 ASMR 音色',
+                    helperText: '留空保留当前配置；仅在 ASMR 模式使用并校验。',
                   ),
                   const SizedBox(height: 12),
                   Row(

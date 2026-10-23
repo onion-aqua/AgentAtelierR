@@ -1081,7 +1081,7 @@ void main() {
   });
 
   test(
-    'ASMR intensity preserves emotion without overriding whisper delivery',
+    'ASMR intensity preserves emotion over an explicit whisper baseline',
     () {
       for (final emotion in ['angry', 'sad', 'happy', 'hopeful']) {
         final processed = applyFishEmotionIntensityPerSentence(
@@ -1094,8 +1094,9 @@ void main() {
             .firstMatch(processed)!
             .group(1)!;
         expect(primary, contains(emotion));
-        expect(primary, contains('whisper'));
-        expect(processed, contains('[unvoiced whispering]'));
+        expect(primary, isNot(contains('whisper')));
+        expect(processed, isNot(contains('[soft tone]')));
+        expect(processed, contains('[whispering]'));
         expect(processed, isNot(contains('no gentle breathiness')));
         expect(processed, isNot(contains('shouting')));
       }
@@ -1121,7 +1122,7 @@ void main() {
         density: TtsCueDensity.everySentence,
         asmr: true,
       );
-      expect(noEmotion, '[unvoiced whispering] 先让我静一静。');
+      expect(noEmotion.trim(), '[whispering]先让我静一静。');
 
       final neither = applyFishEmotionIntensityPerSentence(
         sample,
@@ -1539,7 +1540,7 @@ void main() {
       expect(controller.asmrModeEnabled, isTrue);
       expect(
         controller.activeFishAudioReferenceId,
-        AppController.defaultFishAudioAsmrReferenceId,
+        AppController.defaultFishS2AsmrReferenceId,
       );
       controller.fishAudioAsmrReferenceId = '  ';
       expect(
@@ -1564,7 +1565,7 @@ void main() {
       expect(controller.buildCharacterPrompt(), contains('ASMR 已开启'));
       expect(
         controller.buildCharacterPrompt(),
-        contains('whispering/near-whisper'),
+        contains('使用whispering，不以soft或soft tone代替耳语'),
       );
       expect(controller.buildCharacterPrompt(), contains('当前 TTS 感情程度'));
       expect(controller.buildCharacterPrompt(), contains('当前句内情绪演出密度'));

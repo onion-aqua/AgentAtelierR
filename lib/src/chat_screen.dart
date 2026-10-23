@@ -54,6 +54,7 @@ import 'realtime_call/call_session.dart';
 import 'realtime_call/call_page.dart';
 import 'realtime_call/call_settings.dart';
 import 'realtime_call/call_audio_priority.dart';
+import 'realtime_call/main_chat_voice_panel.dart';
 import 'platform_capabilities.dart';
 import 'virtual_phone_wallpaper_image.dart';
 import 'speech_envelope_loader.dart';
@@ -232,6 +233,7 @@ class ChatScreen extends StatefulWidget {
     this.secretStore,
     this.imageThumbnailer,
     this.updateRuntime,
+    this.sceneBackground,
   });
 
   final AppController controller;
@@ -251,6 +253,9 @@ class ChatScreen extends StatefulWidget {
   final SecretStore? secretStore;
   final Future<Uint8List?> Function(Uint8List bytes)? imageThumbnailer;
   final UpdateRuntime? updateRuntime;
+
+  /// Replaces the native scene layer for embedded hosts and widget tests.
+  final Widget? sceneBackground;
   final bool pageActive;
   final bool pauseCharacterAnimation;
 
@@ -425,7 +430,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   bool _spineReady = false;
   bool _isReplying = false;
   late final RealtimeCallController _calls;
+  bool _mainVoiceVisible = false;
   bool _callWasActive = false;
+  CallUiPhase _lastCallUiPhase = CallUiPhase.idle;
   bool _isContinuing = false;
   bool _isSuggestingReply = false;
   bool _isCharacterSpeaking = false;
@@ -960,6 +967,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   }
 
   void _resetConversationWorkForDataReplacement() {
+    _mainVoiceVisible = false;
     _cancelFacePull();
     _contactFollowUp = null;
     _recentDialogueActions.clear();
@@ -2146,6 +2154,10 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
   void _handleCallChanged() {
     if (!mounted) return;
+    final wasActive = _callWasActive;
+    final phase = _calls.snapshot.phase;
+    final phaseChanged = phase != _lastCallUiPhase;
+    _lastCallUiPhase = phase;
     if (_calls.active && !_callWasActive) _cancelSpeechPlayback();
     _callWasActive = _calls.active;
     if (_calls.speaking &&
@@ -2154,10 +2166,12 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       if (!_isCharacterSpeaking) _startSpeakingAnimation();
     } else if (_isCharacterSpeaking &&
         _speechCancellation == null &&
-        _callWasActive) {
+        (wasActive || _callWasActive)) {
       _stopSpeakingAnimation();
     }
-    setState(() {});
+    // Captions and elapsed time repaint their small controls through the shared
+    // controller. Do not rebuild the character scene for every clock tick.
+    if (phaseChanged) setState(() {});
   }
 
   void _prepareSpeechFrame(SpineWidgetController controller) {
@@ -4719,6 +4733,14 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
               ? apiKey
               : await _secretStore.readTtsKey(TtsProvider.fishAudio)
         : '';
+    if (widget.controller.ttsProvider == TtsProvider.fishAudioMcp &&
+        !_fishMcpService.isReady) {
+      await _fishMcpService.restoreConnection();
+      if (!performanceIsCurrent() ||
+          initialSpeechGeneration != _speechPlaybackGeneration) {
+        return;
+      }
+    }
     final missingProviderSettings = switch (widget.controller.ttsProvider) {
       TtsProvider.fishAudio =>
         widget.controller.activeFishAudioReferenceId.isEmpty,
@@ -5168,7 +5190,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       if (emotionIntensity != TtsEmotionIntensity.off &&
           speechEmotionTags.contains(plannedEmotion))
         'Express $plannedEmotion naturally; preserve continuity with the preceding sentence.',
-      if (asmr) 'Speak softly in a close, quiet voice.',
+      if (asmr)
+        'Maintain a clear close whisper throughout the whole passage; '
+            'do not switch to ordinary voiced speech or add breathing sounds.',
     ].join(' ');
     final fishText = normalizeFishAudioSynthesisText(
       segment.isPrimary
@@ -5190,6 +5214,23 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       required double speed,
       required TtsEmotionIntensity emotionIntensity,
     }) async {
+      final connected =
+          _fishMcpService.isReady || await _fishMcpService.restoreConnection();
+      if (!mounted || generation != _speechPlaybackGeneration) {
+        throw FishMcpException(
+          stage: 'cancelled',
+          code: 'request_cancelled',
+          message: '当前语音请求已取消，未提交生成。',
+        );
+      }
+      if (!connected) {
+        // Connection recovery is never a reason to switch to billable REST.
+        throw FishMcpException(
+          stage: 'connection',
+          code: 'oauth_restore_failed',
+          message: 'Fish Audio MCP 未恢复连接，请在语音设置中检查 OAuth 授权后重试。',
+        );
+      }
       try {
         final referenceId = fishReferenceIdForAssistantSpeech(
           segment,
@@ -5221,14 +5262,17 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         }
         final fallbackKey = await _secretStore.readFishAudioKey();
         if (!mounted || generation != _speechPlaybackGeneration) rethrow;
+        final fallbackModel = widget.controller.fishMcpRestFallbackModel;
         final fallbackReferenceId = fishReferenceIdForAssistantSpeech(
           segment,
-          primaryReferenceId: widget.controller.activeFishAudioReferenceId,
+          primaryReferenceId: widget.controller.fishAudioReferenceIdForMode(
+            asmr: asmr,
+            model: fallbackModel,
+          ),
         );
         if (fallbackKey.isEmpty || fallbackReferenceId.isEmpty) {
           rethrow;
         }
-        final fallbackModel = widget.controller.fishMcpRestFallbackModel;
         RuntimeLog.instance.warning(
           'TTS',
           'Fish MCP 未提交生成请求，按已启用的设置回退 Fish Audio REST，'
@@ -5254,7 +5298,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         apiKey: apiKey,
         referenceId: fishReferenceIdForAssistantSpeech(
           segment,
-          primaryReferenceId: widget.controller.activeFishAudioReferenceId,
+          primaryReferenceId: widget.controller.fishAudioReferenceIdForMode(
+            asmr: asmr,
+          ),
         ),
         model: widget.controller.fishAudioModel,
         format: playbackFormat,
@@ -6967,7 +7013,43 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           ),
         );
       },
-      onOpenSettings: () => Navigator.of(context).push(
+      onOpenSettings: () => _openVoiceCallSettings(context),
+    );
+  }
+
+  Future<void> _startMainVoiceCall() async {
+    if (!_calls.contacts.any(
+          (c) => c.id == 'primary:${widget.controller.activeCharacterId}',
+        ) ||
+        _awaitingWake ||
+        _isReplying ||
+        widget.controller.continuousAsmr) {
+      return;
+    }
+    FocusManager.instance.primaryFocus?.unfocus();
+    setState(() => _mainVoiceVisible = true);
+    try {
+      await _calls.startCall('primary:${widget.controller.activeCharacterId}');
+    } catch (_) {
+      if (mounted) {
+        final language = widget.controller.interfaceLanguage;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              language.text(
+                '无法开始语音通话，请检查语音设置后重试。',
+                'Unable to start voice chat. Check voice settings and retry.',
+                '音声会話を開始できません。音声設定を確認してください。',
+              ),
+            ),
+          ),
+        );
+      }
+    }
+  }
+
+  Future<void> _openVoiceCallSettings(BuildContext context) =>
+      Navigator.of(context).push<void>(
         MaterialPageRoute<void>(
           builder: (callContext) => AnimatedBuilder(
             animation: widget.controller,
@@ -6986,9 +7068,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
             ),
           ),
         ),
-      ),
-    );
-  }
+      );
 
   Widget _buildVirtualPhoneImagePage(BuildContext context) =>
       ImageGenerationManagerPage(
@@ -7158,13 +7238,15 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                 left: 0,
                 right: 0,
                 height: viewportConstraints.maxHeight,
-                child: _usesProtectedSpine
-                    ? _SceneBackground(
-                        sceneTime: widget.controller.sceneTime,
-                        stageId: widget.controller.selectedStageId,
-                        frameRate: widget.controller.frameRate,
-                      )
-                    : const ColoredBox(color: Color(0xFF15191B)),
+                child:
+                    widget.sceneBackground ??
+                    (_usesProtectedSpine
+                        ? _SceneBackground(
+                            sceneTime: widget.controller.sceneTime,
+                            stageId: widget.controller.selectedStageId,
+                            frameRate: widget.controller.frameRate,
+                          )
+                        : const ColoredBox(color: Color(0xFF15191B))),
               ),
               Positioned(
                 top: mediaQuery.viewPadding.top,
@@ -7219,10 +7301,16 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     );
     final panelFraction =
         _lockedPanelFraction ?? _manualPanelFraction ?? automaticFraction;
+    final showVoicePanel =
+        _mainVoiceVisible ||
+        _calls.active ||
+        _calls.snapshot.phase == CallUiPhase.incoming;
     final panelBounds = conversationPanelBounds(
       viewport: viewport,
       keyboardInset: keyboardInset,
-      fraction: widget.controller.splitNarrationComposer
+      fraction: showVoicePanel
+          ? max(panelFraction, 350 / max(1.0, viewport.height))
+          : widget.controller.splitNarrationComposer
           ? max(panelFraction, 290 / max(1.0, viewport.height))
           : panelFraction,
       fullscreen: _conversationFullscreen,
@@ -7381,7 +7469,25 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                   !widget.controller.splitNarrationComposer,
                 );
               },
-              showMicrophone: widget.controller.showMicrophoneButton,
+              showMicrophone:
+                  widget.controller.showMicrophoneButton &&
+                  _calls.contacts.any(
+                    (c) =>
+                        c.id ==
+                        'primary:${widget.controller.activeCharacterId}',
+                  ),
+              onStartVoiceCall:
+                  !widget.controller.continuousAsmr && !_isReplying
+                  ? _startMainVoiceCall
+                  : null,
+              voiceControls: showVoicePanel
+                  ? MainChatVoicePanel(
+                      controller: _calls,
+                      language: widget.controller.interfaceLanguage,
+                      onClose: () => setState(() => _mainVoiceVisible = false),
+                      onOpenSettings: () => _openVoiceCallSettings(context),
+                    )
+                  : null,
               unlockInputWhileReplying:
                   widget.controller.unlockInputWhileReplying,
               attachments: _pendingAttachments,
@@ -8994,6 +9100,8 @@ class _LiquidGlassConversation extends StatelessWidget {
     required this.splitNarration,
     required this.onToggleNarration,
     required this.showMicrophone,
+    required this.onStartVoiceCall,
+    required this.voiceControls,
     required this.unlockInputWhileReplying,
     required this.attachments,
     required this.onTakePhoto,
@@ -9053,6 +9161,8 @@ class _LiquidGlassConversation extends StatelessWidget {
   final bool splitNarration;
   final VoidCallback onToggleNarration;
   final bool showMicrophone;
+  final VoidCallback? onStartVoiceCall;
+  final Widget? voiceControls;
   final bool unlockInputWhileReplying;
   final List<ChatAttachment> attachments;
   final VoidCallback onTakePhoto;
@@ -9154,55 +9264,64 @@ class _LiquidGlassConversation extends StatelessWidget {
                     height: 1,
                     color: Colors.white.withValues(alpha: 0.2),
                   ),
-                  speechProgress,
-                  ConstrainedBox(
-                    constraints: BoxConstraints(
-                      maxHeight: min(
-                        MediaQuery.sizeOf(context).height * .5,
-                        max(0.0, constraints.maxHeight - 90),
+                  if (voiceControls == null) speechProgress,
+                  if (voiceControls != null && onWakeCharacter == null)
+                    ConstrainedBox(
+                      constraints: BoxConstraints(
+                        maxHeight: max(0, constraints.maxHeight - 70),
                       ),
-                    ),
-                    child: SingleChildScrollView(
-                      child: IgnorePointer(
-                        ignoring: selectingCollection,
-                        child: onWakeCharacter != null
-                            ? ColdStartWakeButton(
-                                language: language,
-                                onPressed: onWakeCharacter!,
-                                waking: waking,
-                              )
-                            : _GlassComposer(
-                                availableHeight: min(
-                                  MediaQuery.sizeOf(context).height * .5,
-                                  max(0.0, constraints.maxHeight - 90),
+                      child: voiceControls,
+                    )
+                  else
+                    ConstrainedBox(
+                      constraints: BoxConstraints(
+                        maxHeight: min(
+                          MediaQuery.sizeOf(context).height * .5,
+                          max(0.0, constraints.maxHeight - 90),
+                        ),
+                      ),
+                      child: SingleChildScrollView(
+                        child: IgnorePointer(
+                          ignoring: selectingCollection,
+                          child: onWakeCharacter != null
+                              ? ColdStartWakeButton(
+                                  language: language,
+                                  onPressed: onWakeCharacter!,
+                                  waking: waking,
+                                )
+                              : _GlassComposer(
+                                  availableHeight: min(
+                                    MediaQuery.sizeOf(context).height * .5,
+                                    max(0.0, constraints.maxHeight - 90),
+                                  ),
+                                  language: language,
+                                  characterProfile: characterProfile,
+                                  controller: inputController,
+                                  narrationController: narrationController,
+                                  bottomNarrationController:
+                                      bottomNarrationController,
+                                  splitNarration: splitNarration,
+                                  onToggleNarration: onToggleNarration,
+                                  isReplying: isReplying,
+                                  showMicrophone: showMicrophone,
+                                  onStartVoiceCall: onStartVoiceCall,
+                                  unlockInputWhileReplying:
+                                      unlockInputWhileReplying,
+                                  attachments: attachments,
+                                  liquidGlass: liquidGlass,
+                                  onTakePhoto: onTakePhoto,
+                                  onPickImage: onPickImage,
+                                  onPickFile: onPickFile,
+                                  onRemoveAttachment: onRemoveAttachment,
+                                  onSubmitted: onSubmitted,
+                                  onSend: onSend,
+                                  onCancel: onCancel,
+                                  expanded: expanded,
+                                  onToggleExpanded: onToggleExpanded,
                                 ),
-                                language: language,
-                                characterProfile: characterProfile,
-                                controller: inputController,
-                                narrationController: narrationController,
-                                bottomNarrationController:
-                                    bottomNarrationController,
-                                splitNarration: splitNarration,
-                                onToggleNarration: onToggleNarration,
-                                isReplying: isReplying,
-                                showMicrophone: showMicrophone,
-                                unlockInputWhileReplying:
-                                    unlockInputWhileReplying,
-                                attachments: attachments,
-                                liquidGlass: liquidGlass,
-                                onTakePhoto: onTakePhoto,
-                                onPickImage: onPickImage,
-                                onPickFile: onPickFile,
-                                onRemoveAttachment: onRemoveAttachment,
-                                onSubmitted: onSubmitted,
-                                onSend: onSend,
-                                onCancel: onCancel,
-                                expanded: expanded,
-                                onToggleExpanded: onToggleExpanded,
-                              ),
+                        ),
                       ),
                     ),
-                  ),
                 ],
               ),
             ),
@@ -9224,6 +9343,7 @@ class _LiquidGlassConversation extends StatelessWidget {
                     controller: suggestionController,
                     onPressed:
                         onWakeCharacter == null &&
+                            voiceControls == null &&
                             !isReplying &&
                             !selectingCollection &&
                             !isSuggestingReply
@@ -9301,7 +9421,8 @@ class _LiquidGlassConversation extends StatelessWidget {
                           : 'Select text or audio',
                       selectingCollection ? 'お気に入りを保存（未選択で終了）' : 'テキスト・音声を選択',
                     ),
-                    onPressed: isReplying || savingCollection
+                    onPressed:
+                        isReplying || savingCollection || voiceControls != null
                         ? null
                         : onToggleCollection,
                     size: 36,
@@ -10428,6 +10549,7 @@ class _GlassComposer extends StatelessWidget {
     required this.onToggleNarration,
     required this.isReplying,
     required this.showMicrophone,
+    required this.onStartVoiceCall,
     required this.unlockInputWhileReplying,
     required this.attachments,
     required this.liquidGlass,
@@ -10451,6 +10573,7 @@ class _GlassComposer extends StatelessWidget {
   final VoidCallback onToggleNarration;
   final bool isReplying;
   final bool showMicrophone;
+  final VoidCallback? onStartVoiceCall;
   final bool unlockInputWhileReplying;
   final List<ChatAttachment> attachments;
   final bool liquidGlass;
@@ -10484,11 +10607,12 @@ class _GlassComposer extends StatelessWidget {
             children: [
               if (showMicrophone) ...[
                 IconButton(
-                  onPressed: () {},
+                  key: const ValueKey('main-chat-voice-start'),
+                  onPressed: onStartVoiceCall,
                   tooltip: language.text(
-                    '语音输入（待接入）',
-                    'Voice input (coming later)',
-                    '音声入力（未実装）',
+                    '开始语音通话',
+                    'Start voice chat',
+                    '音声会話を開始',
                   ),
                   color: Colors.white,
                   icon: const Icon(Icons.mic_none_rounded),

@@ -130,8 +130,8 @@ class RealtimeCallController extends CallUiController
 
   static Future<void> _prepareMcpConnection(String model) async {
     final service = FishMcpService.instance;
-    if (!service.isReady ||
-        service.generationRouteForModel(model) == 'unavailable') {
+    final connected = await service.restoreConnection();
+    if (!connected || service.generationRouteForModel(model) == 'unavailable') {
       throw const FormatException(
         '请先在 Fish Audio MCP 设置中完成 OAuth 连接并读取工具。所选模型必须有可用的 Studio MCP 路径；通话不会自动回退 REST。',
       );
@@ -379,8 +379,8 @@ class RealtimeCallController extends CallUiController
           ? klaudiaFishAudioReferenceId
           : id.startsWith('primary:')
           ? (_provider == TtsProvider.fishAudioMcp
-                ? app.fishMcpVoice.trim()
-                : app.fishAudioReferenceId.trim())
+                ? app.fishMcpVoiceForMode(asmr: false)
+                : app.fishAudioReferenceIdForMode(asmr: false))
           : '';
       if (_voice.isEmpty) {
         throw const FormatException('请在“声音与语音”的当前服务中填写普通音色 ID。');

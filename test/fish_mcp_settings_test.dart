@@ -460,6 +460,7 @@ void main() {
     SharedPreferences.setMockInitialValues({
       'fish_mcp_model': 'drama-3',
       'fish_mcp_voice': 'stored-voice-id',
+      'tts_voice_settings_revision_v1': 1,
     });
     discover(
       schema: {
@@ -472,7 +473,8 @@ void main() {
     final controller = await openSettings(tester);
     final voice = find.byKey(const ValueKey('fish-mcp-normal-voice'));
     expect(tester.widget<TextField>(voice).enabled, isNot(false));
-    expect(tester.widget<TextField>(voice).controller!.text, 'stored-voice-id');
+    expect(tester.widget<TextField>(voice).controller!.text, isEmpty);
+    expect(find.text('stored-voice-id'), findsNothing);
     expect(find.text('清空未受支持的模型设置'), findsNothing);
     await tester.enterText(voice, 'updated-voice-id');
     await tester.tap(find.text('保存并使用 MCP'));
@@ -490,8 +492,8 @@ void main() {
       final asmrVoice = find.byKey(const ValueKey('fish-mcp-asmr-voice'));
       expect(tester.widget<TextField>(voice).enabled, isNot(false));
       expect(tester.widget<TextField>(asmrVoice).enabled, isNot(false));
-      expect(find.text(klaudiaFishAudioReferenceId), findsOneWidget);
-      expect(find.text('留空时沿用普通音色'), findsOneWidget);
+      expect(find.text(klaudiaFishAudioReferenceId), findsNothing);
+      expect(find.text('已内置，无需填写'), findsOneWidget);
       await tester.enterText(voice, 'normal-voice-id');
       await tester.enterText(asmrVoice, 'asmr-voice-id');
       await tester.tap(find.text('保存并使用 MCP'));
@@ -508,13 +510,12 @@ void main() {
     SharedPreferences.setMockInitialValues({
       'fish_mcp_voice': 'normal-voice-id',
       'fish_mcp_asmr_voice': 'stored-asmr-id',
+      'tts_voice_settings_revision_v1': 1,
     });
     final controller = await openSettings(tester);
     final asmrVoice = find.byKey(const ValueKey('fish-mcp-asmr-voice'));
-    expect(
-      tester.widget<TextField>(asmrVoice).controller!.text,
-      'stored-asmr-id',
-    );
+    expect(tester.widget<TextField>(asmrVoice).controller!.text, isEmpty);
+    expect(find.text('stored-asmr-id'), findsNothing);
     await tester.tap(find.text('保存并使用 MCP'));
     await tester.pumpAndSettle();
     expect(controller.fishMcpVoice, 'normal-voice-id');

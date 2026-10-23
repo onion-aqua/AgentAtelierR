@@ -18,6 +18,7 @@ import 'retry_policy.dart';
 import 'model_thinking.dart';
 import 'planning_http_client.dart';
 import 'tts_text_normalizer.dart';
+import 'fish_s2_tags.dart';
 import 'desktop_tts_transport.dart';
 import 'qwen_tts_config.dart';
 
@@ -1456,7 +1457,10 @@ class FishAudioClient {
     double temperature = 0.7,
     String baseUrl = endpoint,
   }) async {
-    final synthesisText = normalizeFishAudioSynthesisText(text);
+    final normalizedText = normalizeFishAudioSynthesisText(text);
+    final synthesisText = isFishS2Model(model)
+        ? compileFishS2Text(normalizedText)
+        : normalizedText;
     if (synthesisText
             .replaceAll(RegExp(r'\[[^\[\]\r\n]+\]'), '')
             .trim()
@@ -1468,6 +1472,13 @@ class FishAudioClient {
       throw const AiServiceException('没有可朗读的文本，未提交 Fish Audio 语音生成');
     }
     final started = DateTime.now();
+    if (isFishS2Model(model)) {
+      RuntimeLog.instance.info(
+        'TTS',
+        'Fish Audio REST requestedModel=${model.trim()}，'
+            'speechTagFormat=s2_descriptive_brackets',
+      );
+    }
     final uri = Uri.parse(baseUrl.trim().isEmpty ? endpoint : baseUrl.trim());
     final requestBody = {
       'text': synthesisText,

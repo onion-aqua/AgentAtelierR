@@ -4,6 +4,7 @@ import 'character_performance.dart';
 import 'character_state.dart';
 import 'npc_chat_contacts.dart';
 import 'fish_drama3_tags.dart';
+import 'fish_asmr_delivery.dart';
 
 enum ChatSpeaker { narrator, ryza, character, translation }
 
@@ -751,6 +752,7 @@ String applyFishEmotionIntensityPerSentence(
           }
           final name = cue.substring(1, cue.length - 1).trim().toLowerCase();
           if (!_deliveryCues.contains(name) &&
+              !(asmr && name == 'soft') &&
               !(drama3 && fishDrama3DeliveryCueNames.contains(name))) {
             return cue;
           }
@@ -780,7 +782,10 @@ String applyFishEmotionIntensityPerSentence(
     // A trailing [pause] is not another sentence to retag.
     if (body.isNotEmpty) output.add(body);
   }
-  return output.join(' ');
+  final processed = output.join(' ');
+  return quietDelivery
+      ? scopeFishAsmrDelivery(processed, drama3: drama3)
+      : processed;
 }
 
 String _fishPerformanceDirection(
@@ -795,8 +800,7 @@ String _fishPerformanceDirection(
       TtsEmotionIntensity.dramatic => 'intensely',
       _ => '',
     };
-    return '$strength $emotion, expressed through quiet whispering, '
-        'with clear connected words and gentle emotional phrasing';
+    return '$strength $emotion, with connected words and gentle emotional phrasing';
   }
   final normalized = emotion.toLowerCase();
   final family = switch (normalized) {

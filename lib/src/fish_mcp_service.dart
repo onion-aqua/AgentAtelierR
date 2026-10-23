@@ -16,6 +16,7 @@ import 'ai_services.dart' show detectAudioContainerExtension;
 import 'fish_mcp_protocol.dart';
 import 'fish_mcp_studio.dart';
 import 'fish_drama3_tags.dart';
+import 'fish_s2_tags.dart';
 import 'runtime_log.dart';
 import 'tts_text_normalizer.dart';
 
@@ -59,15 +60,19 @@ class FishMcpService extends ChangeNotifier {
   FishMcpService._()
     : _downloadClient = http.Client(),
       _temporaryDirectory = getTemporaryDirectory,
-      _persistDiagnostics = true;
+      _persistDiagnostics = true,
+      _connectionClientFactory = null;
 
   @visibleForTesting
   FishMcpService.forTesting({
     required this._client,
     required this._downloadClient,
     required this._temporaryDirectory,
+    this._connectionClientFactory,
   }) : _persistDiagnostics = false {
-    state = FishMcpConnectionState.connected;
+    state = _client == null
+        ? FishMcpConnectionState.disconnected
+        : FishMcpConnectionState.connected;
   }
 
   static final FishMcpService instance = FishMcpService._();
@@ -107,7 +112,11 @@ class FishMcpService extends ChangeNotifier {
   final http.Client _downloadClient;
   final Future<Directory> Function() _temporaryDirectory;
   final bool _persistDiagnostics;
+  final McpClient Function()? _connectionClientFactory;
   int _connectionGeneration = 0;
+  int _manualDisconnectGeneration = 0;
+  Future<void>? _connectionAttempt;
+  bool _automaticConnectionEnabled = true;
 
   McpClient? _client;
   FishMcpStudioSession? _studioSession;
@@ -267,36 +276,94 @@ class FishMcpService extends ChangeNotifier {
     FishMcpConnectionState.error => '连接错误',
   };
 
-  Future<void> connect({bool launchLogin = true}) async {
-    final closing = disconnect(clearError: true);
-    final generation = _connectionGeneration;
-    await closing;
-    if (!_isCurrent(generation)) return;
-    final stored = await hasStoredCredentials();
-    if (!_isCurrent(generation)) return;
-    if (!stored) {
-      await beginAuthorization(launchLogin: launchLogin);
-      return;
+  /// Restores an existing OAuth session without opening a browser, registering
+  /// a client or calling any speech generation tools. All callers share the
+  /// same in-flight handshake and tools/list request.
+  Future<bool> restoreConnection() async {
+    if (_disposed) return false;
+    if (isReady) return true;
+    if (!_automaticConnectionEnabled || _pendingAuthorization != null) {
+      return false;
     }
-    await _connectWithStoredCredentials(launchLogin: launchLogin);
+    final cancellation = _manualDisconnectGeneration;
+    await _startConnection(allowAuthorization: false, launchLogin: false);
+    return !_disposed &&
+        cancellation == _manualDisconnectGeneration &&
+        _automaticConnectionEnabled &&
+        isReady;
+  }
+
+  Future<void> connect({bool launchLogin = true}) async {
+    if (_disposed) return;
+    _automaticConnectionEnabled = true;
+    final pending = _connectionAttempt;
+    if (pending != null) {
+      await pending;
+      if (_disposed || !_automaticConnectionEnabled || isReady) return;
+    }
+    await _startConnection(allowAuthorization: true, launchLogin: launchLogin);
+  }
+
+  Future<void> _startConnection({
+    required bool allowAuthorization,
+    required bool launchLogin,
+  }) {
+    final pending = _connectionAttempt;
+    if (pending != null) return pending;
+    final completion = Completer<void>();
+    _connectionAttempt = completion.future;
+    // Publish the future before state notifications can reenter this method.
+    unawaited(() async {
+      var generation = _connectionGeneration;
+      try {
+        final stored = await hasStoredCredentials();
+        if (!_isCurrent(generation) || !_automaticConnectionEnabled) return;
+        if (!stored && !allowAuthorization) return;
+        final closing = _disconnect(
+          clearError: true,
+          suppressAutomatic: false,
+          clearAttempt: false,
+        );
+        generation = _connectionGeneration;
+        await closing;
+        if (!_isCurrent(generation) || !_automaticConnectionEnabled) return;
+        if (!stored) {
+          await beginAuthorization(launchLogin: launchLogin);
+        } else {
+          await _connectWithStoredCredentials(
+            allowAuthorization: allowAuthorization,
+            launchLogin: launchLogin,
+          );
+        }
+      } on Object catch (cause) {
+        if (_isCurrent(generation)) {
+          _recordError(FishMcpException.fromCause(cause, stage: 'connection'));
+          _setState(FishMcpConnectionState.error);
+        }
+      } finally {
+        if (identical(_connectionAttempt, completion.future)) {
+          _connectionAttempt = null;
+        }
+        completion.complete();
+      }
+    }());
+    return completion.future;
   }
 
   Future<void> _connectWithStoredCredentials({
+    required bool allowAuthorization,
     required bool launchLogin,
   }) async {
     final generation = _connectionGeneration;
     _setState(FishMcpConnectionState.connecting);
     final authProvider = _FishMcpOAuthProvider(
       isCurrent: () => _isCurrent(generation),
-      onAuthorizationUrl: (uri) async {
-        if (!_isCurrent(generation)) return;
-        lastAuthorizationUri = uri;
-        _setState(FishMcpConnectionState.authenticating);
-      },
     );
-    final client = McpClient(
-      const Implementation(name: 'agent-atelier-r', version: '1.0.4.3'),
-    );
+    final client =
+        _connectionClientFactory?.call() ??
+        McpClient(
+          const Implementation(name: 'agent-atelier-r', version: '1.0.4.4'),
+        );
     final transport = StreamableHttpClientTransport(
       Uri.parse(endpoint),
       opts: StreamableHttpClientTransportOptions(
@@ -307,27 +374,52 @@ class FishMcpService extends ChangeNotifier {
       ),
     );
     _client = client;
+    client.onclose = () {
+      if (!_isCurrent(generation) || !identical(client, _client)) return;
+      // Initialization failures are handled by the connection catch below.
+      if (state == FishMcpConnectionState.connecting) return;
+      _connectionGeneration++;
+      _client = null;
+      _studioSession = null;
+      tools = const [];
+      ttsToolName = null;
+      drama3Supported = false;
+      lastDiscoveryAt = null;
+      _setState(FishMcpConnectionState.disconnected);
+    };
     try {
-      await client.connect(transport);
+      await client.connect(transport).timeout(const Duration(seconds: 30));
       if (!_isCurrent(generation) || !identical(client, _client)) {
         await client.close();
         return;
       }
       _setState(FishMcpConnectionState.connected);
       await discoverTools();
-    } on UnauthorizedError catch (cause) {
+    } on UnauthorizedError {
       if (!_isCurrent(generation) || !identical(client, _client)) return;
-      // mcp_dart starts OAuth discovery and invokes redirectToAuthorizationUrl.
-      // The connection is intentionally left unauthenticated until the app
-      // receives the deep-link callback and the user retries connection.
-      errorMessage = _safeError(cause);
-      await beginAuthorization(launchLogin: launchLogin);
+      _client = null;
+      await client.close();
+      if (!_isCurrent(generation)) return;
+      if (allowAuthorization) {
+        await beginAuthorization(launchLogin: launchLogin);
+      } else {
+        _recordError(
+          FishMcpException(
+            stage: 'connection',
+            code: 'authorization_required',
+            message: 'Fish Audio 授权已失效，请在语音设置中重新登录。',
+          ),
+        );
+        _setState(FishMcpConnectionState.error);
+      }
     } on Object catch (cause) {
       if (!_isCurrent(generation) || !identical(client, _client)) return;
       if (!identical(cause, lastError)) {
         _recordError(FishMcpException.fromCause(cause, stage: 'connection'));
       }
       _setState(FishMcpConnectionState.error);
+      _client = null;
+      await client.close();
     }
   }
 
@@ -335,6 +427,7 @@ class FishMcpService extends ChangeNotifier {
   /// authorization page. Registration happens only after the user explicitly
   /// taps the connect button; startup never creates a remote client.
   Future<void> beginAuthorization({bool launchLogin = true}) async {
+    _automaticConnectionEnabled = true;
     final generation = _connectionGeneration;
     try {
       _setState(FishMcpConnectionState.connecting);
@@ -505,17 +598,21 @@ class FishMcpService extends ChangeNotifier {
     }
     final generation = _connectionGeneration;
     try {
-      final response = await http.post(
-        Uri.parse(_tokenEndpoint),
-        headers: const {'Content-Type': 'application/x-www-form-urlencoded'},
-        body: {
-          'grant_type': 'authorization_code',
-          'client_id': pending.clientId,
-          'code': code,
-          'redirect_uri': callbackUri,
-          'code_verifier': pending.codeVerifier,
-        },
-      );
+      final response = await http
+          .post(
+            Uri.parse(_tokenEndpoint),
+            headers: const {
+              'Content-Type': 'application/x-www-form-urlencoded',
+            },
+            body: {
+              'grant_type': 'authorization_code',
+              'client_id': pending.clientId,
+              'code': code,
+              'redirect_uri': callbackUri,
+              'code_verifier': pending.codeVerifier,
+            },
+          )
+          .timeout(const Duration(seconds: 20));
       if (!_isCurrent(generation) ||
           !identical(pending, _pendingAuthorization)) {
         return;
@@ -564,6 +661,8 @@ class FishMcpService extends ChangeNotifier {
     bool Function()? isCurrent,
   }) async {
     text = normalizeFishAudioSynthesisText(text);
+    final cancellation = _manualDisconnectGeneration;
+    if (!isReady) await restoreConnection();
     var stage = 'preflight';
     var submitted = false;
     final generation = _connectionGeneration;
@@ -581,6 +680,13 @@ class FishMcpService extends ChangeNotifier {
     }
 
     try {
+      if (cancellation != _manualDisconnectGeneration) {
+        throw FishMcpException(
+          stage: 'cancelled',
+          code: 'connection_changed',
+          message: '连接已由用户断开，已取消旧语音请求；不会重新生成。',
+        );
+      }
       final client = _client;
       final tool = selectedTtsTool;
       if (!isReady || client == null) {
@@ -605,7 +711,11 @@ class FishMcpService extends ChangeNotifier {
           message: '移除过度气声提示后没有可朗读内容，未提交语音生成。',
         );
       }
-      if (isFishDrama3Model(model)) text = compileFishDrama3Text(text);
+      if (isFishDrama3Model(model)) {
+        text = compileFishDrama3Text(text);
+      } else if (isFishS2Model(model)) {
+        text = compileFishS2Text(text);
+      }
       final route = generationRouteForModel(model);
       if (route == 'unavailable') {
         final issues = [
@@ -671,6 +781,8 @@ class FishMcpService extends ChangeNotifier {
         'text_utf8_bytes': utf8.encode(text).length,
         'speech_tag_format': isFishDrama3Model(model)
             ? 'drama3_paired'
+            : isFishS2Model(model)
+            ? 's2_descriptive_brackets'
             : 'generic_brackets',
         'requested_model': requestedModel,
         'model_argument': ?modelField,
@@ -945,7 +1057,19 @@ class FishMcpService extends ChangeNotifier {
     );
   }
 
-  Future<void> disconnect({bool clearError = false}) async {
+  Future<void> disconnect({bool clearError = false}) =>
+      _disconnect(clearError: clearError);
+
+  Future<void> _disconnect({
+    bool clearError = false,
+    bool suppressAutomatic = true,
+    bool clearAttempt = true,
+  }) async {
+    if (suppressAutomatic) {
+      _automaticConnectionEnabled = false;
+      _manualDisconnectGeneration++;
+    }
+    if (clearAttempt) _connectionAttempt = null;
     _connectionGeneration++;
     if (_modelSelectionStatus == 'pending') {
       _modelSelectionStatus = 'request_failed';
@@ -1007,15 +1131,19 @@ class FishMcpService extends ChangeNotifier {
       if (refreshToken == null || clientId == null || clientId.isEmpty) {
         return null;
       }
-      final response = await http.post(
-        Uri.parse(_tokenEndpoint),
-        headers: const {'Content-Type': 'application/x-www-form-urlencoded'},
-        body: {
-          'grant_type': 'refresh_token',
-          'client_id': clientId,
-          'refresh_token': refreshToken,
-        },
-      );
+      final response = await http
+          .post(
+            Uri.parse(_tokenEndpoint),
+            headers: const {
+              'Content-Type': 'application/x-www-form-urlencoded',
+            },
+            body: {
+              'grant_type': 'refresh_token',
+              'client_id': clientId,
+              'refresh_token': refreshToken,
+            },
+          )
+          .timeout(const Duration(seconds: 20));
       if (!isCurrent()) return null;
       if (response.statusCode < 200 || response.statusCode >= 300) return null;
       final payload = jsonDecode(response.body);
@@ -1104,14 +1232,14 @@ class _FishMcpPendingAuthorization {
   final String state;
 }
 
-class _FishMcpOAuthProvider implements OAuthAuthorizationCodeProvider {
-  _FishMcpOAuthProvider({
-    required this.onAuthorizationUrl,
-    required this.isCurrent,
-  });
+// Interactive PKCE authorization is owned by FishMcpService. Using the basic
+// provider prevents the transport from starting its own discovery/registration
+// flow during an automatic reconnection rejected by the server.
+class _FishMcpOAuthProvider implements OAuthClientProvider {
+  _FishMcpOAuthProvider({required this.isCurrent});
 
-  final Future<void> Function(Uri uri) onAuthorizationUrl;
   final bool Function() isCurrent;
+  Future<OAuthTokens?>? _tokenRead;
 
   static Future<void> _credentialWriteTail = Future<void>.value();
 
@@ -1122,32 +1250,19 @@ class _FishMcpOAuthProvider implements OAuthAuthorizationCodeProvider {
   }
 
   @override
-  String get clientId => '';
-
-  @override
-  Uri get redirectUri => Uri.parse(FishMcpService.callbackUri);
-
-  @override
-  String? get clientSecret => null;
-
-  @override
-  List<String> get scopes => const ['mcp'];
-
-  @override
-  Future<void> redirectToAuthorizationUrl(Uri authorizationUri) =>
-      onAuthorizationUrl(authorizationUri);
-
-  @override
   Future<void> redirectToAuthorization() async {}
 
   @override
   Future<OAuthTokens?> tokens() async {
-    return FishMcpService._readValidTokens(isCurrent: isCurrent);
-  }
-
-  @override
-  Future<void> saveTokens(OAuthTokens tokens) async {
-    await saveStoredTokens(tokens, isCurrent: isCurrent);
+    final pending = _tokenRead;
+    if (pending != null) return pending;
+    final reading = FishMcpService._readValidTokens(isCurrent: isCurrent);
+    _tokenRead = reading;
+    try {
+      return await reading;
+    } finally {
+      if (identical(_tokenRead, reading)) _tokenRead = null;
+    }
   }
 
   static Future<void> saveStoredTokens(

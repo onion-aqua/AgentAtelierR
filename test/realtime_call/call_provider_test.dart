@@ -17,6 +17,27 @@ import 'package:shared_preferences/shared_preferences.dart';
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
+  for (final provider in [TtsProvider.fishAudio, TtsProvider.fishAudioMcp]) {
+    test(
+      '$provider uses Ryza built-in ordinary voice with no custom ID',
+      () async {
+        final fixture = await _ProviderFixture.create(provider);
+        addTearDown(fixture.dispose);
+        fixture.app.fishAudioReferenceId = '';
+        fixture.app.fishMcpVoice = '';
+        // Calls always use the ordinary voice, even if the chat was in ASMR.
+        fixture.app.setTtsVoiceMode(TtsVoiceMode.asmr);
+        await fixture.controller.startCall('primary:ryza');
+        await fixture.playTurn();
+        final requests = provider == TtsProvider.fishAudio
+            ? fixture.restRequests
+            : fixture.mcpRequests;
+        expect(requests.single.voice, '1380fd182e0f44639df49e1ae8feeed8');
+        expect(fixture.controller.snapshot.phase, CallUiPhase.listening);
+      },
+    );
+  }
+
   test(
     'sleeping character explains how to unlock calls without starting audio',
     () async {
@@ -102,6 +123,30 @@ void main() {
       expect(fixture.mcpRequests, isEmpty);
       expect(fixture.restRequests, isEmpty);
       expect(fixture.asr.starts, 0);
+    },
+  );
+
+  test(
+    'ending a call during MCP recovery never starts audio or generation',
+    () async {
+      final preparation = Completer<void>();
+      final fixture = await _ProviderFixture.create(
+        TtsProvider.fishAudioMcp,
+        preparationWait: preparation.future,
+      );
+      addTearDown(fixture.dispose);
+      final connecting = fixture.controller.startCall('primary:ryza');
+      await _until(() => fixture.preparedModels.isNotEmpty);
+      expect(fixture.controller.snapshot.phase, CallUiPhase.preparing);
+      await fixture.controller.endCall();
+      preparation.complete();
+      await connecting;
+
+      expect(fixture.controller.snapshot.isActive, isFalse);
+      expect(fixture.asr.starts, 0);
+      expect(fixture.keyReads, 0);
+      expect(fixture.mcpRequests, isEmpty);
+      expect(fixture.restRequests, isEmpty);
     },
   );
 
@@ -245,6 +290,7 @@ class _ProviderFixture {
     String? callVoice,
     String restKey = 'independent-rest-key',
     Object? preparationError,
+    Future<void>? preparationWait,
     Object? synthesisError,
     bool holdDrain = false,
   }) async {
@@ -307,6 +353,7 @@ class _ProviderFixture {
       },
       prepareMcp: (model) async {
         fixture.preparedModels.add(model);
+        if (preparationWait != null) await preparationWait;
         if (preparationError != null) throw preparationError;
       },
       speechFactory: (text, voice, model, key) {

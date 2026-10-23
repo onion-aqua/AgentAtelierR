@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:ryza_chat_mvp/src/hidden_voice_id_field.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:ryza_chat_mvp/src/app_controller.dart';
@@ -131,6 +132,18 @@ void main() {
               .widget<TextField>(find.byKey(const ValueKey('qwen-voice')))
               .controller!
               .text,
+          '',
+        );
+        expect(
+          tester
+              .widget<HiddenVoiceIdField>(
+                find.ancestor(
+                  of: find.byKey(const ValueKey('qwen-voice')),
+                  matching: find.byType(HiddenVoiceIdField),
+                ),
+              )
+              .controller
+              .text,
           QwenTtsConfig.modern31Voices.first,
         );
         expect(
@@ -160,6 +173,9 @@ void main() {
         expect(tester.takeException(), isNull);
         expect(requests, 0);
         expect(controller.dashScopeTtsModel, 'qwen3-tts-flash');
+        final voiceInput = find.byKey(const ValueKey('qwen-voice'));
+        await reveal(tester, voiceInput);
+        await tester.enterText(voiceInput, '');
 
         await tester.tap(find.widgetWithText(FilledButton, '保存设置'));
         await tester.pumpAndSettle();
@@ -250,7 +266,7 @@ void main() {
   );
 
   testWidgets(
-    'Qwen modern blank normal voice stays on settings and preserves configuration',
+    'Qwen blank replacement preserves the selected normal voice draft',
     (tester) async {
       var requests = 0;
       final client = MockClient((request) async {
@@ -260,7 +276,6 @@ void main() {
       addTearDown(client.close);
       await http.runWithClient(() async {
         final controller = await setup(tester);
-        final before = controller.exportData()['preferences'];
         await choose(
           tester,
           'qwen-model-qwen3-tts-flash',
@@ -275,17 +290,25 @@ void main() {
         );
         final voice = find.byKey(const ValueKey('qwen-voice'));
         await reveal(tester, voice);
+        final voiceDraft = tester
+            .widget<HiddenVoiceIdField>(
+              find.ancestor(
+                of: voice,
+                matching: find.byType(HiddenVoiceIdField),
+              ),
+            )
+            .controller;
+        expect(voiceDraft.text, QwenTtsConfig.modern31Voices.first);
         await tester.enterText(voice, '');
-        await tester.tap(find.byKey(const ValueKey('qwen-save')));
+        expect(voiceDraft.text, QwenTtsConfig.modern31Voices.first);
+        expect(controller.dashScopeTtsVoice, 'Cherry');
+        await tester.tap(find.widgetWithText(TextButton, '取消'));
         await tester.pumpAndSettle();
 
-        expect(find.byType(SettingsDetailPage), findsOneWidget);
-        expect(find.textContaining('请填写普通模式 Voice ID 或选择系统音色'), findsWidgets);
-        expect(controller.exportData()['preferences'], before);
+        expect(find.byType(SettingsDetailPage), findsNothing);
+        expect(controller.dashScopeTtsVoice, 'Cherry');
         expect(requests, 0);
         expect(tester.takeException(), isNull);
-        await tester.binding.handlePopRoute();
-        await tester.pumpAndSettle();
         await tester.pumpWidget(const SizedBox.shrink());
       }, () => client);
     },
@@ -386,6 +409,19 @@ void main() {
           tester
               .widget<TextField>(find.byKey(const ValueKey('qwen-voice')))
               .controller!
+              .text,
+          '',
+        );
+        expect(find.text(createdVoice), findsNothing);
+        expect(
+          tester
+              .widget<HiddenVoiceIdField>(
+                find.ancestor(
+                  of: find.byKey(const ValueKey('qwen-voice')),
+                  matching: find.byType(HiddenVoiceIdField),
+                ),
+              )
+              .controller
               .text,
           createdVoice,
         );
