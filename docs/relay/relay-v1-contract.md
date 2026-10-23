@@ -16,7 +16,7 @@
 
 ## 配对
 
-二维码为直接编码下列 JSON 的 UTF-8 字符串；示例内容都是占位值：
+二维码新生成时默认对下列完整 JSON 的 UTF-8 字节使用 `ryzasync:v2:` AES-256-GCM 封装；字节顺序、公开兼容密钥和失败处理见 [二维码封装 v2](qr-envelope-v2.md)。内部配对协议仍为 v1，旧版直接编码 JSON 的明文二维码继续兼容。示例内容都是占位值：
 
 ```json
 {
@@ -28,7 +28,7 @@
 }
 ```
 
-PC 安全随机生成 32 字节 pairing_secret 并编码为 64 个 hex 字符。服务端只存 `SHA256(UTF8(pairing_secret))`。默认 TTL 300 秒，单次 claim 使用数据库原子事务，失败配对不会激活任何设备。
+PC 安全随机生成 32 字节 pairing_secret 并编码为 64 个 hex 字符。服务端只存 `SHA256(UTF8(pairing_secret))`。默认 TTL 300 秒，单次 claim 使用数据库原子事务，失败配对不会激活任何设备。现有 PC 生成的完整 JSON 还包含创建接口返回的 `expires_at`，必须一并封装；手机在该字段存在时校验其格式和是否到期，旧版缺省该字段时仍交由服务端校验 TTL。v2 只改变客户端二维码表示，不改变 claim 请求、鉴权或有效期；公开兼容密钥仅遮蔽普通扫码显示内容，不提供持码人访问控制。
 
 接口如下；device_id/token 均由客户端安全生成，避免确认后发放凭证时丢包导致客户端丢失身份：
 
@@ -57,7 +57,7 @@ device_id 不得覆盖：默认 bootstrap enroll 遇到已有 device_id 返回 D
 
 ### 可选限期直接扫码绑定扩展
 
-客户端先检查 `/health` 的 `timed_pairing:true`；缺省 false，不能对旧服务器假定已支持。PC 在原 `POST /v1/pairings` 增加 `auto_confirm:true` 与必填 `binding_ttl_seconds`，仅接受 86400、259200、604800（1、3、7 天）；可选 `capabilities` 默认四项白名单，`history_read` 默认 false。PC 选择期限与权限并创建二维码即明确授权持有该单次密钥的首个成功扫码者，无须扫码后 PC 二次确认。二维码 TTL 仍至多 300 秒，绑定期限从成功 claim 开始，与二维码过期时间分别计算。二维码 JSON、claim 请求字段和设备凭证安全存储要求保持原样。
+客户端先检查 `/health` 的 `timed_pairing:true`；缺省 false，不能对旧服务器假定已支持。PC 在原 `POST /v1/pairings` 增加 `auto_confirm:true` 与必填 `binding_ttl_seconds`，仅接受 86400、259200、604800（1、3、7 天）；可选 `capabilities` 默认四项白名单，`history_read` 默认 false。PC 选择期限与权限并创建二维码即明确授权持有该单次密钥的首个成功扫码者，无须扫码后 PC 二次确认。二维码 TTL 仍至多 300 秒，绑定期限从成功 claim 开始，与二维码过期时间分别计算。二维码内部 JSON、claim 请求字段和设备凭证安全存储要求保持原样，v2 仅增加客户端二维码封装。
 
 成功 claim 可直接返回 confirmed，并增加可选 `binding_expires_at`；配对状态、`DeviceSummary` 和 `pairing.updated` 同样可携带此字段。相同 claim 重试返回原期限，不续期、不创建第二身份；重复 confirm 只能收紧原 capability 或显式设置历史读取权，不改变绑定期限。省略 auto_confirm 默认 false，保留原二次确认流程；已有未记录期限的绑定保持原期限语义。手机须兼容两种 claim 状态，并展示期限；到期后清理活动绑定，新绑定须重新扫码。
 

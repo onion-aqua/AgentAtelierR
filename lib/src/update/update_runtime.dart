@@ -1,15 +1,13 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 
-import '../protected_asset_format.dart';
 import 'apk_update_installer.dart';
+import 'protected_resource_health.dart';
 import 'release_source.dart';
 import 'resource_models.dart';
 import 'resource_resolver.dart';
-import 'resource_store.dart';
 import 'resource_update_manager.dart';
 import 'update_build_config.dart';
 import 'update_downloader.dart';
@@ -127,7 +125,7 @@ class UpdateRuntime extends ChangeNotifier {
           assetKeyIds: config.resourceAssetKeyIds,
         ),
         resolver: ResourceAssetResolver.instance,
-        healthValidator: _validateProductionResourceSnapshot,
+        healthValidator: ProductionResourceHealthValidator().call,
       );
       await resources.initialize(bundledReleaseSeq: config.releaseSeq);
       final app = await installer.getInstalledAppInfo();
@@ -542,57 +540,4 @@ class UpdateRuntime extends ChangeNotifier {
     ownedSource?.close();
     super.dispose();
   }
-}
-
-Future<void> _validateProductionResourceSnapshot(
-  ResourceSnapshotManifest manifest,
-  ResourceSnapshotStore store,
-) async {
-  const encodedKey = String.fromEnvironment(protectedCharacterAssetKeyDefine);
-  Uint8List? protectedAssetKey;
-  for (final object in manifest.objects) {
-    final path = object.path;
-    final validateJson = path.toLowerCase().endsWith('.json');
-    final validatePack =
-        path.toLowerCase().endsWith('.aarpack') ||
-        path.toLowerCase().endsWith('.aarpreview');
-    if (!validateJson && !validatePack) continue;
-    final file = await store.objectFile(object.sha256);
-    if (validateJson) {
-      _decodeJsonResource(await file.readAsBytes());
-      continue;
-    }
-    if (encodedKey.isEmpty) {
-      throw const ResourceUpdateException(
-        'resource_asset_key_unavailable',
-        '当前应用没有可验证角色资源的内置密钥',
-      );
-    }
-    protectedAssetKey ??= decodeProtectedAssetKey(encodedKey);
-    final name = _fileNameWithoutExtension(path);
-    final packId = path.toLowerCase().endsWith('.aarpreview')
-        ? 'preview/$name'
-        : 'character/$name';
-    final files = await decryptProtectedAssetFiles(
-      encrypted: await file.readAsBytes(),
-      key: protectedAssetKey,
-      packId: packId,
-    );
-    for (final entry in files.entries) {
-      if (entry.key.toLowerCase().endsWith('.json')) {
-        _decodeJsonResource(entry.value);
-      }
-    }
-  }
-}
-
-void _decodeJsonResource(List<int> bytes) {
-  final decoded = utf8.decode(bytes, allowMalformed: false);
-  jsonDecode(decoded);
-}
-
-String _fileNameWithoutExtension(String path) {
-  final fileName = path.split('/').last;
-  final extension = fileName.lastIndexOf('.');
-  return extension <= 0 ? fileName : fileName.substring(0, extension);
 }

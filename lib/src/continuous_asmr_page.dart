@@ -1124,7 +1124,9 @@ class _ContinuousAsmrPageState extends State<ContinuousAsmrPage> {
               TtsProvider.dashScope
                   when QwenTtsConfig.isModernModel(c.dashScopeTtsModel) =>
                 c.dashScopeTtsOptions.rate,
-              TtsProvider.fishAudio || TtsProvider.generic => requestedSpeed,
+              TtsProvider.fishAudio ||
+              TtsProvider.fishAudioMcp ||
+              TtsProvider.generic => requestedSpeed,
               _ => 1,
             },
           ),

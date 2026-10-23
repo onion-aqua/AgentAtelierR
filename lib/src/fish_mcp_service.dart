@@ -18,6 +18,7 @@ import 'fish_mcp_studio.dart';
 import 'fish_drama3_tags.dart';
 import 'fish_s2_tags.dart';
 import 'runtime_log.dart';
+import 'speech_tempo.dart';
 import 'tts_text_normalizer.dart';
 
 export 'fish_mcp_protocol.dart' show FishMcpException;
@@ -60,6 +61,7 @@ class FishMcpService extends ChangeNotifier {
   FishMcpService._()
     : _downloadClient = http.Client(),
       _temporaryDirectory = getTemporaryDirectory,
+      _tempoProcessor = adjustSpeechFileTempo,
       _persistDiagnostics = true,
       _connectionClientFactory = null;
 
@@ -69,7 +71,9 @@ class FishMcpService extends ChangeNotifier {
     required this._downloadClient,
     required this._temporaryDirectory,
     this._connectionClientFactory,
-  }) : _persistDiagnostics = false {
+    SpeechFileTempoProcessor? tempoProcessor,
+  }) : _tempoProcessor = tempoProcessor ?? adjustSpeechFileTempo,
+       _persistDiagnostics = false {
     state = _client == null
         ? FishMcpConnectionState.disconnected
         : FishMcpConnectionState.connected;
@@ -111,6 +115,7 @@ class FishMcpService extends ChangeNotifier {
 
   final http.Client _downloadClient;
   final Future<Directory> Function() _temporaryDirectory;
+  final SpeechFileTempoProcessor _tempoProcessor;
   final bool _persistDiagnostics;
   final McpClient Function()? _connectionClientFactory;
   int _connectionGeneration = 0;
@@ -667,6 +672,7 @@ class FishMcpService extends ChangeNotifier {
     var submitted = false;
     final generation = _connectionGeneration;
     var requestSerial = 0;
+    final temporaryPaths = <String>{};
     final requestedModel = fishMcpModelDiagnosticLabel(model ?? '');
     void ensureRequestCurrent(McpClient client) {
       _ensureCurrent(generation, client);
@@ -680,6 +686,14 @@ class FishMcpService extends ChangeNotifier {
     }
 
     try {
+      if (!speed.isFinite) {
+        throw FishMcpException(
+          stage: 'parameters',
+          code: 'invalid_speed',
+          message: '语速必须为有效的有限数值，未提交生成请求。',
+        );
+      }
+      speed = speed.clamp(0.5, 2.0);
       if (cancellation != _manualDisconnectGeneration) {
         throw FishMcpException(
           stage: 'cancelled',
@@ -751,6 +765,16 @@ class FishMcpService extends ChangeNotifier {
                 omitted[field] = explanation;
               },
             );
+      final serverSpeed =
+          !useStudio &&
+          (arguments.containsKey('speed') ||
+              arguments.containsKey('prosody_speed'));
+      final localSpeed = speed != 1.0 && !serverSpeed;
+      final speedControl = speed == 1.0
+          ? 'none'
+          : serverSpeed
+          ? 'server'
+          : 'local';
       requestSerial = ++_modelRequestSerial;
       _lastRequestedModel = requestedModel;
       _lastReportedModel = null;
@@ -785,6 +809,8 @@ class FishMcpService extends ChangeNotifier {
             ? 's2_descriptive_brackets'
             : 'generic_brackets',
         'requested_model': requestedModel,
+        'requested_speed': speed,
+        'speed_control': speedControl,
         'model_argument': ?modelField,
         'model_declared_in_schema': modelDeclared,
         'schema_rejects_extra_arguments':
@@ -914,6 +940,13 @@ class FishMcpService extends ChangeNotifier {
           message: '工具返回了空音频。',
         );
       }
+      if (bytes.length > 64 * 1024 * 1024) {
+        throw FishMcpException(
+          stage: stage,
+          code: 'audio_too_large',
+          message: '音频超过 64 MiB 限制，未重新生成语音。',
+        );
+      }
       final extension = detectAudioContainerExtension(bytes);
       if (extension == null) {
         throw FishMcpException(
@@ -928,20 +961,41 @@ class FishMcpService extends ChangeNotifier {
       final file = File(
         '${directory.path}/fish_mcp_${DateTime.now().microsecondsSinceEpoch}.$extension',
       );
+      temporaryPaths.add(file.path);
       await file.writeAsBytes(bytes, flush: true);
-      if (!_isCurrent(generation) ||
-          !identical(client, _client) ||
-          (isCurrent != null && !isCurrent())) {
-        await file.delete();
+      ensureRequestCurrent(client);
+      var outputPath = file.path;
+      if (localSpeed) {
+        stage = 'audio_tempo';
+        try {
+          outputPath = await _tempoProcessor(
+            file.path,
+            speed: speed,
+            isCurrent: () =>
+                _isCurrent(generation) &&
+                identical(client, _client) &&
+                (isCurrent?.call() ?? true),
+          );
+          temporaryPaths.add(outputPath);
+        } on SpeechTempoException catch (cause) {
+          throw FishMcpException(
+            stage: stage,
+            code: cause.code,
+            message: cause.message,
+            generationSubmitted: true,
+          );
+        }
         ensureRequestCurrent(client);
       }
       RuntimeLog.instance.info(
         'Fish MCP',
-        '音频已获取，route=$route, tool=$generationTool, format=$extension, bytes=${bytes.length}, generation_ms=${lastGenerationLatency?.inMilliseconds}',
+        '音频已获取，route=$route, tool=$generationTool, format=${localSpeed ? "wav" : extension}, bytes=${bytes.length}, requested_speed=$speed, speed_control=$speedControl, generation_ms=${lastGenerationLatency?.inMilliseconds}',
       );
       await _saveDiagnostics();
+      ensureRequestCurrent(client);
       if (!_disposed) notifyListeners();
-      return file.path;
+      temporaryPaths.remove(outputPath);
+      return outputPath;
     } on Object catch (cause) {
       final error = FishMcpException.fromCause(
         cause,
@@ -959,6 +1013,15 @@ class FishMcpService extends ChangeNotifier {
         _recordError(error);
       }
       throw error;
+    } finally {
+      for (final path in temporaryPaths) {
+        try {
+          final file = File(path);
+          if (await file.exists()) await file.delete();
+        } on FileSystemException {
+          // Cleanup must not replace a submitted generation's result/error.
+        }
+      }
     }
   }
 

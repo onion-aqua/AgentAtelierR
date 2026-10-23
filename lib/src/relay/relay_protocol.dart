@@ -3,6 +3,8 @@ import 'dart:math';
 
 import 'package:cryptography/cryptography.dart';
 
+import 'relay_qr_envelope.dart';
+
 typedef Json = Map<String, dynamic>;
 Json object(Object? value) {
   if (value is! Map) throw const FormatException('协议对象格式无效');
@@ -80,7 +82,7 @@ class PairingQr {
   final Uri origin;
   final String pairingId;
   final String secret;
-  factory PairingQr.parse(String source) {
+  factory PairingQr.parse(String source, {DateTime? now}) {
     if (source.length > 4096) throw const FormatException('二维码内容过长');
     final data = object(jsonDecode(source));
     if (data['type'] != 'agent-relay-pair' || data['v'] != 1) {
@@ -92,12 +94,37 @@ class PairingQr {
         !RegExp(r'^[0-9a-f]{64}$').hasMatch(secret)) {
       throw const FormatException('配对标识或密钥格式错误');
     }
+    // Old v1 codes did not include an expiry. When supplied by the PC, reject
+    // an invalid/expired timestamp locally; the server remains authoritative.
+    final expiry = data['expires_at'];
+    if (data.containsKey('expires_at')) {
+      final parsed = expiry is String ? DateTime.tryParse(expiry) : null;
+      if (parsed == null ||
+          expiry is! String ||
+          !RegExp(r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$')
+              .hasMatch(expiry) ||
+          parsed.toIso8601String().substring(0, 19) !=
+              expiry.substring(0, 19) ||
+          !parsed.isUtc ||
+          !parsed.isAfter((now ?? DateTime.now()).toUtc())) {
+        throw const FormatException('配对二维码已过期或有效期无效');
+      }
+    }
     return PairingQr._(
       secureOrigin(field(data, 'server_base_url')),
       id,
       secret,
     );
   }
+
+  static Future<PairingQr> parseScanned(String source, {DateTime? now}) async {
+    try {
+      return PairingQr.parse(await decodeRelayQrEnvelope(source), now: now);
+    } on Object {
+      throw const FormatException(invalidRelayQrMessage);
+    }
+  }
+
   @override
   String toString() => 'PairingQr(redacted)';
 }

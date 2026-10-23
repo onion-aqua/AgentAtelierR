@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="alarm_ringing">闹钟响铃中</string>
+    <string name="alarm_stop">停止闹钟</string>
+    <string name="alarm_stopping">正在停止…</string>
+    <string name="alarm_stop_failed">停止失败，请重试</string>
+</resources>

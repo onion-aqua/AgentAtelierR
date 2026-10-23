@@ -177,7 +177,7 @@ void main() {
     await _mount(tester, service);
     await tester.tap(find.text('粘贴二维码数据'));
     await tester.pumpAndSettle();
-    expect(find.text('粘贴配对二维码 JSON'), findsOneWidget);
+    expect(find.text('粘贴配对二维码数据'), findsOneWidget);
     await tester.enterText(find.byType(TextField), qrText());
     await tester.tap(find.text('继续'));
     await _pumpConfirmation(tester);

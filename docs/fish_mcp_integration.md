@@ -20,6 +20,8 @@
 - 普通音色与 ASMR 音色分别设置，莱莎未自定义时使用各自内置音色；持续 ASMR 始终使用 ASMR 音色。音色 ID 输入框不回显已保存值，留空保留当前配置，填写后保存可替换，也可恢复默认。科洛蒂娅固定音色已内置，MCP 模式下和主角共用当前 MCP 模型与连接，仅为真实台词生成语音。
 - 莱莎普通模式使用新的内置音色；ASMR 在 `s2-pro`、`s2.1-pro`、`s2.1-pro-free` 下使用原专用 ASMR 音色，Drama 3 继续使用新的内置音色。按当前请求模型动态选择，兼容已保存的新旧内置值，其他自定义 ASMR 音色优先。聊天、持续 ASMR、设置试听和允许的 REST 回退采用同一规则。ASMR 使用整段耳语：兼容模式发送一次 `[whispering]`，Drama 3 转成覆盖整段的 `<whisper>…</whisper>`；呼吸与喘息标签继续清理。情感关闭仍保持耳语，标签密度关闭时不补发声标签。
 - `s2-pro`、`s2.1-pro`、`s2.1-pro-free` 在最终发送前把耳语标签转换为一次更明确的自然语言描述，强调贴近麦克风、低声、清楚咬字和持续耳语；转换放在通用清洗之后，避免描述又被压缩成单词标签。REST 与 MCP Studio 共用这项适配，普通未标注的台词和已验证的 Drama 3 成对标签流程保持原有格式。S2 的自然语言控制效果仍需实际试听确认。
+- MCP 设置增加共享语速控制，普通对话、持续 ASMR 和通话使用同一保存值。Android 新默认为 `0.90×`；旧 Fish 默认 `1.0×` 只迁移一次，其他已保存的自定义速度保留。Windows 和非 Fish 配置保留原缺省速度。
+- 真实工具支持 `speed` / `prosody_speed` 时由服务处理；Studio 或工具未声明语速字段时，对已返回音频进行一次本地保音高节奏处理，不重复提交生成。口型、字幕和时长检查使用处理后的音频。Android 压缩音频复用系统解码；Windows 当前仅支持 WAV 的本地变速，其他编码需维持原速。实际语音听感仍需试听确认。
 
 S2 标签依据：[Emotion Control](https://docs.fish.audio/developer-guide/core-features/emotions.md) 与 [Models Overview](https://docs.fish.audio/developer-guide/models-pricing/models-overview.md)。S2 使用方括号自由描述；圆括号属于旧版 S1。
 

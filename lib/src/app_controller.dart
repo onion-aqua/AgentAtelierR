@@ -21,6 +21,7 @@ import 'mimo_tts_config.dart';
 import 'qwen_tts_config.dart';
 import 'fish_drama3_tags.dart';
 import 'fish_s2_tags.dart';
+import 'fish_speech_speed_defaults.dart';
 import 'memory_timeline.dart';
 import 'memory_ledger.dart';
 import 'model_thinking.dart';
@@ -1317,7 +1318,7 @@ class AppController extends ChangeNotifier {
 
   String fishAudioFormat = 'mp3';
   String fishAudioLatency = 'normal';
-  double fishAudioSpeed = 1.0;
+  double fishAudioSpeed = FishSpeechSpeedDefaults.defaultForProvider(null);
   String fishMcpModel = '';
   bool get fishMcpUsesDrama3 =>
       ttsProvider == TtsProvider.fishAudioMcp &&
@@ -1438,6 +1439,7 @@ class AppController extends ChangeNotifier {
   static Future<AppController> load() async {
     final preferences = await SharedPreferences.getInstance();
     await TtsVoiceSettingsMigration.migratePreferences(preferences);
+    await FishSpeechSpeedDefaults.migrate(preferences);
     final startingCharacter = normalizeCharacterRuntimeId(
       preferences.getString('active_character_id_v1'),
     );
@@ -1634,7 +1636,9 @@ class AppController extends ChangeNotifier {
         _preferences.getString('fish_audio_asmr_reference_id') ?? '';
     fishAudioFormat = _preferences.getString('fish_audio_format') ?? 'mp3';
     fishAudioLatency = _preferences.getString('fish_audio_latency') ?? 'normal';
-    fishAudioSpeed = _preferences.getDouble('fish_audio_speed') ?? 1.0;
+    fishAudioSpeed =
+        _preferences.getDouble('fish_audio_speed') ??
+        FishSpeechSpeedDefaults.defaultForProvider(ttsProvider.name);
     fishMcpModel = _preferences.getString('fish_mcp_model') ?? '';
     fishMcpVoice = _preferences.getString('fish_mcp_voice') ?? '';
     fishMcpAsmrVoice = _preferences.getString('fish_mcp_asmr_voice') ?? '';
@@ -3968,7 +3972,7 @@ $japanesePunctuationRule
     TtsEmotionIntensity? emotionIntensity,
     String format = 'mp3',
     String latency = 'normal',
-    double speed = 1.0,
+    double? speed,
     String baseUrl = 'https://api.fish.audio/v1/tts',
   }) {
     fishTtsEnabled = enabled;
@@ -3986,7 +3990,7 @@ $japanesePunctuationRule
     fishAudioLatency = const {'normal', 'balanced', 'low'}.contains(latency)
         ? latency
         : 'normal';
-    fishAudioSpeed = speed.clamp(0.5, 2.0);
+    if (speed != null) fishAudioSpeed = speed.clamp(0.5, 2.0);
     _changed();
   }
 
@@ -4067,11 +4071,15 @@ $japanesePunctuationRule
     required String model,
     required String voice,
     String? asmrVoice,
+    double? speed,
     required bool autoFallback,
   }) {
     fishMcpModel = model.trim();
     fishMcpVoice = voice.trim();
     if (asmrVoice != null) fishMcpAsmrVoice = asmrVoice.trim();
+    if (speed != null && speed.isFinite) {
+      fishAudioSpeed = speed.clamp(0.5, 2.0);
+    }
     fishMcpAutoFallback = autoFallback;
     ttsProvider = TtsProvider.fishAudioMcp;
     fishTtsEnabled = true;
@@ -5244,7 +5252,9 @@ $japanesePunctuationRule
         preferences['fishAudioAsmrReferenceId'] as String? ?? '';
     fishAudioFormat = preferences['fishAudioFormat'] as String? ?? 'mp3';
     fishAudioLatency = preferences['fishAudioLatency'] as String? ?? 'normal';
-    fishAudioSpeed = (preferences['fishAudioSpeed'] as num?)?.toDouble() ?? 1.0;
+    fishAudioSpeed =
+        (preferences['fishAudioSpeed'] as num?)?.toDouble() ??
+        FishSpeechSpeedDefaults.defaultForProvider(ttsProvider.name);
     fishMcpModel = preferences['fishMcpModel'] as String? ?? fishMcpModel;
     fishMcpVoice = preferences['fishMcpVoice'] as String? ?? fishMcpVoice;
     fishMcpAsmrVoice =

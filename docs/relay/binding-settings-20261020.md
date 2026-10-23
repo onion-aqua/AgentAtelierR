@@ -4,7 +4,7 @@ PC 插件和手机 App 各自配置中继。手机入口为「PC Agent 联动 �
 
 修改默认中继不会把已有设备凭据发往新服务器。每份已保存的绑定保留自己的原始中继地址、独立随机设备 token、缓存和事件游标。它们继续向各自原始中继同步；如不再使用，应单独解绑。中继地址在默认页面隐藏并不等于对网络观察或二维码实现保密。
 
-PC 新建二维码时选择 1、3 或 7 天的绑定有效期，手机不另行选择。新服务使用 `auto_confirm: true` 和 `binding_ttl_seconds` 创建配对；手机二维码格式和 claim 请求保持 relay v1 不变。扫码后手机可以直接得到 `confirmed` 状态，无需 PC 再确认。旧中继仍可返回 `pending_confirmation`，客户端保持兼容并显示等待 PC 确认。PC 仍自行选择共享工作区和历史权限。
+PC 新建二维码时选择 1、3 或 7 天的绑定有效期，手机不另行选择。新服务使用 `auto_confirm: true` 和 `binding_ttl_seconds` 创建配对；手机二维码内部 JSON 和 claim 请求保持 relay v1 不变，新生成二维码默认使用 [v2 加密封装](qr-envelope-v2.md)，旧明文 v1 仍兼容。扫码后手机可以直接得到 `confirmed` 状态，无需 PC 再确认。旧中继仍可返回 `pending_confirmation`，客户端保持兼容并显示等待 PC 确认。PC 仍自行选择共享工作区和历史权限。
 
 `binding_expires_at` 是可选的 ISO 时间字段，可由 claim、配对 status 或设备快照返回。手机显示到期时间，在到期后禁用回答和任务发送，清除连接及内容缓存。服务端仍是最终授权依据，到期设备沿用 `DEVICE_REVOKED` / `device.revoked`；配对 status 的 `revoked` 也作为终态处理。缺少该字段的原有绑定保持原行为。
 

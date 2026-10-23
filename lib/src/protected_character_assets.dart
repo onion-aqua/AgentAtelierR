@@ -4,9 +4,9 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
 import 'protected_asset_format.dart';
+import 'protected_asset_runtime_loader.dart';
 import 'local_skin_store.dart';
 import 'character_idle_behavior.dart';
-import 'update/resource_resolver.dart';
 
 class ProtectedCharacterAssetBundle extends CachingAssetBundle {
   ProtectedCharacterAssetBundle(this._files);
@@ -53,6 +53,7 @@ class ProtectedCharacterAssets {
   static String? _activeAssetName;
   static Future<ProtectedCharacterAssetBundle>? _activeBundle;
   static final Map<String, Future<Uint8List>> _previews = {};
+  static final _loader = ProtectedAssetRuntimeLoader();
 
   static Future<ProtectedCharacterAssetBundle> bundleFor(String assetName) {
     if (_activeAssetName == assetName && _activeBundle != null) {
@@ -102,11 +103,8 @@ class ProtectedCharacterAssets {
       return local;
     }
     final key = _key();
-    final encrypted = await _loadRootBytes(
-      'assets/protected/character/$assetName.aarpack',
-    );
-    final files = await decryptProtectedAssetFiles(
-      encrypted: encrypted,
+    final files = await _loader.load(
+      path: 'assets/protected/character/$assetName.aarpack',
       key: key,
       packId: 'character/$assetName',
     );
@@ -122,11 +120,8 @@ class ProtectedCharacterAssets {
       return preview;
     }
     final key = _key();
-    final encrypted = await _loadRootBytes(
-      'assets/protected/character/previews/$assetName.aarpreview',
-    );
-    final files = await decryptProtectedAssetFiles(
-      encrypted: encrypted,
+    final files = await _loader.load(
+      path: 'assets/protected/character/previews/$assetName.aarpreview',
       key: key,
       packId: 'preview/$assetName',
     );
@@ -146,10 +141,6 @@ class ProtectedCharacterAssets {
       );
     }
     return decodeProtectedAssetKey(_encodedKey);
-  }
-
-  static Future<Uint8List> _loadRootBytes(String path) async {
-    return ResourceAssetResolver.instance.loadBytes(path, fallback: rootBundle);
   }
 
   static void clearCache() {

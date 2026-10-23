@@ -5442,6 +5442,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                         ) =>
                       widget.controller.dashScopeTtsOptions.rate,
                     TtsProvider.fishAudio ||
+                    TtsProvider.fishAudioMcp ||
                     TtsProvider.generic => requestedSpeed,
                     _ => 1,
                   },

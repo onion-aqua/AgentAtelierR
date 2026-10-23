@@ -190,6 +190,30 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets(
+    'MCP speed is a draft until saved and shares the speech setting',
+    (tester) async {
+      final controller = await openSettings(tester, expandAdvanced: false);
+      final slider = find.byKey(const ValueKey('fish-mcp-speed'));
+      expect(tester.widget<Slider>(slider).value, .9);
+      tester.widget<Slider>(slider).onChanged!(.85);
+      await tester.pump();
+      expect(controller.fishAudioSpeed, .9);
+      await tester.tap(find.text('取消'));
+      await tester.pumpAndSettle();
+      expect(controller.fishAudioSpeed, .9);
+      await openMcpPage(tester);
+      expect(tester.widget<Slider>(slider).value, .9);
+      tester.widget<Slider>(slider).onChanged!(.85);
+      await tester.pump();
+      await tester.tap(find.text('保存并使用 MCP'));
+      await tester.pumpAndSettle();
+      expect(controller.fishAudioSpeed, .85);
+      expect(controller.ttsProvider, TtsProvider.fishAudioMcp);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
   testWidgets('OAuth state changes refresh MCP settings without another tap', (
     tester,
   ) async {

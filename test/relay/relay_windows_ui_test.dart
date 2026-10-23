@@ -43,7 +43,7 @@ Future<RelayService> _mount(
 Future<void> _paste(WidgetTester tester, String text) async {
   await tester.tap(find.text(_pasteButton));
   await tester.pumpAndSettle();
-  expect(find.text('粘贴配对二维码 JSON'), findsOneWidget);
+  expect(find.text('粘贴配对二维码数据'), findsOneWidget);
   expect(tester.widget<TextField>(find.byType(TextField)).obscureText, isTrue);
   await tester.enterText(find.byType(TextField), text);
   await tester.tap(find.text('继续'));

@@ -108,6 +108,15 @@ Future<Map<String, Uint8List>> decryptProtectedAssetFiles({
   return _decodeFiles(plain is Uint8List ? plain : Uint8List.fromList(plain));
 }
 
+/// Private, on-device cache representation. APK resources still use AES-GCM;
+/// callers must authenticate the original pack before persisting this payload.
+Uint8List encodeProtectedAssetPayload(Map<String, Uint8List> files) =>
+    _encodeFiles(files);
+
+/// Gives each decoded file its own backing buffer for the Spine native bridge.
+Map<String, Uint8List> decodeProtectedAssetPayload(Uint8List bytes) =>
+    _decodeFiles(bytes);
+
 Uint8List _encodeFiles(Map<String, Uint8List> files) {
   if (files.isEmpty || files.length > 64) {
     throw const ProtectedAssetException(

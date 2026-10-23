@@ -250,6 +250,43 @@ void main() {
   );
 
   testWidgets(
+    'failed native stop keeps the delete control available for retry',
+    (tester) async {
+      final saved = AlarmSettings(
+        id: 42,
+        dateTime: DateTime.now().add(const Duration(hours: 1)),
+        assetAudioPath:
+            'assets/audio/alarm/voices/ja_normal_task_morning_1.m4a',
+        volumeSettings: const VolumeSettings.fixed(),
+        notificationSettings: const NotificationSettings(
+          title: 'Test reminder',
+          body: 'Test reminder body',
+        ),
+      );
+      await AlarmStorage.saveAlarm(saved);
+      final messenger =
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+      messenger.setMockDecodedMessageHandler<Object?>(
+        nativeStopChannel,
+        (_) async => ['1', 'Native stop unavailable', null],
+      );
+      await showAlarmPage(tester);
+      await tester.tap(find.byTooltip('删除闹钟'));
+      await tester.pumpAndSettle();
+      expect(find.text('未能停止或删除闹钟，请重试'), findsOneWidget);
+      expect(find.byTooltip('删除闹钟').hitTestable(), findsOneWidget);
+      messenger.setMockDecodedMessageHandler<Object?>(
+        nativeStopChannel,
+        (_) async => [null],
+      );
+      await tester.tap(find.byTooltip('删除闹钟'));
+      await tester.pumpAndSettle();
+      expect(find.byTooltip('删除闹钟'), findsNothing);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
     'alarm time picker remains usable in a short large-text viewport',
     (tester) async {
       tester.view.physicalSize = const Size(390, 850);

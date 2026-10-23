@@ -6,6 +6,7 @@ import 'dart:typed_data';
 import 'package:ryza_chat_mvp/src/protected_asset_format.dart';
 import 'package:ryza_chat_mvp/src/protected_asset_cache.dart';
 import 'package:ryza_chat_mvp/src/character_idle_behavior.dart';
+import 'package:ryza_chat_mvp/src/update/resource_integrity.dart';
 
 Future<void> main(List<String> arguments) async {
   final project = Directory.current.absolute;
@@ -55,6 +56,7 @@ Future<void> main(List<String> arguments) async {
   }
 
   final expectedOutputs = <String>{};
+  final runtimeIndex = <String, Object>{};
   var sourceBytes = 0;
   var encryptedBytes = 0;
   for (final directory in sourceDirectories) {
@@ -104,6 +106,10 @@ Future<void> main(List<String> arguments) async {
       packId: 'character/$name',
     );
     expectedOutputs.add(output.absolute.path.toLowerCase());
+    runtimeIndex[_assetPath(project, output)] = {
+      'sha256': await resourceSha256Bytes(encrypted),
+      'size': encrypted.length,
+    };
     encryptedBytes += encrypted.length;
 
     final preview = File(
@@ -130,6 +136,10 @@ Future<void> main(List<String> arguments) async {
           packId: 'preview/$name',
         );
         expectedOutputs.add(previewTarget.absolute.path.toLowerCase());
+        runtimeIndex[_assetPath(project, previewTarget)] = {
+          'sha256': await resourceSha256Bytes(protectedPreview),
+          'size': protectedPreview.length,
+        };
         encryptedBytes += protectedPreview.length;
       } else {
         stdout.writeln('Skipped atlas texture used as preview: $name');
@@ -138,6 +148,20 @@ Future<void> main(List<String> arguments) async {
       stdout.writeln('No optional preview found: $name');
     }
   }
+
+  // This small index is regenerated with every protected build. Its digests
+  // remain stable across code-only updates, so private decoded caches survive
+  // APK replacement without trusting a version number or just a skin name.
+  final indexFile = File(
+    '${outputRoot.path}${Platform.pathSeparator}index.json',
+  );
+  final temporaryIndex = File('${indexFile.path}.tmp');
+  await temporaryIndex.writeAsString(
+    jsonEncode({'schema_version': 1, 'objects': runtimeIndex}),
+    flush: true,
+  );
+  await temporaryIndex.rename(indexFile.path);
+  expectedOutputs.add(indexFile.absolute.path.toLowerCase());
 
   for (final entity in outputRoot.listSync(recursive: true)) {
     if (entity is! File) continue;

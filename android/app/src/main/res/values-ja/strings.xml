@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="alarm_ringing">アラーム鳴動中</string>
+    <string name="alarm_stop">アラームを停止</string>
+    <string name="alarm_stopping">停止中…</string>
+    <string name="alarm_stop_failed">停止できませんでした。再試行してください</string>
+</resources>

@@ -52,6 +52,20 @@
                 android:value="User-visible ongoing AI character companionship session, with call-aware audio interruption handling; stops when the user stops the session or removes the task." />
         </service>
         <activity
+            android:name=".AlarmRingingActivity"
+            android:exported="false"
+            android:launchMode="singleTop"
+            android:taskAffinity="${applicationId}.alarm"
+            android:excludeFromRecents="true"
+            android:showWhenLocked="true"
+            android:turnScreenOn="true"
+            android:theme="@android:style/Theme.Material.NoActionBar">
+            <intent-filter>
+                <action android:name="com.gdelataillade.alarm.action.RING" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+        <activity
             android:name=".MainActivity"
             android:exported="true"
             android:enableOnBackInvokedCallback="true"

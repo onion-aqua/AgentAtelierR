@@ -1,0 +1,77 @@
+{
+  "schema_version": 1,
+  "prefix": "ryzasync:v2:",
+  "algorithm": "AES-256-GCM",
+  "nonce_bytes": 12,
+  "tag_bytes": 16,
+  "aad_utf8": "ryzasync:v2:",
+  "public_compat_key_seed_utf8": "ryzasync/qr-envelope/v2/public-compat-key",
+  "public_compat_key_hex": "71e74b62b1df770727468ad133620516a19e604d5295b0ce499213b62cf07aa9",
+  "note": "Public synthetic fixtures. Fixed nonces belong only to tests; production uses a fresh secure random nonce.",
+  "cases": [
+    {
+      "id": "ascii-full-pairing",
+      "plaintext": "{\"type\":\"agent-relay-pair\",\"v\":1,\"server_base_url\":\"https://relay.example.invalid\",\"pairing_id\":\"12345678-1234-4123-8123-123456789abc\",\"pairing_secret\":\"000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f\",\"expires_at\":\"2030-01-02T03:09:05.000Z\"}",
+      "nonce_hex": "000102030405060708090a0b",
+      "ciphertext_hex": "35616861c0d1365abebd62a43dad5c1cb68a5aa58fdc288c01df1aac834a9d79532644cf8022e9c0ae363a0977388c07aa6681b31a59b896c5e7a40e7737a9427237905540de6db7e7048e8c235f3ab6e5cd9061fc6d438dfe1a8bab8a2aef211482b856cfcc142f398ee9627b152aee3555fe439859bd5d295b25c78e468a49a77cadf1789663f5b934c200cbda5616d50970b9429760295584b82d65ff5904c4a8430c4385550f1a09164b5ff790647fa7dcf68299cb22885692b03213feed01cec9c1f05fdde5f0827c6df4b10a2fb369f5ad3eef59a0c72daa866a52103a06e899c3b424e05d07068a8aaa89a80c9f4079fb8076475be088cd4e3166443a9031a8",
+      "tag_hex": "7e9a40693a7606d988f4e3e3a0393b80",
+      "envelope": "ryzasync:v2:AAECAwQFBgcICQoLNWFoYcDRNlq-vWKkPa1cHLaKWqWP3CiMAd8arINKnXlTJkTPgCLpwK42Ogl3OIwHqmaBsxpZuJbF56QOdzepQnI3kFVA3m235wSOjCNfOrblzZBh_G1Djf4ai6uKKu8hFIK4Vs_MFC85juliexUq7jVV_kOYWb1dKVslx45GikmnfK3xeJZj9bk0wgDL2lYW1QlwuUKXYClVhLgtZf9ZBMSoQwxDhVUPGgkWS1_3kGR_p9z2gpnLIohWkrAyE_7tAc7JwfBf3eXwgnxt9LEKL7Np9a0-71mgxy2qhmpSEDoG6JnDtCTgXQcGioqqiagMn0B5-4B2R1vgiM1OMWZEOpAxqH6aQGk6dgbZiPTj46A5O4A"
+    },
+    {
+      "id": "unicode-optional-fields",
+      "plaintext": "{\"type\":\"agent-relay-pair\",\"v\":1,\"server_base_url\":\"https://relay.example.invalid\",\"pairing_id\":\"12345678-1234-4123-8123-123456789abc\",\"pairing_secret\":\"000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f\",\"expires_at\":\"2030-01-02T03:09:05.000Z\",\"device_name\":\"测试电脑 🚀\",\"extension\":{\"note\":\"连接与配对\"}}",
+      "nonce_hex": "f0e0d0c0b0a0908070605040",
+      "ciphertext_hex": "7594d605abcaec15a0ac48930889a790c3af3397f7b4055b98365d1e43e9f5b2bfce3680d562003d71835a9fe900cf6c1e7b6185bc4d13543792cfefe25c5aca8aba2af7e248dd5c1c5dd737087bd34bf1d5b23720668c18b7b0654f21250a1ac4151ccad590a3c24c5745a6ff899477f83003f73afa1ea92bb9c73bf5e476befb5d98e19802b8dfb33b0666913287f2b5be6b640bf08b93cd8e18264cb3f108cf8f8442d1af9461725b7880edb0038ab92a1593e123ac12b48f13cca12254f09119e4ad6416eab83b67e794cf3ede3d441b5d31657879dddc628a3cd794fae7fa0ef9ce9644a8d62db664f61ba650b342bd7076023d0e4436007fb72904c520a9c96ac9f8155ddf2ed4ace8a476da303684849613d0012fb35962b1fa4b9cced0bbbdc7316affc07f18905c52ce36b8e702dec104a57288155f34eeea83c4c424e33244878936df715959eb",
+      "tag_hex": "f10718afb7d02ee2a18838db4ca42ca0",
+      "envelope": "ryzasync:v2:8ODQwLCgkIBwYFBAdZTWBavK7BWgrEiTCImnkMOvM5f3tAVbmDZdHkPp9bK_zjaA1WIAPXGDWp_pAM9sHnthhbxNE1Q3ks_v4lxayoq6KvfiSN1cHF3XNwh700vx1bI3IGaMGLewZU8hJQoaxBUcytWQo8JMV0Wm_4mUd_gwA_c6-h6pK7nHO_Xkdr77XZjhmAK437M7BmaRMofytb5rZAvwi5PNjhgmTLPxCM-PhELRr5Rhclt4gO2wA4q5KhWT4SOsErSPE8yhIlTwkRnkrWQW6rg7Z-eUzz7ePUQbXTFleHnd3GKKPNeU-uf6DvnOlkSo1i22ZPYbplCzQr1wdgI9DkQ2AH-3KQTFIKnJasn4FV3fLtSs6KR22jA2hISWE9ABL7NZYrH6S5zO0Lu9xzFq_8B_GJBcUs42uOcC3sEEpXKIFV807uqDxMQk4zJEh4k233FZWevxBxivt9Au4qGIONtMpCyg"
+    }
+  ],
+  "legacy_v1": [
+    {
+      "id": "ascii-full-pairing",
+      "input": "{\"type\":\"agent-relay-pair\",\"v\":1,\"server_base_url\":\"https://relay.example.invalid\",\"pairing_id\":\"12345678-1234-4123-8123-123456789abc\",\"pairing_secret\":\"000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f\",\"expires_at\":\"2030-01-02T03:09:05.000Z\"}"
+    },
+    {
+      "id": "unicode-optional-fields",
+      "input": "{\"type\":\"agent-relay-pair\",\"v\":1,\"server_base_url\":\"https://relay.example.invalid\",\"pairing_id\":\"12345678-1234-4123-8123-123456789abc\",\"pairing_secret\":\"000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f\",\"expires_at\":\"2030-01-02T03:09:05.000Z\",\"device_name\":\"测试电脑 🚀\",\"extension\":{\"note\":\"连接与配对\"}}"
+    }
+  ],
+  "invalid_cases": [
+    {
+      "id": "unknown-version",
+      "input": "ryzasync:v3:AAECAwQFBgcICQoLNWFoYcDRNlq-vWKkPa1cHLaKWqWP3CiMAd8arINKnXlTJkTPgCLpwK42Ogl3OIwHqmaBsxpZuJbF56QOdzepQnI3kFVA3m235wSOjCNfOrblzZBh_G1Djf4ai6uKKu8hFIK4Vs_MFC85juliexUq7jVV_kOYWb1dKVslx45GikmnfK3xeJZj9bk0wgDL2lYW1QlwuUKXYClVhLgtZf9ZBMSoQwxDhVUPGgkWS1_3kGR_p9z2gpnLIohWkrAyE_7tAc7JwfBf3eXwgnxt9LEKL7Np9a0-71mgxy2qhmpSEDoG6JnDtCTgXQcGioqqiagMn0B5-4B2R1vgiM1OMWZEOpAxqH6aQGk6dgbZiPTj46A5O4A"
+    },
+    {
+      "id": "padded-base64url",
+      "input": "ryzasync:v2:AAECAwQFBgcICQoLNWFoYcDRNlq-vWKkPa1cHLaKWqWP3CiMAd8arINKnXlTJkTPgCLpwK42Ogl3OIwHqmaBsxpZuJbF56QOdzepQnI3kFVA3m235wSOjCNfOrblzZBh_G1Djf4ai6uKKu8hFIK4Vs_MFC85juliexUq7jVV_kOYWb1dKVslx45GikmnfK3xeJZj9bk0wgDL2lYW1QlwuUKXYClVhLgtZf9ZBMSoQwxDhVUPGgkWS1_3kGR_p9z2gpnLIohWkrAyE_7tAc7JwfBf3eXwgnxt9LEKL7Np9a0-71mgxy2qhmpSEDoG6JnDtCTgXQcGioqqiagMn0B5-4B2R1vgiM1OMWZEOpAxqH6aQGk6dgbZiPTj46A5O4A="
+    },
+    {
+      "id": "invalid-alphabet",
+      "input": "ryzasync:v2:!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+    },
+    {
+      "id": "embedded-whitespace",
+      "input": "ryzasync:v2:AAECAwQFBgcICQoLNWFoYcDRNlq-\nvWKkPa1cHLaKWqWP3CiMAd8arINKnXlTJkTPgCLpwK42Ogl3OIwHqmaBsxpZuJbF56QOdzepQnI3kFVA3m235wSOjCNfOrblzZBh_G1Djf4ai6uKKu8hFIK4Vs_MFC85juliexUq7jVV_kOYWb1dKVslx45GikmnfK3xeJZj9bk0wgDL2lYW1QlwuUKXYClVhLgtZf9ZBMSoQwxDhVUPGgkWS1_3kGR_p9z2gpnLIohWkrAyE_7tAc7JwfBf3eXwgnxt9LEKL7Np9a0-71mgxy2qhmpSEDoG6JnDtCTgXQcGioqqiagMn0B5-4B2R1vgiM1OMWZEOpAxqH6aQGk6dgbZiPTj46A5O4A"
+    },
+    {
+      "id": "empty-envelope",
+      "input": "ryzasync:v2:"
+    },
+    {
+      "id": "too-short-envelope",
+      "input": "ryzasync:v2:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    },
+    {
+      "id": "modified-nonce",
+      "input": "ryzasync:v2:AQECAwQFBgcICQoLNWFoYcDRNlq-vWKkPa1cHLaKWqWP3CiMAd8arINKnXlTJkTPgCLpwK42Ogl3OIwHqmaBsxpZuJbF56QOdzepQnI3kFVA3m235wSOjCNfOrblzZBh_G1Djf4ai6uKKu8hFIK4Vs_MFC85juliexUq7jVV_kOYWb1dKVslx45GikmnfK3xeJZj9bk0wgDL2lYW1QlwuUKXYClVhLgtZf9ZBMSoQwxDhVUPGgkWS1_3kGR_p9z2gpnLIohWkrAyE_7tAc7JwfBf3eXwgnxt9LEKL7Np9a0-71mgxy2qhmpSEDoG6JnDtCTgXQcGioqqiagMn0B5-4B2R1vgiM1OMWZEOpAxqH6aQGk6dgbZiPTj46A5O4A"
+    },
+    {
+      "id": "modified-ciphertext",
+      "input": "ryzasync:v2:AAECAwQFBgcICQoLNGFoYcDRNlq-vWKkPa1cHLaKWqWP3CiMAd8arINKnXlTJkTPgCLpwK42Ogl3OIwHqmaBsxpZuJbF56QOdzepQnI3kFVA3m235wSOjCNfOrblzZBh_G1Djf4ai6uKKu8hFIK4Vs_MFC85juliexUq7jVV_kOYWb1dKVslx45GikmnfK3xeJZj9bk0wgDL2lYW1QlwuUKXYClVhLgtZf9ZBMSoQwxDhVUPGgkWS1_3kGR_p9z2gpnLIohWkrAyE_7tAc7JwfBf3eXwgnxt9LEKL7Np9a0-71mgxy2qhmpSEDoG6JnDtCTgXQcGioqqiagMn0B5-4B2R1vgiM1OMWZEOpAxqH6aQGk6dgbZiPTj46A5O4A"
+    },
+    {
+      "id": "modified-tag",
+      "input": "ryzasync:v2:AAECAwQFBgcICQoLNWFoYcDRNlq-vWKkPa1cHLaKWqWP3CiMAd8arINKnXlTJkTPgCLpwK42Ogl3OIwHqmaBsxpZuJbF56QOdzepQnI3kFVA3m235wSOjCNfOrblzZBh_G1Djf4ai6uKKu8hFIK4Vs_MFC85juliexUq7jVV_kOYWb1dKVslx45GikmnfK3xeJZj9bk0wgDL2lYW1QlwuUKXYClVhLgtZf9ZBMSoQwxDhVUPGgkWS1_3kGR_p9z2gpnLIohWkrAyE_7tAc7JwfBf3eXwgnxt9LEKL7Np9a0-71mgxy2qhmpSEDoG6JnDtCTgXQcGioqqiagMn0B5-4B2R1vgiM1OMWZEOpAxqH6aQGk6dgbZiPTj46A5O4E"
+    }
+  ]
+}

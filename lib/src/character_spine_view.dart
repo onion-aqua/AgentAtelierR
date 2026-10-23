@@ -54,9 +54,11 @@ class _CharacterSpineViewState extends State<CharacterSpineView> {
     final bundle = widget.bundle;
     final atlasPath = widget.atlas;
     final skeletonPath = widget.skeleton;
+    final timer = Stopwatch()..start();
     Atlas? atlas;
     try {
       atlas = await Atlas.fromAsset(atlasPath, bundle: bundle);
+      final atlasMs = timer.elapsedMilliseconds;
       if (!mounted || generation != _generation) {
         atlas.dispose();
         return;
@@ -72,6 +74,11 @@ class _CharacterSpineViewState extends State<CharacterSpineView> {
         return;
       }
       final drawable = SkeletonDrawable(atlas, data, true);
+      RuntimeLog.instance.info(
+        'CharacterAssets',
+        'Spine 初始化：图集与纹理 ${atlasMs}ms，'
+            '骨架与实例 ${timer.elapsedMilliseconds - atlasMs}ms',
+      );
       atlas = null; // Ownership passes to the drawable and SpineWidget.
       setState(() => _drawable = drawable);
     } on Object catch (error, stack) {

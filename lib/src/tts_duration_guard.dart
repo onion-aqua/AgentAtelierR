@@ -9,8 +9,8 @@ class TtsAudioTooLongException implements Exception {
   final Duration maximum;
 }
 
-/// Facts about the exact request, not the display text or an unimplemented UI
-/// option. In particular, MCP routes without a speed field use effectiveSpeed=1.
+/// Facts about the exact request and completed audio. Include local tempo
+/// processing when the provider does not expose a numeric speed parameter.
 class TtsDurationContext {
   const TtsDurationContext({
     required this.text,

@@ -48,7 +48,7 @@ class FishMcpCallTtsClient {
              model: request.model,
              language: request.language,
              format: 'wav',
-             // The shared service sends speed only when its schema exposes it.
+             // The shared service applies speed once, remotely or to the file.
              speed: request.speed,
              isCurrent: request.isCurrent,
            )),
@@ -215,16 +215,18 @@ class FishMcpCallTtsStream {
       bytes: bytes,
       text: _request.text,
       language: _request.language,
+      speed: _request.speed,
     ));
   }
 }
 
 Uint8List? _decodeCallPcm(
-  ({Uint8List bytes, String text, String language}) request,
+  ({Uint8List bytes, String text, String language, double speed}) request,
 ) => mcpCallWavToPcm24k(
   request.bytes,
   text: request.text,
   language: request.language,
+  speed: request.speed,
 );
 
 /// Existing WAV validation establishes the frame layout and exact duration.
@@ -234,6 +236,7 @@ Uint8List? mcpCallWavToPcm24k(
   Uint8List bytes, {
   required String text,
   required String language,
+  double speed = 1,
 }) {
   final envelope = AudioAmplitudeEnvelope.tryParseWav(bytes);
   if (envelope == null) return null;
@@ -242,7 +245,7 @@ Uint8List? mcpCallWavToPcm24k(
     TtsDurationContext(
       text: stripFishDrama3Tags(normalizeFishAudioSynthesisText(text)),
       languageCode: language,
-      effectiveSpeed: 1,
+      effectiveSpeed: speed,
     ),
     envelope.duration!,
   );

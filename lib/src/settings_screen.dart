@@ -6,6 +6,7 @@ import 'package:audioplayers/audioplayers.dart';
 import 'app_audio_player.dart';
 
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart' show defaultTargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -2325,6 +2326,7 @@ class SettingsScreenState extends State<SettingsScreen> {
     };
     final voice = TextEditingController(text: controller.fishMcpVoice);
     final asmrVoice = TextEditingController(text: controller.fishMcpAsmrVoice);
+    var speed = controller.fishAudioSpeed;
     var autoFallback = controller.fishMcpAutoFallback;
     var busy = false;
     String? localError;
@@ -2503,6 +2505,34 @@ class SettingsScreenState extends State<SettingsScreen> {
                       controller: asmrVoice,
                       labelText: 'ASMR 音色 ID',
                       helperText: '已内置 ASMR 音色；留空保留已保存的配置。',
+                    ),
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        const SizedBox(width: 58, child: Text('语速')),
+                        Expanded(
+                          child: Slider(
+                            key: const ValueKey('fish-mcp-speed'),
+                            value: speed.clamp(0.5, 2.0),
+                            min: 0.5,
+                            max: 2.0,
+                            divisions: 30,
+                            label: '${speed.toStringAsFixed(2)}×',
+                            onChanged: (value) =>
+                                setDialogState(() => speed = value),
+                          ),
+                        ),
+                        SizedBox(
+                          width: 48,
+                          child: Text('${speed.toStringAsFixed(2)}×'),
+                        ),
+                      ],
+                    ),
+                    Text(
+                      defaultTargetPlatform == TargetPlatform.windows
+                          ? '普通对话、ASMR 和通话共用。Windows 本地变速需要 WAV 音频。'
+                          : '普通对话、ASMR 和通话共用，推荐 0.90×。',
+                      style: Theme.of(context).textTheme.bodySmall,
                     ),
                     const SizedBox(height: 8),
                     DropdownButtonFormField<String>(
@@ -2742,6 +2772,7 @@ class SettingsScreenState extends State<SettingsScreen> {
       model: model,
       voice: voice.text,
       asmrVoice: asmrVoice.text,
+      speed: speed,
       autoFallback: autoFallback,
     );
   }

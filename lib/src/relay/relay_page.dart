@@ -100,7 +100,7 @@ class _RelayPageState extends State<RelayPage> {
               ))
         : await _textDialog(
             context,
-            '粘贴配对二维码 JSON',
+            '粘贴配对二维码数据',
             '仅粘贴 PC 生成的配对数据',
             obscure: true,
           );
@@ -108,11 +108,12 @@ class _RelayPageState extends State<RelayPage> {
     await run(() async {
       final PairingQr qr;
       try {
-        qr = PairingQr.parse(source);
+        qr = await PairingQr.parseScanned(source, now: service.now());
       } on FormatException {
         // JSON decoder diagnostics can echo the original QR, including secrets.
-        throw const FormatException('配对二维码格式无效，请重新获取 PC 生成的配对数据。');
+        throw const FormatException('配对二维码格式无效或不受支持，请重新获取 PC 生成的配对数据。');
       }
+      if (!mounted) return;
       service.verifyPairingServer(qr);
       final pinned = service.isDefaultServer(qr.origin);
       final trusted = await showDialog<bool>(

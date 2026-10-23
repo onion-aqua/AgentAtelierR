@@ -12,6 +12,7 @@ import 'package:spine_flutter/spine_flutter.dart' hide Color;
 
 import 'src/app_controller.dart';
 import 'src/app_localization.dart';
+import 'src/alarm_ringing_overlay.dart';
 import 'src/app_theme.dart';
 import 'src/app_shell.dart';
 import 'src/runtime_log.dart';
@@ -76,6 +77,7 @@ class _BootstrapAppState extends State<_BootstrapApp> {
   StreamSubscription<Uri>? _appLinksSubscription;
   bool _showLogo = true;
   bool _characterReady = false;
+  final _bootstrapClock = Stopwatch();
 
   @override
   void initState() {
@@ -106,7 +108,13 @@ class _BootstrapAppState extends State<_BootstrapApp> {
   }
 
   void _handleCharacterReady() {
-    if (!_characterReady && mounted) setState(() => _characterReady = true);
+    if (!_characterReady && mounted) {
+      RuntimeLog.instance.info(
+        'Startup',
+        '角色加载回调：初始化后 ${_bootstrapClock.elapsedMilliseconds}ms',
+      );
+      setState(() => _characterReady = true);
+    }
   }
 
   void _handleCharacterLoadFailed() {
@@ -116,6 +124,9 @@ class _BootstrapAppState extends State<_BootstrapApp> {
   }
 
   Future<void> _initialize() async {
+    _bootstrapClock
+      ..reset()
+      ..start();
     try {
       await RuntimeLog.instance.initialize();
       RuntimeLog.instance.info('App', '应用启动，版本 1.0.4.4');
@@ -135,7 +146,12 @@ class _BootstrapAppState extends State<_BootstrapApp> {
       );
       // Recover/activate verified resources before catalogues and prompts are
       // read. This avoids mixing old startup data with the new snapshot.
+      final resourceStart = _bootstrapClock.elapsedMilliseconds;
       final updates = await UpdateRuntime.production();
+      RuntimeLog.instance.info(
+        'Startup',
+        '资源更新检查：${_bootstrapClock.elapsedMilliseconds - resourceStart}ms',
+      );
       if (!mounted) {
         updates.dispose();
         return;
@@ -143,6 +159,10 @@ class _BootstrapAppState extends State<_BootstrapApp> {
       _updates?.dispose();
       _updates = updates;
       final controller = await AppController.load();
+      RuntimeLog.instance.info(
+        'Startup',
+        '控制器恢复完成：累计 ${_bootstrapClock.elapsedMilliseconds}ms',
+      );
       controller.startColdLaunchGreeting();
       await controller.initializeAlarmRuntime();
       if (controller.activeCharacterId == CharacterRuntimeIds.ryza) {
@@ -184,7 +204,11 @@ class _BootstrapAppState extends State<_BootstrapApp> {
         bundle: _resourceBundle,
         child: GlassStyleScope(
           enabled: controller?.liquidGlassChatUi ?? false,
-          child: child!,
+          child: AlarmRingingOverlay(
+            enabled: AppPlatformCapabilities.supportsVoiceAlarms,
+            language: controller?.interfaceLanguage ?? AppLanguage.chinese,
+            child: child!,
+          ),
         ),
       ),
       theme: controller == null

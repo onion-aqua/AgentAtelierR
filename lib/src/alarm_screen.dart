@@ -48,6 +48,7 @@ class _AlarmScreenState extends State<AlarmScreen> {
   List<AlarmSettings> _alarms = const [];
   StreamSubscription<dynamic>? _subscription;
   bool _addingAlarm = false;
+  final _deletingAlarms = <int>{};
   bool get _supportsVoiceAlarms =>
       !kIsWeb &&
       (defaultTargetPlatform == TargetPlatform.android ||
@@ -283,9 +284,32 @@ class _AlarmScreenState extends State<AlarmScreen> {
   }
 
   Future<void> _deleteAlarm(AlarmSettings settings) async {
-    await Alarm.stop(settings.id);
-    RuntimeLog.instance.info('Alarm', '闹钟已删除，id=${settings.id}');
-    await _refresh();
+    if (!_deletingAlarms.add(settings.id)) return;
+    setState(() {});
+    try {
+      if (!await Alarm.stop(settings.id)) {
+        throw StateError('Alarm.stop returned false');
+      }
+      RuntimeLog.instance.info('Alarm', '闹钟已删除，id=${settings.id}');
+      await _refresh();
+    } on Object catch (error, stack) {
+      RuntimeLog.instance.error('Alarm', error, stack);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            widget.controller.interfaceLanguage.text(
+              '未能停止或删除闹钟，请重试',
+              'Could not stop or delete the alarm. Try again.',
+              'アラームを停止・削除できませんでした。再試行してください',
+            ),
+          ),
+        ),
+      );
+    } finally {
+      _deletingAlarms.remove(settings.id);
+      if (mounted) setState(() {});
+    }
   }
 
   Future<AlarmReminderType?> _selectReminderType(AppLanguage language) {
@@ -478,7 +502,9 @@ class _AlarmScreenState extends State<AlarmScreen> {
                         '${_dateLabel(alarm.dateTime, language)}',
                       ),
                       trailing: IconButton(
-                        onPressed: () => _deleteAlarm(alarm),
+                        onPressed: _deletingAlarms.contains(alarm.id)
+                            ? null
+                            : () => _deleteAlarm(alarm),
                         tooltip: language.text(
                           '删除闹钟',
                           'Delete alarm',

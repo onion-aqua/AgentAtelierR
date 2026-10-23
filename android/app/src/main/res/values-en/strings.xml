@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="alarm_ringing">Alarm ringing</string>
+    <string name="alarm_stop">Stop alarm</string>
+    <string name="alarm_stopping">Stopping…</string>
+    <string name="alarm_stop_failed">Could not stop the alarm. Try again.</string>
+</resources>
