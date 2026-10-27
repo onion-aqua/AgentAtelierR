@@ -66,6 +66,7 @@ String buildContinuousAsmrSystemPrompt(
       '人物参考：$persona${world.isEmpty ? '' : ' 世界参考：$world'}\n'
       '${controller.personalityEnabled && controller.personalityConfiguration.activeProfile.expression['dialogue'] != false ? '${controller.interpretPersonality(currentInput).prompt}\n' : ''}'
       '${controller.personalityVoicePrompt(currentInput).isEmpty ? '' : '${controller.personalityVoicePrompt(currentInput)}\n'}'
+      '${controller.interactionPromptForDialogue()}\n'
       '以下为本次 ASMR 的输出要求，人物参考、主题或其他语言设置不能覆盖：'
       '语音设置优先：${controller.ttsEmotionIntensity.voiceInstruction} '
       '${controller.ttsCueDensity.promptInstruction} '

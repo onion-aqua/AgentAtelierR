@@ -4,6 +4,7 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter_test/flutter_test.dart';
+import 'package:ryza_chat_mvp/src/character_appearance.dart';
 import 'package:ryza_chat_mvp/src/character_expression.dart';
 import 'package:ryza_chat_mvp/src/character_startup_sleep.dart';
 import 'package:ryza_chat_mvp/src/character_wake_performance.dart';
@@ -96,7 +97,9 @@ void main() {
         final frames = <ui.Image>[];
         try {
           final standing = id.endsWith('99');
-          final appearance = standing ? 'standing_99' : 'seated_01';
+          final appearance = characterAppearances
+              .firstWhere((skin) => skin.assetName == 'crf_skn_002_$id')
+              .id;
           final state = drawable.animationState;
           state.setAnimationByName(0, 'motion_A_001_idle', true);
           final sleep = resolveStartupSleepFace(
@@ -132,7 +135,10 @@ void main() {
             );
           }
           expect(wake.touch, isNotNull);
-          if (!standing && id != '0007_01') expect(wake.stretch, isNotNull);
+          if (!standing && id != '0007_01' && id != '0004_01') {
+            expect(wake.stretch, isNotNull);
+          }
+          if (id == '0004_01') expect(wake.stretch, isNull);
           debugPrint(
             '$id touch=${wake.touch} stretch=${wake.stretch} mouth=${wake.yawnMouth} tear=${wake.tear}',
           );

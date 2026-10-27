@@ -10,10 +10,13 @@ import 'package:ryza_chat_mvp/src/ai_services.dart';
 import 'package:ryza_chat_mvp/src/app_controller.dart';
 import 'package:ryza_chat_mvp/src/app_localization.dart';
 import 'package:ryza_chat_mvp/src/chat_screen.dart';
+import 'package:ryza_chat_mvp/src/character_status_panel.dart';
+import 'package:ryza_chat_mvp/src/body_sensitivity.dart';
 import 'package:ryza_chat_mvp/src/image_generation_config.dart';
 import 'package:ryza_chat_mvp/src/image_generation_manager_page.dart';
 import 'package:ryza_chat_mvp/src/image_generation_service.dart';
 import 'package:ryza_chat_mvp/src/image_generation_store.dart';
+import 'package:ryza_chat_mvp/src/story_clock.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
@@ -55,6 +58,193 @@ void main() {
     for (final name in audioChannels) {
       messenger.setMockMethodCallHandler(MethodChannel(name), null);
     }
+  });
+
+  testWidgets('phone status diagram follows current stats and turn rollback', (
+    tester,
+  ) async {
+    final harness = await _mountChat(tester, aiEnabled: false);
+    final controller = harness.controller;
+    controller.setStoryClockEnabled(true);
+    final mood = controller.characterState.values['mood']!;
+    final before = controller.storyClock.totalMinutes;
+    final id = controller.addUserMessage('休息片刻');
+    await _openPhoneHome(tester);
+    await tester.tap(find.byKey(const ValueKey('virtual-phone-app-status')));
+    await tester.pumpAndSettle();
+    expect(find.byType(CharacterStatusPanel), findsOneWidget);
+    const proposal = {
+      'state_delta': {'mood': 5},
+      'emotion': 'happy',
+      'reason': '休息后更有精神',
+      'time_advance': {'kind': 'rest', 'minutes': 30},
+    };
+    controller.settleCharacterState(id, proposal, controller.dataRevision);
+    controller.settleStoryTime(id, proposal, controller.dataRevision);
+    await tester.pumpAndSettle();
+    expect(
+      tester
+          .widget<Text>(find.byKey(const ValueKey('body-status-value-mood')))
+          .data,
+      '${mood + 5}',
+    );
+    expect(
+      tester
+          .widget<CharacterStatusPanel>(find.byType(CharacterStatusPanel))
+          .clock
+          .totalMinutes,
+      before + 30,
+    );
+    controller.undoLastUserTurn();
+    await tester.pumpAndSettle();
+    expect(
+      tester
+          .widget<Text>(find.byKey(const ValueKey('body-status-value-mood')))
+          .data,
+      '$mood',
+    );
+    expect(
+      tester
+          .widget<CharacterStatusPanel>(find.byType(CharacterStatusPanel))
+          .clock
+          .totalMinutes,
+      before,
+    );
+    await tester.tap(find.byKey(const ValueKey('body-map-sensitivity-tab')));
+    await tester.pumpAndSettle();
+    final legs = find.byKey(const ValueKey('body-sensitivity-legs'));
+    await tester.ensureVisible(legs);
+    await tester.tap(legs);
+    await tester.pumpAndSettle();
+    final slider = find.byKey(const ValueKey('body-sensitivity-slider'));
+    expect(slider, findsNothing);
+    final title = find.byKey(const ValueKey('status-numeric-edit-title'));
+    for (var tap = 0; tap < 9; tap++) {
+      await tester.tap(title);
+      await tester.pump(const Duration(milliseconds: 80));
+    }
+    expect(slider, findsNothing);
+    await tester.tap(title);
+    await tester.pump(const Duration(milliseconds: 80));
+    expect(slider, findsOneWidget);
+    await tester.ensureVisible(slider);
+    final sliderRect = tester.getRect(slider);
+    await tester.tapAt(sliderRect.center + const Offset(35, 0));
+    await tester.pumpAndSettle();
+    final sensitivity = controller.bodySensitivity.valueFor(
+      BodySensitivityPart.legs,
+    );
+    expect(sensitivity, greaterThan(50));
+    expect(controller.recordBodySensitivityTouch('legs'), isTrue);
+    await tester.pumpAndSettle();
+    expect(
+      tester
+          .widget<Text>(
+            find.byKey(const ValueKey('body-sensitivity-value-legs')),
+          )
+          .data,
+      '${sensitivity + 1}',
+    );
+    final intimate = find.byKey(const ValueKey('body-sensitivity-intimate'));
+    await tester.ensureVisible(intimate);
+    await tester.tap(intimate);
+    await tester.pumpAndSettle();
+    expect(
+      controller.bodySensitivity.isUnlocked(BodySensitivityPart.intimate),
+      isFalse,
+    );
+    expect(find.byKey(const ValueKey('body-sensitivity-slider')), findsNothing);
+    final unlock = find.byKey(const ValueKey('body-sensitivity-unlock'));
+    await tester.ensureVisible(unlock);
+    await tester.tap(unlock);
+    await tester.pumpAndSettle();
+    expect(
+      controller.bodySensitivity.isUnlocked(BodySensitivityPart.intimate),
+      isTrue,
+    );
+    expect(
+      tester
+          .widget<Text>(
+            find.byKey(const ValueKey('body-sensitivity-value-intimate')),
+          )
+          .data,
+      '50',
+    );
+    expect(
+      find.byKey(const ValueKey('body-sensitivity-slider')),
+      findsOneWidget,
+    );
+    await tester.tap(find.byKey(const ValueKey('virtual-phone-back')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('virtual-phone-app-status')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('body-map-sensitivity-tab')));
+    await tester.pumpAndSettle();
+    expect(slider, findsNothing);
+    expect(
+      find.byKey(const ValueKey('status-numeric-edit-enabled')),
+      findsNothing,
+    );
+    expect(
+      controller.bodySensitivity.valueFor(BodySensitivityPart.legs),
+      sensitivity + 1,
+    );
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('undo button restores stats and time and refills the composer', (
+    tester,
+  ) async {
+    final harness = await _mountChat(tester, aiEnabled: false);
+    final controller = harness.controller;
+    controller.setStoryClockEnabled(true);
+    controller.storyClock = StoryClock(totalMinutes: 23 * 60 + 55, satiety: 8);
+    controller.sceneTime = SceneTime.night;
+    final before = jsonDecode(jsonEncode(controller.characterState.toJson()));
+    final id = controller.addUserMessage('我们先休息一会儿');
+    final revision = controller.dataRevision;
+    const proposal = {
+      'state_delta': {'mood': 5, 'energy': -5},
+      'emotion': 'happy',
+      'reason': '对话中的状态变化',
+      'time_advance': {'kind': 'rest', 'minutes': 60},
+    };
+    controller.settleCharacterState(id, proposal, revision);
+    controller.settleStoryTime(id, proposal, revision);
+    controller.addAssistantMessage('好呀，休息一会儿。');
+    await tester.pump();
+    await tester.tap(find.byTooltip('回退上一轮对话、状态与时间'));
+    await tester.pump();
+    expect(controller.characterState.toJson(), before);
+    expect(controller.storyClock.totalMinutes, 23 * 60 + 55);
+    expect(controller.storyClock.satiety, 8);
+    expect(controller.sceneTime, SceneTime.night);
+    expect(controller.messages.any((m) => m.id == id), isFalse);
+    expect(
+      tester.widget<TextField>(_ordinaryInput()).controller!.text,
+      '我们先休息一会儿',
+    );
+    expect(controller.settleStoryTime(id, proposal, revision), isFalse);
+  });
+
+  testWidgets('a failed reply is undone with its user turn in one click', (
+    tester,
+  ) async {
+    final harness = await _mountChat(tester, aiEnabled: false);
+    final controller = harness.controller;
+    controller.storyClock = StoryClock(totalMinutes: 800);
+    final id = controller.addUserMessage('失败后再修改的输入');
+    controller.storyClock = StoryClock(totalMinutes: 860);
+    controller.failAssistantStream('offline test');
+    await tester.pump();
+    await tester.tap(find.byTooltip('回退上一轮对话、状态与时间'));
+    await tester.pump();
+    expect(controller.messages.any((m) => m.id == id || m.isFailure), isFalse);
+    expect(controller.storyClock.totalMinutes, 800);
+    expect(
+      tester.widget<TextField>(_ordinaryInput()).controller!.text,
+      '失败后再修改的输入',
+    );
   });
 
   testWidgets(

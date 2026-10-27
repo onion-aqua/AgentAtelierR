@@ -129,7 +129,7 @@ class _BootstrapAppState extends State<_BootstrapApp> {
       ..start();
     try {
       await RuntimeLog.instance.initialize();
-      RuntimeLog.instance.info('App', '应用启动，版本 1.0.4.4');
+      RuntimeLog.instance.info('App', '应用启动，版本 1.0.4.5');
       await initSpineFlutter(enableMemoryDebugging: false);
       if (AppPlatformCapabilities.supportsVoiceAlarms) await Alarm.init();
       await AndroidCompanionRuntime.instance.initialize();

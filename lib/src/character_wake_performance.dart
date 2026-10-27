@@ -4,33 +4,22 @@ import 'package:spine_flutter/spine_flutter.dart';
 
 import 'character_expression.dart';
 import 'character_startup_sleep.dart';
+import 'character_wake_variants.dart';
 
 /// A local, deterministic greeting. No LLM/TTS request or save mutation.
 class CharacterWakePerformance {
   static const touchEnd = 1.0;
   static const stretchEnd = 4.6;
   static const duration = 5.8;
-  static const _stretchPoses = {
-    'motion_A_001_idle',
-    'motion_A_002_idle',
-    'motion_A_005_idle',
-    'motion_A_006_idle',
-    'motion_A_024_idle',
-    'motion_A_025_idle',
-    'motion_A_029_idle',
-    'motion_A_030_idle',
-    'motion_A_031_idle',
-    'motion_A_032_idle',
-    'motion_A_033_idle',
-    'motion_A_034_idle',
-  };
 
   CharacterWakePerformance({
     required this.state,
     required this.data,
     required String appearanceId,
     required String? pose,
+    String sittingId = 'sitting_normal',
     String? touchAnimation,
+    int variant = 0,
   }) {
     final preset = characterExpressionPreset(
       appearanceId,
@@ -52,17 +41,16 @@ class CharacterWakePerformance {
           ? 'facial_add_tear_off'
           : 'facial_add_tear_000_off',
     );
-    touch =
-        _available(touchAnimation) ?? _available('motion_touch_A_001_active');
-    // Only the authored seated B12 family is a verified stretch. Do not
-    // substitute a shoulder turn for a missing stretch in an imported rig.
-    stretch = appearanceId != 'standing_99' && _stretchPoses.contains(pose)
-        ? [
-            'motion_add_B_016_active',
-            'motion_add_B_017_active',
-            'motion_add_B_018_active',
-          ].expand((name) => [name, '${name}_ignore']).where(_has).firstOrNull
-        : null;
+    final motions = CharacterWakeMotions.resolve(
+      appearanceId: appearanceId,
+      pose: pose,
+      sittingId: sittingId,
+      hasAnimation: _has,
+      touchAnimation: touchAnimation,
+      variant: variant,
+    );
+    touch = motions.touch;
+    stretch = motions.stretch;
   }
 
   final AnimationState state;

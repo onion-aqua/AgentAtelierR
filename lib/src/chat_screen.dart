@@ -64,6 +64,10 @@ import 'speech_loudness.dart';
 import 'tts_spatial_settings.dart';
 import 'character_speech_driver.dart';
 import 'character_startup_sleep.dart';
+import 'character_status_panel.dart';
+import 'status_numeric_edit_gate.dart';
+import 'character_status_silhouette.dart';
+import 'body_sensitivity.dart';
 import 'character_wake_performance.dart';
 import 'cold_start_wake_button.dart';
 import 'character_resource_behavior.dart';
@@ -2531,6 +2535,10 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     )) {
       widget.controller.frameRate.setActivity(FrameRateActivity.touch, true);
     }
+    final touchedPart = _touchPhysics.touchedBodyPart;
+    if (touchedPart != null) {
+      widget.controller.recordBodySensitivityTouch(touchedPart);
+    }
   }
 
   void _moveTouchPhysics(CharacterTouchSample sample) {
@@ -2553,6 +2561,10 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         ? direction / direction.distance * speed
         : Offset.zero;
     _touchPhysics.move(point, velocity);
+    final touchedPart = _touchPhysics.touchedBodyPart;
+    if (touchedPart != null) {
+      widget.controller.recordBodySensitivityTouch(touchedPart);
+    }
     widget.controller.frameRate.setActivity(
       FrameRateActivity.touch,
       _facePull.isDragging || _touchPhysics.active,
@@ -3339,7 +3351,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     }
   }
 
-  void _wakeCharacter() {
+  void _wakeCharacter({String? touchAnimation}) {
     if (!_awaitingWake || _waking) return;
     FocusScope.of(context).unfocus();
     final spine = _spineController;
@@ -3351,15 +3363,27 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       _wakeCompletionScheduled = false;
     });
     if (_appearance.animated && _spineReady && spine != null) {
+      // Cross-legged hand-rest layers sit ABOVE the wake body/touch tracks.
+      // Release only these arms temporarily, retaining the persistent legs.
+      if (_sittingId == 'sitting_agura') {
+        for (final track in [6, 7]) {
+          spine.animationState.setEmptyAnimation(track, .28);
+        }
+      }
       _wakePerformance = CharacterWakePerformance(
         state: spine.animationState,
         data: spine.skeletonData,
         appearanceId: _appearance.baseAppearanceId ?? _appearance.id,
         pose: _currentIdleAnimation,
+        sittingId: _sittingId,
+        touchAnimation: touchAnimation,
+        variant: _random.nextInt(3),
       )..advance(0);
       RuntimeLog.instance.info(
         'Interaction',
-        '唤醒演出开始；stretch=${_wakePerformance!.stretch ?? 'unavailable'}；输入保持锁定',
+        '唤醒演出开始；skin=${_appearance.id}；pose=$_currentIdleAnimation；'
+            'sitting=$_sittingId；touch=${_wakePerformance!.touch ?? 'unavailable'}；'
+            'stretch=${_wakePerformance!.stretch ?? 'unavailable'}；输入保持锁定',
       );
     } else {
       // Static portraits or an unavailable rig must not trap the composer.
@@ -3385,14 +3409,40 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
   void _finishWakePerformance() {
     _cancelWakePerformance();
+    _restoreSittingRestTracks({6, 7}, .35);
     widget.controller.wakeCharacter();
     if (mounted) setState(() {});
   }
 
   Future<void> _reactToTap(Offset localPosition) async {
     final reaction = _hitTestReaction(localPosition);
+    final touchedPart = _touchPhysics.bodyPartHitTestReady
+        ? _touchPhysics.touchedBodyPart
+        : reaction?.partName;
+    if (touchedPart != null) {
+      final part = BodySensitivityState.partForHit(touchedPart);
+      final wasUnlocked =
+          part == null || widget.controller.bodySensitivity.isUnlocked(part);
+      final changed = widget.controller.recordBodySensitivityTouch(
+        touchedPart,
+        deliberate: true,
+      );
+      if (changed && !wasUnlocked && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              widget.controller.interfaceLanguage.text(
+                '该部位敏感度已解锁',
+                'Sensitivity unlocked for this body part',
+                'この部位の敏感度を解放しました',
+              ),
+            ),
+          ),
+        );
+      }
+    }
     if (_awaitingWake) {
-      if (reaction != null) _wakeCharacter();
+      if (reaction != null) _wakeCharacter(touchAnimation: reaction.animation);
       return;
     }
     if (reaction == null) {
@@ -3976,6 +4026,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           'values': characterState.values,
           'bands': characterState.bands,
         },
+        'character_interaction': widget.controller.interactionStateForDialogue(
+          posture: _sittingId,
+        ),
         'current_face': _currentExpression.name,
         'current_face_intensity': _expressionIntensity,
         'current_posture': _sittingId,
@@ -4511,7 +4564,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     _contactFollowUp = null;
     if (_isReplying) _cancelReply();
     _cancelSpeechPlayback();
-    if (widget.controller.removeFailedReplies()) return;
+    widget.controller.removeFailedReplies();
     final withdrawn = widget.controller.undoLastUserTurn();
     if (withdrawn == null) {
       ScaffoldMessenger.of(context)
@@ -4543,6 +4596,31 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         );
       _manualPanelFraction = null;
     });
+    if (withdrawn.turnSnapshot == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            widget.controller.interfaceLanguage.text(
+              '已回退对话；旧记录没有状态与时间快照，已保留当前数值和时间。',
+              'Conversation undone. This older turn has no checkpoint; stats and time were kept.',
+              '会話を取り消しました。旧履歴に記録がないため、状態と時刻は維持されます。',
+            ),
+          ),
+        ),
+      );
+    } else if (!withdrawn.turnSnapshot!.canRestoreCharacterState) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            widget.controller.interfaceLanguage.text(
+              '已回退对话与时间；期间发生过道具状态变更，当前人物数值已保留。',
+              'Conversation and time undone. Stats were kept because an item changed them.',
+              '会話と時刻を戻しました。アイテムによる変化があったため、現在の状態は維持されます。',
+            ),
+          ),
+        ),
+      );
+    }
     _scrollToBottom();
   }
 
@@ -6339,6 +6417,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     BuildContext context, {
     required String title,
     required Widget body,
+    Widget? titleContent,
   }) {
     final glass = GlassStyleScope.resolve(
       context,
@@ -6353,7 +6432,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         backgroundColor: glassPageHeaderColor(context),
         title: Padding(
           padding: const EdgeInsets.only(left: 40),
-          child: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis),
+          child:
+              titleContent ??
+              Text(title, maxLines: 1, overflow: TextOverflow.ellipsis),
         ),
       ),
       body: GlassPageSurface(liquidGlass: glass, child: body),
@@ -6366,72 +6447,60 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       builder: (context, _) {
         final controller = widget.controller;
         final language = controller.interfaceLanguage;
-        final state = controller.characterState;
-        return _virtualPhoneDetailPage(
-          context,
+        final posture = !_usesProtectedSpine
+            ? language.text('静态立绘', 'Portrait', '静止画')
+            : _appearance.isStanding
+            ? language.text('站姿', 'Standing', '立ち姿')
+            : _sittingId == 'sitting_agura'
+            ? language.text('盘腿坐姿', 'Cross-legged', 'あぐら')
+            : language.text('自然坐姿', 'Seated', '自然な座り姿');
+        return StatusNumericEditGate(
           title: language.text('角色状态', 'Character status', 'キャラクター状態'),
-          body: ListView(
-            padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
-            children: [
-              _PhoneStatusCard(
-                icon: Icons.mood_outlined,
-                title: language.text('当前状态', 'Current state', '現在の状態'),
-                body: state.summary(language),
+          language: language,
+          resetToken: (controller.activeCharacterId, controller.dataRevision),
+          builder: (context, title, access) => _virtualPhoneDetailPage(
+            context,
+            title: language.text('角色状态', 'Character status', 'キャラクター状態'),
+            titleContent: title,
+            body: CharacterStatusPanel(
+              key: ValueKey('character-status-${controller.activeCharacterId}'),
+              language: language,
+              characterName: controller.activeCharacterProfile.names.forLocale(
+                language == AppLanguage.english
+                    ? 'en'
+                    : language == AppLanguage.japanese
+                    ? 'ja'
+                    : 'zh',
               ),
-              if (controller.storyClockEnabled) ...[
-                _PhoneStatusCard(
-                  icon: Icons.schedule_rounded,
-                  title: language.text('剧情时间', 'Story time', '物語の時刻'),
-                  body: language.text(
-                    '第${controller.storyClock.day}天 · ${controller.storyClock.timeLabel}',
-                    'Day ${controller.storyClock.day} · ${controller.storyClock.timeLabel}',
-                    '${controller.storyClock.day}日目 · ${controller.storyClock.timeLabel}',
-                  ),
-                ),
-                _PhoneStatusCard(
-                  icon: Icons.restaurant_rounded,
-                  title: language.text('饱食度', 'Satiety', '満腹度'),
-                  body: '${controller.storyClock.satiety}/100',
-                ),
-              ],
-              _PhoneStatusCard(
-                icon: Icons.favorite_rounded,
-                title: language.text('关系点数', 'Bond', '親密度'),
-                body: '${controller.relationshipPoints}',
-              ),
-              if (state.reason.isNotEmpty)
-                _PhoneStatusCard(
-                  icon: Icons.history_rounded,
-                  title: language.text('最近变化', 'Recent change', '最近の変化'),
-                  body:
-                      '${state.reason}\n${state.updatedAt?.toLocal().toString().split('.').first ?? ''}',
-                ),
-              if (_usesProtectedSpine) ...[
-                _PhoneStatusCard(
-                  icon: Icons.checkroom_outlined,
-                  title: language.text('服装姿态', 'Outfit', '衣装と姿勢'),
-                  body: _appearance.label,
-                ),
-                _PhoneStatusCard(
-                  icon: controller.sceneTime.icon,
-                  title: language.text('场景时间', 'Scene time', 'シーン時間'),
-                  body: controller.sceneTime.label,
-                ),
-              ],
-              _PhoneStatusCard(
-                icon: Icons.location_on_outlined,
-                title: language.text('当前位置', 'Location', '現在地'),
-                body:
-                    '${controller.selectedAreaName}\n${controller.selectedStageName}',
-              ),
-              _PhoneStatusCard(
-                icon: Icons.psychology_alt_outlined,
-                title: language.text('长期记忆', 'Memory', '長期記憶'),
-                body: controller.longTermMemoryEnabled
-                    ? language.text('启用', 'Enabled', '有効')
-                    : language.text('关闭', 'Disabled', '無効'),
-              ),
-            ],
+              state: controller.characterState,
+              silhouette: _usesProtectedSpine
+                  ? CharacterStatusSilhouettes.ryza()
+                  : null,
+              sensitivity: controller.bodySensitivity,
+              manualEditingEnabled: access.value,
+              onSensitivityChanged: (part, value) {
+                if (access.value) controller.setBodySensitivity(part, value);
+              },
+              onSensitivityUnlock: (part) {
+                if (access.value) controller.unlockBodySensitivity(part);
+              },
+              touchGrowthEnabled: controller.bodySensitivityTouchEnabled,
+              onTouchGrowthChanged: controller.setBodySensitivityTouchEnabled,
+              clock: controller.storyClock,
+              clockEnabled: controller.storyClockEnabled,
+              relationshipPoints: controller.relationshipPoints,
+              postureLabel: posture,
+              outfitLabel: _usesProtectedSpine ? _appearance.label : null,
+              location:
+                  '${controller.selectedAreaName}\n${controller.selectedStageName}',
+              sceneTimeLabel: switch (controller.sceneTime) {
+                SceneTime.morning => language.text('早晨', 'Morning', '朝'),
+                SceneTime.afternoon => language.text('午后', 'Afternoon', '午後'),
+                SceneTime.evening => language.text('傍晚', 'Evening', '夕方'),
+                SceneTime.night => language.text('夜晚', 'Night', '夜'),
+              },
+              memoryEnabled: controller.longTermMemoryEnabled,
+            ),
           ),
         );
       },
@@ -8845,59 +8914,6 @@ class _TextureAppearancePreviewState extends State<_TextureAppearancePreview> {
   }
 }
 
-class _PhoneStatusCard extends StatelessWidget {
-  const _PhoneStatusCard({
-    required this.icon,
-    required this.title,
-    required this.body,
-  });
-
-  final IconData icon;
-  final String title;
-  final String body;
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 8),
-      child: GlassContentCard(
-        liquidGlass: GlassStyleScope.resolve(context),
-        borderRadius: BorderRadius.circular(12),
-        child: Padding(
-          padding: const EdgeInsets.all(12),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Icon(icon, color: colors.onSurfaceVariant, size: 20),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      title,
-                      style: TextStyle(
-                        color: colors.onSurfaceVariant,
-                        fontSize: 12,
-                      ),
-                    ),
-                    const SizedBox(height: 3),
-                    Text(
-                      body,
-                      style: TextStyle(color: colors.onSurface, height: 1.35),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
 class _StaticAppearanceLabel extends StatelessWidget {
   const _StaticAppearanceLabel({required this.liquidGlass});
 
@@ -9356,9 +9372,9 @@ class _LiquidGlassConversation extends StatelessWidget {
                     liquidGlass: liquidGlass,
                     icon: Icons.undo_rounded,
                     tooltip: language.text(
-                      '撤回上一条消息',
-                      'Undo last message',
-                      '直前のメッセージを取り消す',
+                      '回退上一轮对话、状态与时间',
+                      'Undo last turn, stats and time',
+                      '直前の会話・状態・時刻を戻す',
                     ),
                     onPressed: canUndo && !selectingCollection ? onUndo : null,
                     size: 36,

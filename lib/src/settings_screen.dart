@@ -1424,9 +1424,9 @@ class SettingsScreenState extends State<SettingsScreen> {
                   title: const Text('AgentAtelierR'),
                   subtitle: Text(
                     language.text(
-                      '版本 1.0.4.4',
-                      'Version 1.0.4.4',
-                      'バージョン 1.0.4.4',
+                      '版本 1.0.4.5',
+                      'Version 1.0.4.5',
+                      'バージョン 1.0.4.5',
                     ),
                   ),
                 ),

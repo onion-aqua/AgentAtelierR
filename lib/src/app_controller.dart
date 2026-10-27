@@ -9,6 +9,9 @@ import 'app_localization.dart';
 import 'app_theme.dart';
 import 'alchemy_models.dart';
 import 'character_state.dart';
+import 'body_sensitivity.dart';
+import 'character_interaction_context.dart';
+import 'conversation_turn_snapshot.dart';
 import 'personality/personality_profile.dart';
 import 'personality/personality_interpreter.dart';
 import 'attachment_thumbnail_store.dart';
@@ -303,6 +306,7 @@ class ChatMessage {
     this.attachments = const [],
     this.translatedText,
     this.isFailure = false,
+    this.turnSnapshot,
   });
 
   factory ChatMessage.fromJson(Map<String, dynamic> json) => ChatMessage(
@@ -310,6 +314,9 @@ class ChatMessage {
     text: json['text'] as String? ?? '',
     translatedText: json['translatedText'] as String?,
     isUser: json['isUser'] as bool? ?? false,
+    turnSnapshot: json['isUser'] == true
+        ? ConversationTurnSnapshot.tryFromJson(json['turnSnapshot'])
+        : null,
     isFailure:
         json['isFailure'] == true ||
         (json['isUser'] != true &&
@@ -327,6 +334,7 @@ class ChatMessage {
   String get displayText => translatedText ?? text;
   final bool isUser;
   final bool isFailure;
+  final ConversationTurnSnapshot? turnSnapshot;
   final List<ChatAttachment> attachments;
 
   Map<String, dynamic> toJson({bool includeAttachmentThumbnails = false}) => {
@@ -335,6 +343,7 @@ class ChatMessage {
     if (translatedText != null) 'translatedText': translatedText,
     'isUser': isUser,
     if (isFailure) 'isFailure': true,
+    if (isUser && turnSnapshot != null) 'turnSnapshot': turnSnapshot!.toJson(),
     if (attachments.isNotEmpty)
       'attachments': attachments
           .map(
@@ -349,6 +358,7 @@ class ChatMessage {
     String? text,
     List<ChatAttachment>? attachments,
     String? translatedText,
+    ConversationTurnSnapshot? turnSnapshot,
   }) => ChatMessage(
     id: id,
     text: text ?? this.text,
@@ -356,6 +366,7 @@ class ChatMessage {
         translatedText ?? (text == null ? this.translatedText : null),
     isUser: isUser,
     isFailure: isFailure,
+    turnSnapshot: turnSnapshot ?? this.turnSnapshot,
     attachments: attachments ?? this.attachments,
   );
 }
@@ -742,6 +753,90 @@ class AppController extends ChangeNotifier {
       _llmDialogueSignal.cancelTurn(turn);
 
   CharacterState characterState = CharacterState();
+  BodySensitivityState _bodySensitivity = BodySensitivityState();
+  BodySensitivityState get bodySensitivity => _bodySensitivity;
+  bool bodySensitivityTouchEnabled = true;
+  final Map<BodySensitivityPart, DateTime> _lastBodySensitivityTouch = {};
+  String get _bodySensitivityPreferenceKey =>
+      'body_sensitivity_v1.$activeCharacterId';
+  String get _bodySensitivityTouchPreferenceKey =>
+      'body_sensitivity_touch_enabled_v1.$activeCharacterId';
+
+  /// Direct interactions occur outside a conversation turn. Do not erase them
+  /// when undoing an earlier message; future turns get a new checkpoint.
+  void _preserveBodySensitivityChangesOnUndo() {
+    messages = [
+      for (final message in messages)
+        if (message.isUser && message.turnSnapshot != null)
+          message.copyWith(
+            turnSnapshot: message.turnSnapshot!
+                .preserveBodySensitivityChanges(),
+          )
+        else
+          message,
+    ];
+  }
+
+  void setBodySensitivity(BodySensitivityPart part, int value) {
+    if (!_bodySensitivity.isUnlocked(part)) return;
+    final next = _bodySensitivity.withValue(part, value);
+    if (identical(next, _bodySensitivity)) return;
+    _preserveBodySensitivityChangesOnUndo();
+    _bodySensitivity = next;
+    _changed();
+  }
+
+  /// An explicit local interaction is the only path that unlocks a new part.
+  /// Assigning a value or receiving a model response cannot do so implicitly.
+  bool unlockBodySensitivity(BodySensitivityPart part) {
+    final next = _bodySensitivity.unlock(part);
+    if (identical(next, _bodySensitivity)) return false;
+    _preserveBodySensitivityChangesOnUndo();
+    _bodySensitivity = next;
+    _changed();
+    return true;
+  }
+
+  void setBodySensitivityTouchEnabled(bool enabled) {
+    if (bodySensitivityTouchEnabled == enabled) return;
+    bodySensitivityTouchEnabled = enabled;
+    _lastBodySensitivityTouch.clear();
+    _changed();
+  }
+
+  /// Only a confirmed hit can change its own value. Debounce separately for
+  /// each part; cooldowns are runtime-only and cleared when loading a save.
+  bool recordBodySensitivityTouch(String hitPart, {bool deliberate = false}) {
+    final part = BodySensitivityState.partForHit(hitPart);
+    if (part == null) return false;
+    var next = _bodySensitivity;
+    if (!next.isUnlocked(part)) {
+      if (!deliberate) return false;
+      next = next.unlock(part);
+    }
+    final now = DateTime.now();
+    final previous = _lastBodySensitivityTouch[part];
+    if (bodySensitivityTouchEnabled &&
+        next.valueFor(part) < 100 &&
+        (previous == null ||
+            now.difference(previous) >= const Duration(seconds: 10))) {
+      _lastBodySensitivityTouch[part] = now;
+      next = next.withValue(part, next.valueFor(part) + 1);
+    }
+    if (identical(next, _bodySensitivity)) return false;
+    _preserveBodySensitivityChangesOnUndo();
+    _bodySensitivity = next;
+    _changed();
+    return true;
+  }
+
+  static bool _readBodySensitivityTouchEnabled(Object? raw) {
+    if (raw != null && raw is! bool) {
+      throw const FormatException('身体敏感度触摸设置无效');
+    }
+    return raw != false;
+  }
+
   final Map<String, PersonalityConfiguration> _personalityConfigurations = {};
   final Map<String, String> _personalityWarnings = {};
 
@@ -1737,6 +1832,21 @@ class AppController extends ChangeNotifier {
     } on FormatException {
       characterState = CharacterState();
     }
+    try {
+      final raw = _preferences.getString(_bodySensitivityPreferenceKey);
+      _bodySensitivity = BodySensitivityState.fromJson(
+        raw == null ? null : jsonDecode(raw),
+      );
+    } on Object {
+      _bodySensitivity = BodySensitivityState();
+      RuntimeLog.instance.warning('CharacterState', '身体敏感度记录无法读取，已使用默认值');
+    }
+    try {
+      bodySensitivityTouchEnabled =
+          _preferences.getBool(_bodySensitivityTouchPreferenceKey) ?? true;
+    } on Object {
+      bodySensitivityTouchEnabled = true;
+    }
     suggestionUseTimes =
         (_preferences.getStringList('suggestion_use_times') ?? const [])
             .map(DateTime.tryParse)
@@ -2091,7 +2201,22 @@ class AppController extends ChangeNotifier {
       id = '${prefix}_${suffix++}';
     }
     messages.add(
-      ChatMessage(id: id, text: text, isUser: true, attachments: attachments),
+      ChatMessage(
+        id: id,
+        text: text,
+        isUser: true,
+        attachments: attachments,
+        turnSnapshot: ConversationTurnSnapshot(
+          characterState: characterState,
+          bodySensitivity: _bodySensitivity,
+          storyClock: storyClock,
+          characterMood: characterMood.name,
+          sceneTime: sceneTime.name,
+          storyClockEnabled: storyClockEnabled,
+          automaticSceneTime: automaticSceneTime,
+          userMessageCount: userMessageCount,
+        ),
+      ),
     );
     _imageFoodInvitationMessageId =
         imageFoodInvitation &&
@@ -2224,9 +2349,15 @@ class AppController extends ChangeNotifier {
   }
 
   ChatMessage? undoLastUserTurn() {
+    if (!messages.any((message) => message.isUser)) return null;
+    // Seal active producers first. A call reset can append its completed turn,
+    // so determine the final user turn only after these synchronous callbacks.
+    _notifyDataResetListeners();
     final lastUserIndex = messages.lastIndexWhere((message) => message.isUser);
     if (lastUserIndex < 0) return null;
     final withdrawn = messages[lastUserIndex];
+    // Invalidate delayed state/time/memory results before notifying the UI.
+    _dataRevision += 1;
     if (_imageFoodInvitationMessageId == withdrawn.id) {
       _imageFoodInvitationMessageId = null;
     }
@@ -2244,14 +2375,35 @@ class AppController extends ChangeNotifier {
           ? null
           : _recentMemoryCheckpoints.last['id'] as String;
     }
-    userMessageCount = max(0, userMessageCount - 1);
+    final snapshot = withdrawn.turnSnapshot;
+    if (snapshot != null) {
+      if (snapshot.canRestoreCharacterState) {
+        characterState = snapshot.characterState;
+      }
+      if (snapshot.canRestoreBodySensitivity &&
+          snapshot.bodySensitivity != null) {
+        _bodySensitivity = snapshot.bodySensitivity!;
+      }
+      storyClock = snapshot.storyClock;
+      storyClockEnabled = snapshot.storyClockEnabled;
+      automaticSceneTime = snapshot.automaticSceneTime;
+      sceneTime = SceneTime.values.byName(snapshot.sceneTime);
+      characterMood = CharacterMood.values.byName(snapshot.characterMood);
+      userMessageCount = snapshot.userMessageCount;
+    } else {
+      // Legacy messages never recorded their pre-turn state. Preserve the real
+      // present stats/time rather than estimating an irreversible LLM delta.
+      userMessageCount = max(0, userMessageCount - 1);
+      final previousUserIndex = messages.lastIndexWhere(
+        (message) => message.isUser,
+      );
+      characterMood = previousUserIndex < 0
+          ? CharacterMood.neutral
+          : _moodFromText(messages[previousUserIndex].text);
+    }
+    // Revoke only this turn's award. Restoring a historic balance would refund
+    // unrelated shop purchases while leaving the purchased items in inventory.
     relationshipPoints = max(0, relationshipPoints - 1);
-    final previousUserIndex = messages.lastIndexWhere(
-      (message) => message.isUser,
-    );
-    characterMood = previousUserIndex < 0
-        ? CharacterMood.neutral
-        : _moodFromText(messages[previousUserIndex].text);
     _changed();
     return withdrawn;
   }
@@ -2405,6 +2557,35 @@ class AppController extends ChangeNotifier {
         'Agent 未开启，对话不能修改库存；消耗、品质、标签和调合结果只能由本地炼金系统修改。';
   }
 
+  Map<String, Object?> interactionStateForDialogue({String? posture}) =>
+      characterInteractionFacts(
+        state: characterState,
+        clock: storyClock,
+        clockEnabled: storyClockEnabled,
+        sensitivity: _bodySensitivity,
+        relationshipPoints: relationshipPoints,
+        characterName: activeCharacterProfile.names.chinese,
+        posture: posture,
+        appearance: activeCharacterProfile.hasSpineResources
+            ? characterAppearanceById(selectedCharacterAppearanceId).label
+            : activeCharacterProfile.defaultAppearancePrompt,
+      );
+
+  String interactionPromptForDialogue({String? posture}) =>
+      buildCharacterInteractionContext(
+        state: characterState,
+        clock: storyClock,
+        clockEnabled: storyClockEnabled,
+        sensitivity: _bodySensitivity,
+        relationshipPoints: relationshipPoints,
+        characterName: activeCharacterProfile.names.chinese,
+        language: interfaceLanguage,
+        posture: posture,
+        appearance: activeCharacterProfile.hasSpineResources
+            ? characterAppearanceById(selectedCharacterAppearanceId).label
+            : activeCharacterProfile.defaultAppearancePrompt,
+      );
+
   String buildCharacterPrompt({
     String currentInput = '',
     CharacterPerformancePromptContext? performanceContext,
@@ -2435,6 +2616,7 @@ class AppController extends ChangeNotifier {
           ttsProvider != TtsProvider.local &&
           personalityVoicePrompt(currentInput).isNotEmpty)
         personalityVoicePrompt(currentInput),
+      interactionPromptForDialogue(posture: performanceContext?.posture),
       '【虚拟手机联络】如果用户在当前发言中向在场 NPC 请求交换联系方式、添加好友，或使用微信、QQ、短信、SMS、LINE、Discord、Telegram、邮箱等通讯方式，请让对应 NPC 按身份和关系自然回应。使用“角色[精确 npc_id]：”输出该 NPC 自己的台词，明确表示同意、犹豫或拒绝。不要由旁白或其他角色代替本人同意，不声称已经加入联系人；用户会在回复后单独确认。${requestedContacts.isEmpty ? '' : '\n本轮应用根据点名或最近在场发言锁定联系请求目标：$requestedContacts。即使用户没有重复 NPC 名称，也应让该 NPC 自己回应并保留精确角色前缀；可同意、犹豫或拒绝，不要替其决定。'}',
       if (npcMemory.isNotEmpty) npcMemory,
       if (callRecords.isNotEmpty)
@@ -4255,6 +4437,8 @@ $japanesePunctuationRule
     'longTermMemoryConsolidatedCount': longTermMemoryConsolidatedCount,
     'memoryEditRevision': memoryEditRevision,
     'characterState': characterState.toJson(),
+    'bodySensitivity': _bodySensitivity.toJson(),
+    'bodySensitivityTouchEnabled': bodySensitivityTouchEnabled,
     'virtualPhoneCarrier': virtualPhoneCarrier.toJson(),
     'npcChats': npcChats.toJson(),
     'callRecords': callRecords.map((r) => r.toJson()).toList(),
@@ -4406,6 +4590,8 @@ $japanesePunctuationRule
     'longTermMemoryConsolidatedCount': longTermMemoryConsolidatedCount,
     'memoryEditRevision': memoryEditRevision,
     'characterState': characterState.toJson(),
+    'bodySensitivity': _bodySensitivity.toJson(),
+    'bodySensitivityTouchEnabled': bodySensitivityTouchEnabled,
     'virtualPhoneCarrier': virtualPhoneCarrier.toJson(),
     'npcChats': npcChats.toJson(),
     'callRecords': callRecords.map((r) => r.toJson()).toList(),
@@ -4590,6 +4776,8 @@ $japanesePunctuationRule
       ..['longTermMemoryConsolidatedCount'] = 0
       ..['memoryEditRevision'] = 0
       ..['characterState'] = CharacterState.newSave().toJson()
+      ..['bodySensitivity'] = BodySensitivityState().toJson()
+      ..['bodySensitivityTouchEnabled'] = true
       ..['characterMood'] = CharacterMood.neutral.name
       ..['relationshipPoints'] = 0
       ..['preciousItems'] = <String, int>{}
@@ -4849,6 +5037,12 @@ $japanesePunctuationRule
   }
 
   void _applyGameState(Map<String, dynamic> data) {
+    final importedBodySensitivity = BodySensitivityState.fromJson(
+      data['bodySensitivity'],
+    );
+    final importedTouchEnabled = _readBodySensitivityTouchEnabled(
+      data['bodySensitivityTouchEnabled'],
+    );
     _imageFoodInvitationMessageId = null;
     _inventoryAddResults.clear();
     const supportedFormats = {
@@ -4943,6 +5137,9 @@ $japanesePunctuationRule
     characterState = data['characterState'] is Map
         ? CharacterState.fromJson(data['characterState'])
         : CharacterState.newSave();
+    _bodySensitivity = importedBodySensitivity;
+    bodySensitivityTouchEnabled = importedTouchEnabled;
+    _lastBodySensitivityTouch.clear();
     _npcChats = _npcChatsFromSnapshot(data);
     callRecords = parseCallRecords(data['callRecords']);
     characterMood = CharacterMood.values.firstWhere(
@@ -5018,6 +5215,12 @@ $japanesePunctuationRule
     bool allowLocalTtsReference = false,
   }) {
     data = TtsVoiceSettingsMigration.normalizeBackup(data);
+    final importedBodySensitivity = BodySensitivityState.fromJson(
+      data['bodySensitivity'],
+    );
+    final importedTouchEnabled = _readBodySensitivityTouchEnabled(
+      data['bodySensitivityTouchEnabled'],
+    );
     _imageFoodInvitationMessageId = null;
     _inventoryAddResults.clear();
     const supportedFormats = {
@@ -5048,6 +5251,9 @@ $japanesePunctuationRule
     );
     _applyMemoryData(data);
     characterState = CharacterState.fromJson(data['characterState']);
+    _bodySensitivity = importedBodySensitivity;
+    bodySensitivityTouchEnabled = importedTouchEnabled;
+    _lastBodySensitivityTouch.clear();
     _npcChats = _npcChatsFromSnapshot(data);
     callRecords = parseCallRecords(data['callRecords']);
     final userProfile = data['userProfile'] as Map<String, dynamic>? ?? {};
@@ -6371,6 +6577,9 @@ $japanesePunctuationRule
       memorySummary = '';
       memoryEditRevision += 1;
       characterState = CharacterState.newSave();
+      _bodySensitivity = BodySensitivityState();
+      bodySensitivityTouchEnabled = true;
+      _lastBodySensitivityTouch.clear();
       characterMood = CharacterMood.neutral;
       relationshipPoints = 0;
       storyClock = StoryClock();
@@ -6496,11 +6705,27 @@ $japanesePunctuationRule
     return true;
   }
 
+  void _preserveItemStateChangesOnUndo() {
+    // Inventory actions are not dialogue turns. Invalidating only the older
+    // state checkpoints prevents undo from erasing a consumed item's effect
+    // or the ring-loss penalty while the inventory change remains committed.
+    for (var index = 0; index < messages.length; index++) {
+      final message = messages[index];
+      final snapshot = message.turnSnapshot;
+      if (snapshot != null && snapshot.canRestoreCharacterState) {
+        messages[index] = message.copyWith(
+          turnSnapshot: snapshot.preserveItemStateChanges(),
+        );
+      }
+    }
+  }
+
   bool loseOathRing({required int expectedRevision}) {
     if (expectedRevision != dataRevision ||
         (preciousItems[ShopCatalog.oathRingId] ?? 0) < 1) {
       return false;
     }
+    _preserveItemStateChangesOnUndo();
     final remaining = preciousItems[ShopCatalog.oathRingId]! - 1;
     preciousItems = {...preciousItems};
     if (remaining == 0) {
@@ -6528,6 +6753,7 @@ $japanesePunctuationRule
         !characterState.values.values.any((value) => value < 0)) {
       return false;
     }
+    _preserveItemStateChangesOnUndo();
     preciousItems = {...preciousItems, id: preciousItems[id]! - 1};
     if (preciousItems[id] == 0) preciousItems.remove(id);
     characterState = characterState.applyItemEffect(
@@ -6567,6 +6793,14 @@ $japanesePunctuationRule
     _characterSessions[activeCharacterId] = _exportCharacterSession();
     await Future.wait<void>([
       _preferences.setString('active_character_id_v1', activeCharacterId),
+      _preferences.setString(
+        _bodySensitivityPreferenceKey,
+        jsonEncode(_bodySensitivity.toJson()),
+      ),
+      _preferences.setBool(
+        _bodySensitivityTouchPreferenceKey,
+        bodySensitivityTouchEnabled,
+      ),
       _preferences.setString(
         'call_records_v1.$activeCharacterId',
         jsonEncode(callRecords.map((r) => r.toJson()).toList()),

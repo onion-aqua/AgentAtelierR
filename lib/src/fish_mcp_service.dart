@@ -367,7 +367,7 @@ class FishMcpService extends ChangeNotifier {
     final client =
         _connectionClientFactory?.call() ??
         McpClient(
-          const Implementation(name: 'agent-atelier-r', version: '1.0.4.4'),
+          const Implementation(name: 'agent-atelier-r', version: '1.0.4.5'),
         );
     final transport = StreamableHttpClientTransport(
       Uri.parse(endpoint),

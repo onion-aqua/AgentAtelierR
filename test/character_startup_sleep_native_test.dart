@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:spine_flutter/spine_flutter.dart';
+import 'package:ryza_chat_mvp/src/character_appearance.dart';
 import 'package:ryza_chat_mvp/src/character_startup_sleep.dart';
 
 void main() {
@@ -30,7 +31,9 @@ void main() {
         try {
           final state = drawable.animationState;
           final face = resolveStartupSleepFace(
-            id.endsWith('_99') ? 'standing_99' : 'seated_01',
+            characterAppearances
+                .firstWhere((entry) => entry.assetName == skin)
+                .id,
             (name) => drawable.skeletonData.findAnimation(name) != null,
           );
           expect(face.eye, isNotNull);

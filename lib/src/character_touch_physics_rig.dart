@@ -4,6 +4,8 @@ import 'dart:ui';
 import 'package:spine_flutter/spine_flutter.dart';
 
 import 'character_touch_hit_mask.dart';
+import 'character_body_touch_part.dart';
+import 'character_pelvis_region.dart';
 import 'character_touch_physics.dart';
 import 'runtime_log.dart';
 
@@ -22,9 +24,15 @@ class CharacterTouchPhysicsRig {
   Map<int, double> _targets = const {};
   bool _pointerDown = false;
   bool _pendingTap = false;
+  String? _touchedBodyPart;
 
   bool get isTouching => _pointerDown;
   bool get active => dynamics.active || _pendingTap;
+
+  /// The foremost opaque body surface hit by the most recent begin/move.
+  /// This can be set even when the surface has no physical spring to excite.
+  String? get touchedBodyPart => _touchedBodyPart;
+  bool get bodyPartHitTestReady => _hitMask != null;
 
   /// Cache alpha masks once, outside pointer/render callbacks. Atlas images
   /// are cloned before awaiting, so a replaced drawable can be freed safely.
@@ -91,6 +99,7 @@ class CharacterTouchPhysicsRig {
   void move(Offset position, Offset normalizedVelocity) {
     if (!_pointerDown) return;
     if (!position.dx.isFinite || !position.dy.isFinite) {
+      _touchedBodyPart = null;
       release();
       return;
     }
@@ -154,9 +163,11 @@ class CharacterTouchPhysicsRig {
     _pointerDown = false;
     _pendingTap = false;
     _excited.clear();
+    _touchedBodyPart = null;
   }
 
   Map<int, double> _constraintsAt(Offset point) {
+    _touchedBodyPart = null;
     final skeleton = _skeleton;
     final mask = _hitMask;
     if (skeleton == null ||
@@ -228,6 +239,24 @@ class CharacterTouchPhysicsRig {
       // This runtime's texture pointer encodes the atlas page (0 is valid).
       // Transparent padding must not steal the hit from a lower visible part.
       if (!mask.opaqueAt(region.getTexture().address, u, v)) continue;
+      _touchedBodyPart = characterBodyTouchPart(
+        slotName: slot.getData().getName(),
+        boneName: slot.getBone().getData().getName(),
+        attachmentPath: attachment is MeshAttachment
+            ? attachment.getPath()
+            : (attachment as RegionAttachment).getPath(),
+      );
+      if (_touchedBodyPart == 'body') {
+        _touchedBodyPart = _torsoPartAt(skeleton, point) ?? 'body';
+      }
+      // The large authored BB_weast extends over both thighs. Only refine a
+      // visible, recognized torso surface inside the small hip-local region.
+      // Hands, legs and opaque foreground clothes must keep their own result.
+      if ((_touchedBodyPart == 'body' || _touchedBodyPart == 'weast') &&
+          (CharacterPelvisRegion.fromSkeleton(skeleton)?.contains(point) ??
+              false)) {
+        _touchedBodyPart = 'intimate';
+      }
       if (attachment is! MeshAttachment || attachment.getBones().isEmpty) {
         return _resolveWeights({slot.getBone().getData().getIndex(): 1});
       }
@@ -249,6 +278,30 @@ class CharacterTouchPhysicsRig {
       return _resolveWeights(interpolated);
     }
     return const {};
+  }
+
+  String? _torsoPartAt(Skeleton skeleton, Offset point) {
+    String? part;
+    var smallest = double.infinity;
+    for (final entry in const {
+      'BB_breast': 'breast',
+      'BB_body': 'body',
+      'BB_weast': 'weast',
+    }.entries) {
+      final slot = skeleton.findSlot(entry.key);
+      final attachment = slot?.getAttachment();
+      if (slot == null || attachment is! BoundingBoxAttachment) continue;
+      final vertices = attachment.computeWorldVertices(slot);
+      if (!_insidePolygon(point, vertices)) continue;
+      final bounds = _bounds(vertices);
+      if (bounds == null) continue;
+      final area = bounds.width * bounds.height;
+      if (area < smallest) {
+        smallest = area;
+        part = entry.value;
+      }
+    }
+    return part;
   }
 
   Map<int, double> _resolveWeights(Map<int, double> weights) {
