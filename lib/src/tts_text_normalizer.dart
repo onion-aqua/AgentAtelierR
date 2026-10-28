@@ -1,4 +1,5 @@
 import 'fish_asmr_delivery.dart';
+import 'japanese_dialogue_filter.dart';
 
 /// Reduces long repeated punctuation runs before synthesis. This keeps the
 /// visible assistant message untouched while preventing TTS engines from
@@ -15,16 +16,8 @@ String compressRepeatedTtsPunctuation(String text) {
 
 /// Fish Audio can misread a small tsu after an ellipsis as a breath sound.
 /// Keep normal Japanese gemination, such as 待って, unchanged.
-String normalizeFishAudioText(String text) {
-  final pattern = RegExp(
-    r'(?:…+|\.{2,})(?:[ \t\u3000]*\[[a-z][a-z ]*\])*[ \t\u3000]*っ'
-    r'(?=(?:[ \t\u3000]*\[[a-z][a-z ]*\])*[ \t\u3000]*(?:$|[\s、，,。.!?！？…~～：:；;「」『』（）()]))',
-  );
-  return text.replaceAllMapped(
-    pattern,
-    (match) => match.group(0)!.substring(0, match.group(0)!.length - 1),
-  );
-}
+String normalizeFishAudioText(String text) =>
+    filterJapaneseDialogueArtifacts(text);
 
 /// Keep spoken words intact. Fish performs delivery tags as audio; repeated
 /// breath instructions can turn a short line into a long breathing sequence.

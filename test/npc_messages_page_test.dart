@@ -587,6 +587,41 @@ void main() {
     },
   );
 
+  testWidgets(
+    'legacy assistant artifacts are hidden while user text stays intact',
+    (tester) async {
+      final user = NpcChatMessage(
+        id: 'artifact-user',
+        role: NpcChatRole.user,
+        text: 'あ……っ、私の入力。',
+        createdAt: DateTime.utc(2026, 10, 5),
+      );
+      final reply = NpcChatMessage(
+        id: 'artifact-reply',
+        role: NpcChatRole.assistant,
+        text: 'あ……っ、待って。',
+        translatedText: '……つ。待って。',
+        createdAt: DateTime.utc(2026, 10, 5, 1),
+      );
+      controller.replaceNpcChats(
+        controller.npcChats.withThread(
+          NpcChatThread(npcId: 'claudia', messages: [user, reply]),
+        ),
+        expectedRevision: controller.dataRevision,
+      );
+      await mount(tester);
+      await openContact(tester, 'claudia');
+      expect(find.text('あ……っ、私の入力。'), findsOneWidget);
+      expect(find.text('あ……、待って。'), findsOneWidget);
+      expect(find.text('……。待って。'), findsOneWidget);
+      expect(
+        controller.npcChats.threadFor('claudia').messages.last.text,
+        'あ……っ、待って。',
+      );
+      expect(backend.requests, isEmpty);
+    },
+  );
+
   testWidgets('saved replies display their accompanying translation', (
     tester,
   ) async {

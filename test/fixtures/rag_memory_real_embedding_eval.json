@@ -1,0 +1,369 @@
+{
+  "model_id": "distiluse-multilingual-cased-v2-int8-mean-dense512-v1",
+  "entries": [
+    {
+      "id": "forest",
+      "text": "我们约定明天早上一起去森林采集炼金材料。"
+    },
+    {
+      "id": "tea",
+      "text": "用户不喜欢苦咖啡，更喜欢放少许蜂蜜的热红茶。"
+    },
+    {
+      "id": "rain",
+      "text": "上周下雨时，用户把自己的红色雨伞借给莱莎，并一起走回家。"
+    },
+    {
+      "id": "birthday",
+      "text": "用户的生日是六月十八日，希望当天一起做草莓蛋糕。"
+    },
+    {
+      "id": "cat",
+      "text": "用户小时候养过一只叫豆包的白猫，特别喜欢猫打呼噜的声音。"
+    },
+    {
+      "id": "fear",
+      "text": "用户害怕高处，登山时希望走低矮平缓的路线。"
+    },
+    {
+      "id": "book",
+      "text": "莱莎从旧书店得到一本蓝色封面的植物图鉴，准备研究药草的用途。"
+    },
+    {
+      "id": "scarf",
+      "text": "用户亲手织了一条绿色围巾送给莱莎，莱莎说会好好珍惜。"
+    },
+    {
+      "id": "allergy",
+      "text": "用户吃花生会过敏，做饭和买零食时必须避开花生。"
+    },
+    {
+      "id": "star",
+      "text": "我们约好周五晚上在海边看星星，并带一盏小灯和野餐垫。"
+    }
+  ],
+  "queries": [
+    {
+      "query": "我们下次去哪里找素材？",
+      "expected_id": "forest"
+    },
+    {
+      "query": "Where did we agree to gather alchemy materials?",
+      "expected_id": "forest"
+    },
+    {
+      "query": "錬金素材を集めに行く約束の場所は？",
+      "expected_id": "forest"
+    },
+    {
+      "query": "之前说好去找材料，是去哪儿来着？",
+      "expected_id": "forest"
+    },
+    {
+      "query": "What was our plan for the forest tomorrow morning?",
+      "expected_id": "forest"
+    },
+    {
+      "query": "我平时喜欢喝什么饮料？",
+      "expected_id": "tea"
+    },
+    {
+      "query": "Which hot drink do I prefer instead of bitter coffee?",
+      "expected_id": "tea"
+    },
+    {
+      "query": "私の好きな飲み物は何だった？",
+      "expected_id": "tea"
+    },
+    {
+      "query": "给我准备饮料，记得我对咖啡的偏好吗？",
+      "expected_id": "tea"
+    },
+    {
+      "query": "Do you remember that I like honey in my tea?",
+      "expected_id": "tea"
+    },
+    {
+      "query": "那次下雨，我借给你什么？",
+      "expected_id": "rain"
+    },
+    {
+      "query": "What did I lend you when it rained last week?",
+      "expected_id": "rain"
+    },
+    {
+      "query": "先週雨が降った時、何を貸してあげた？",
+      "expected_id": "rain"
+    },
+    {
+      "query": "还记得我们打着那把红色的伞回家吗？",
+      "expected_id": "rain"
+    },
+    {
+      "query": "Do you remember walking home together under my umbrella?",
+      "expected_id": "rain"
+    },
+    {
+      "query": "我的生日是哪一天？",
+      "expected_id": "birthday"
+    },
+    {
+      "query": "When is my birthday and what cake did we plan to make?",
+      "expected_id": "birthday"
+    },
+    {
+      "query": "私の誕生日はいつ？どんなケーキを作る？",
+      "expected_id": "birthday"
+    },
+    {
+      "query": "到我过生日的时候，我们说好做什么甜点？",
+      "expected_id": "birthday"
+    },
+    {
+      "query": "What was the plan for June eighteenth?",
+      "expected_id": "birthday"
+    },
+    {
+      "query": "我小时候养的猫叫什么？",
+      "expected_id": "cat"
+    },
+    {
+      "query": "What was the name of the white cat I had as a child?",
+      "expected_id": "cat"
+    },
+    {
+      "query": "子供のころ飼っていた白い猫の名前は？",
+      "expected_id": "cat"
+    },
+    {
+      "query": "豆包是什么动物？",
+      "expected_id": "cat"
+    },
+    {
+      "query": "Which pet made the purring sound that I liked?",
+      "expected_id": "cat"
+    },
+    {
+      "query": "我爬山时不想走什么地方？",
+      "expected_id": "fear"
+    },
+    {
+      "query": "Why should we avoid a high cliff on our hike?",
+      "expected_id": "fear"
+    },
+    {
+      "query": "山登りでは、どういう道が怖いと言っていた？",
+      "expected_id": "fear"
+    },
+    {
+      "query": "帮我选一条适合我的登山路线，记得我怕什么。",
+      "expected_id": "fear"
+    },
+    {
+      "query": "Do you remember that I am afraid of heights?",
+      "expected_id": "fear"
+    },
+    {
+      "query": "你在旧书店找到的那本书是什么？",
+      "expected_id": "book"
+    },
+    {
+      "query": "What was the blue book from the old bookstore about?",
+      "expected_id": "book"
+    },
+    {
+      "query": "古本屋で手に入れた青い本は何の本？",
+      "expected_id": "book"
+    },
+    {
+      "query": "我们可以用哪本书查药草的用途？",
+      "expected_id": "book"
+    },
+    {
+      "query": "Which reference book did Ryza get to study herbs?",
+      "expected_id": "book"
+    },
+    {
+      "query": "我上次亲手做给你的礼物是什么？",
+      "expected_id": "scarf"
+    },
+    {
+      "query": "Which handmade green gift did I give you?",
+      "expected_id": "scarf"
+    },
+    {
+      "query": "手編みのプレゼントは何だった？",
+      "expected_id": "scarf"
+    },
+    {
+      "query": "天冷了，你还能拿出我送的那条围巾吗？",
+      "expected_id": "scarf"
+    },
+    {
+      "query": "What did you promise to treasure after I knitted it?",
+      "expected_id": "scarf"
+    },
+    {
+      "query": "给我准备零食时需要避开什么？",
+      "expected_id": "allergy"
+    },
+    {
+      "query": "Which food am I allergic to?",
+      "expected_id": "allergy"
+    },
+    {
+      "query": "お菓子を選ぶ時、私のアレルギーは何に注意する？",
+      "expected_id": "allergy"
+    },
+    {
+      "query": "这道菜能放花生吗？",
+      "expected_id": "allergy"
+    },
+    {
+      "query": "What ingredient must you leave out when cooking for me?",
+      "expected_id": "allergy"
+    },
+    {
+      "query": "周五晚上我们准备做什么？",
+      "expected_id": "star"
+    },
+    {
+      "query": "What did we plan to do by the sea on Friday night?",
+      "expected_id": "star"
+    },
+    {
+      "query": "金曜日の夜、海辺で何をする約束だった？",
+      "expected_id": "star"
+    },
+    {
+      "query": "去看星空的时候我们要带什么？",
+      "expected_id": "star"
+    },
+    {
+      "query": "Where are we going stargazing with a lamp and picnic blanket?",
+      "expected_id": "star"
+    }
+  ],
+  "negatives": [
+    {
+      "query": "我的无线网络密码是什么？",
+      "expected_id": null
+    },
+    {
+      "query": "What is my bank account number?",
+      "expected_id": null
+    },
+    {
+      "query": "私の電話番号を覚えている？",
+      "expected_id": null
+    },
+    {
+      "query": "我们昨天约定的电影叫什么名字？",
+      "expected_id": null
+    },
+    {
+      "query": "Which university did I graduate from?",
+      "expected_id": null
+    },
+    {
+      "query": "私の仕事は何だった？",
+      "expected_id": null
+    },
+    {
+      "query": "我最喜欢哪一支足球队？",
+      "expected_id": null
+    },
+    {
+      "query": "What is the address of my office?",
+      "expected_id": null
+    },
+    {
+      "query": "私が買った車の色は何色？",
+      "expected_id": null
+    },
+    {
+      "query": "我的电脑显卡型号是什么？",
+      "expected_id": null
+    },
+    {
+      "query": "What song did we listen to on the train?",
+      "expected_id": null
+    },
+    {
+      "query": "昨日の夕食に何を食べた？",
+      "expected_id": null
+    },
+    {
+      "query": "我家的狗叫什么名字？",
+      "expected_id": null
+    },
+    {
+      "query": "What is the name of my childhood dog?",
+      "expected_id": null
+    },
+    {
+      "query": "私が飼っていた犬の名前は？",
+      "expected_id": null
+    },
+    {
+      "query": "我妈妈的生日是哪一天？",
+      "expected_id": null
+    },
+    {
+      "query": "When is my sister's birthday?",
+      "expected_id": null
+    },
+    {
+      "query": "私の父の誕生日はいつ？",
+      "expected_id": null
+    },
+    {
+      "query": "我们说好周五白天去哪家餐厅吃午饭？",
+      "expected_id": null
+    },
+    {
+      "query": "What time on Saturday did we agree to meet at the airport?",
+      "expected_id": null
+    },
+    {
+      "query": "日曜日の朝、どこの遊園地に行く約束だった？",
+      "expected_id": null
+    },
+    {
+      "query": "你送给我的蓝色手套是哪天买的？",
+      "expected_id": null
+    },
+    {
+      "query": "Where did you buy the red sweater you gave me?",
+      "expected_id": null
+    },
+    {
+      "query": "私にもらった黄色い帽子はいくらだった？",
+      "expected_id": null
+    },
+    {
+      "query": "我对牛奶过敏吗？",
+      "expected_id": null
+    },
+    {
+      "query": "Am I allergic to shellfish?",
+      "expected_id": null
+    },
+    {
+      "query": "私は卵アレルギーだった？",
+      "expected_id": null
+    },
+    {
+      "query": "我最喜欢的冰淇淋口味是什么？",
+      "expected_id": null
+    },
+    {
+      "query": "Which brand of coffee do I buy every month?",
+      "expected_id": null
+    },
+    {
+      "query": "紅茶を飲む時、いつも使うカップは何色？",
+      "expected_id": null
+    }
+  ]
+}

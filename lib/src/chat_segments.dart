@@ -5,6 +5,7 @@ import 'character_state.dart';
 import 'npc_chat_contacts.dart';
 import 'fish_drama3_tags.dart';
 import 'fish_asmr_delivery.dart';
+import 'japanese_dialogue_filter.dart';
 
 enum ChatSpeaker { narrator, ryza, character, translation }
 
@@ -410,7 +411,7 @@ List<ChatSegment> parseAssistantSegments(
   String defaultPrimaryCharacterId = 'ryza',
 }) {
   response = normalizeDenseJapanesePunctuation(
-    filterAssistantControlMarkup(response),
+    filterJapaneseDialogueArtifacts(filterAssistantControlMarkup(response)),
   );
   final segments = <ChatSegment>[];
   ChatSpeaker? activeSpeaker;
@@ -1250,14 +1251,16 @@ String ttsTextForAssistantResponse(
 }
 
 String displayTextForAssistantResponse(String response) {
-  response = filterAssistantControlMarkup(response);
+  response = filterJapaneseDialogueArtifacts(
+    filterAssistantControlMarkup(response),
+  );
   final segments = parseAssistantSegments(response);
   if (segments.isEmpty) return response.trim();
   final hasExplicitSpeaker = _speakerPrefix.hasMatch(response);
 
   return segments
       .map((segment) {
-        final text = segment.text.replaceAll(_fishCue, '').trim();
+        final text = displayTextForAssistantSegment(segment);
         if (!hasExplicitSpeaker && segment.speaker == ChatSpeaker.ryza) {
           return text;
         }
@@ -1270,7 +1273,9 @@ String displayTextForAssistantResponse(String response) {
 
 String displayTextForAssistantSegment(ChatSegment segment) =>
     normalizeDenseJapanesePunctuation(
-      filterAssistantControlMarkup(segment.text),
+      filterJapaneseDialogueArtifacts(
+        filterAssistantControlMarkup(segment.text),
+      ),
     ).replaceAll(_fishCue, '').trim();
 
 String conversationTextForAssistantResponse(
@@ -1278,7 +1283,7 @@ String conversationTextForAssistantResponse(
   required bool showRawOutput,
 }) {
   return showRawOutput
-      ? filterAssistantControlMarkup(response)
+      ? filterJapaneseDialogueArtifacts(filterAssistantControlMarkup(response))
       : displayTextForAssistantResponse(response);
 }
 

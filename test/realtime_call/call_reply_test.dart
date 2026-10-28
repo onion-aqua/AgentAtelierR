@@ -6,6 +6,7 @@ import 'package:http/http.dart' as http;
 import 'package:ryza_chat_mvp/src/app_controller.dart';
 import 'package:ryza_chat_mvp/src/app_localization.dart';
 import 'package:ryza_chat_mvp/src/realtime_call/call_reply.dart';
+import 'package:ryza_chat_mvp/src/tts_text_normalizer.dart';
 
 void main() {
   CallReplyRequest request({
@@ -227,6 +228,60 @@ void main() {
   );
 
   group('CallStreamingSpeechBuffer', () {
+    test(
+      'ellipsis at hard boundary retains following quotation through TTS',
+      () {
+        final buffer = CallStreamingSpeechBuffer();
+        final prefix = '${'あ' * 159}…';
+        expect(buffer.add(prefix), isEmpty);
+        expect(buffer.add('っ'), isEmpty);
+        final parts = [...buffer.add('て言った。'), ...buffer.add('', flush: true)];
+        final source = '$prefixって言った。';
+        expect(parts.join(), source);
+        expect(parts.map(normalizeFishAudioSynthesisText).join(), source);
+      },
+    );
+
+    test(
+      'long ellipsis retains a context mark without unbounded buffering',
+      () {
+        final buffer = CallStreamingSpeechBuffer();
+        final prefix = '${'あ' * 159}${'…' * 30}';
+        final parts = [...buffer.add(prefix)];
+        expect(parts, isNotEmpty);
+        expect(parts.every((part) => part.length <= 168), isTrue);
+        expect(buffer.add('っ'), isEmpty);
+        parts.addAll(buffer.add('て言った。'));
+        parts.addAll(buffer.add('', flush: true));
+        expect(parts.join(), '$prefixって言った。');
+        expect(
+          parts.map(normalizeFishAudioSynthesisText).join(),
+          contains('って言った。'),
+        );
+      },
+    );
+
+    test(
+      'hard cap does not discard tsu before a split quotation continues',
+      () {
+        final buffer = CallStreamingSpeechBuffer();
+        final prefix = '${'あ' * 158}…';
+        expect(buffer.add('$prefixっ'), isEmpty);
+        expect(buffer.add('て'), ['$prefixって']);
+        expect(buffer.add('言った。'), ['言った。']);
+      },
+    );
+
+    test('filters split ellipsis breaths before captions and synthesis', () {
+      final buffer = CallStreamingSpeechBuffer();
+      expect(buffer.add('莱莎：あ…'), isEmpty);
+      expect(buffer.add('…っ'), isEmpty);
+      expect(buffer.add('、待って。'), ['あ……、待って。']);
+      expect(buffer.add('……っ'), isEmpty);
+      expect(buffer.add('て言ったよね。'), ['……って言ったよね。']);
+      expect(buffer.add('…つ。'), ['…。']);
+    });
+
     test('withholds split action tags before releasing dialogue', () {
       final buffer = CallStreamingSpeechBuffer();
       expect(buffer.add('[act'), isEmpty);

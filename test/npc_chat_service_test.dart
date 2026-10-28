@@ -113,6 +113,31 @@ void main() {
   });
 
   test(
+    'stream display filters breaths without losing later Japanese words',
+    () async {
+      final pending = service.send(npcId, 'テスト');
+      backend.streams.single.add('あ……');
+      await _flush();
+      backend.streams.single.add('っ');
+      await _flush();
+      expect(service.liveReply(npcId), 'あ……');
+      backend.streams.single.add('、待って。……っ');
+      await _flush();
+      expect(service.liveReply(npcId), 'あ……、待って。……');
+      backend.streams.single.add('て言った。');
+      await _flush();
+      expect(service.liveReply(npcId), 'あ……、待って。……って言った。');
+      await backend.streams.single.close();
+      await pending;
+      // Stored source is available for diagnostics; output filtering is reversible.
+      expect(
+        controller.npcChats.threadFor(npcId).messages.last.text,
+        'あ……っ、待って。……って言った。',
+      );
+    },
+  );
+
+  test(
     'streams visible replies while only terminal assistant text is persisted',
     () async {
       var notices = 0;

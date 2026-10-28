@@ -34,6 +34,7 @@ import 'glass_ui.dart';
 import 'mimo_tts_settings.dart';
 import 'local_tts_settings.dart';
 import 'memory_timeline.dart';
+import 'rag_memory_settings.dart';
 import 'manual_memory_consolidation.dart';
 import 'settings_slots.dart';
 import 'settings_section.dart';
@@ -1118,9 +1119,9 @@ class SettingsScreenState extends State<SettingsScreen> {
                   ),
                   subtitle: Text(
                     language.text(
-                      '每 4 轮生成最近记忆，累计 8 条整理长期记忆',
-                      'Recent memory every 4 turns; long-term memory after 8 entries',
-                      '4ターンごとに最近の記憶を生成し、8件で長期記憶に整理',
+                      '自动检索过往对话，保留最近摘要和长期记忆台账',
+                      'Recall earlier conversations alongside recent summaries and long-term memories',
+                      '過去の会話を検索し、最近の要約と長期記憶も保持',
                     ),
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
@@ -1424,9 +1425,9 @@ class SettingsScreenState extends State<SettingsScreen> {
                   title: const Text('AgentAtelierR'),
                   subtitle: Text(
                     language.text(
-                      '版本 1.0.4.5',
-                      'Version 1.0.4.5',
-                      'バージョン 1.0.4.5',
+                      '版本 1.0.4.6',
+                      'Version 1.0.4.6',
+                      'バージョン 1.0.4.6',
                     ),
                   ),
                 ),
@@ -4820,6 +4821,8 @@ class _LongTermMemoryDialogState extends State<_LongTermMemoryDialog> {
                 ),
               ),
             ),
+            const SizedBox(height: 8),
+            RagMemorySettingsCard(controller: widget.controller),
             const SizedBox(height: 8),
             SegmentedButton<_MemoryView>(
               segments: [

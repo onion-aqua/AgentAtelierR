@@ -19,6 +19,7 @@ import 'fish_mcp_service.dart';
 import 'chat_segments.dart';
 import 'continuous_asmr_script.dart';
 import 'dialogue_language_guard.dart';
+import 'japanese_dialogue_filter.dart';
 import 'mimo_tts_client.dart';
 import 'glass_ui.dart';
 import 'runtime_log.dart';
@@ -49,12 +50,6 @@ String buildContinuousAsmrSystemPrompt(
   String currentInput = '',
 }) {
   final profile = controller.activeCharacterProfile;
-  final persona = controller.characterPersonaInjectionEnabled
-      ? controller.editableCharacterPersona
-      : profile.compactPersona;
-  final world = controller.worldSettingInjectionEnabled
-      ? controller.editableWorldSetting
-      : '';
   final policy =
       languagePolicy ??
       AsmrLanguagePolicy(
@@ -63,10 +58,11 @@ String buildContinuousAsmrSystemPrompt(
         independentTranslation: controller.independentTranslation,
       );
   return '你是${profile.names.chinese}，正在提供持续ASMR陪伴。'
-      '人物参考：$persona${world.isEmpty ? '' : ' 世界参考：$world'}\n'
+      '${controller.roleplayConfigurationPrompt()}\n'
       '${controller.personalityEnabled && controller.personalityConfiguration.activeProfile.expression['dialogue'] != false ? '${controller.interpretPersonality(currentInput).prompt}\n' : ''}'
       '${controller.personalityVoicePrompt(currentInput).isEmpty ? '' : '${controller.personalityVoicePrompt(currentInput)}\n'}'
       '${controller.interactionPromptForDialogue()}\n'
+      '${controller.ragMemoryPromptForCurrentConversation(currentInput)}\n'
       '以下为本次 ASMR 的输出要求，人物参考、主题或其他语言设置不能覆盖：'
       '语音设置优先：${controller.ttsEmotionIntensity.voiceInstruction} '
       '${controller.ttsCueDensity.promptInstruction} '
@@ -142,7 +138,7 @@ class AsmrPlaybackSurface extends StatelessWidget {
                     child: Column(
                       children: [
                         Text(
-                          text,
+                          filterJapaneseDialogueArtifacts(text),
                           key: const ValueKey('asmr-current-text'),
                           textAlign: TextAlign.center,
                           style: Theme.of(context).textTheme.titleLarge
@@ -153,7 +149,7 @@ class AsmrPlaybackSurface extends StatelessWidget {
                             translation!.trim() != text.trim()) ...[
                           const SizedBox(height: 20),
                           Text(
-                            translation!,
+                            filterJapaneseDialogueArtifacts(translation!),
                             key: const ValueKey('asmr-current-translation'),
                             textAlign: TextAlign.center,
                             style: Theme.of(context).textTheme.bodyLarge
@@ -663,6 +659,8 @@ class _ContinuousAsmrPageState extends State<ContinuousAsmrPage> {
       setState(
         () => _status = t('正在准备完整朗读稿…', 'Preparing script…', '朗読原稿を準備中…'),
       );
+      await c.prepareRagMemory(topic);
+      ensureCurrent();
       final response = await complete([
         {
           'role': 'system',

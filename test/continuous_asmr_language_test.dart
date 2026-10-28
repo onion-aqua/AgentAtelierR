@@ -86,6 +86,27 @@ void main() {
 
   group('ASMR spoken script', () {
     test(
+      'inline Japanese translation filters breath artifacts before display',
+      () async {
+        final segments = await prepareAsmrScript(
+          response: jsonEncode({
+            'segments': [
+              {'text': _chinese, 'translation': 'あ……っ、$_japanese'},
+            ],
+          }),
+          policy: _policy(
+            reply: AppLanguage.chinese,
+            translation: TranslationLanguage.japanese,
+            independent: false,
+          ),
+          complete: _noCompletion,
+          ensureCurrent: _current,
+        );
+        expect(segments.single.translation, 'あ……、$_japanese');
+      },
+    );
+
+    test(
       'valid Chinese, Japanese and English do not request language repair',
       () async {
         for (final (language, text) in [

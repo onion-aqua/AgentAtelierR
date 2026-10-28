@@ -6,6 +6,21 @@ plugins {
     id("dev.flutter.flutter-gradle-plugin")
 }
 
+// Sherpa-ONNX already supplies ORT 1.28.2 for every Android ABI. Keep that
+// runtime for both ASR and the API-14-compatible Dart embedding FFI. Packaging
+// the embedding plugin's older ORT 1.15.1 would collide and could break ASR;
+// exclude only that plugin's JNI source set, never arbitrarily pick one .so.
+project(":onnxruntime").plugins.withId("com.android.library") {
+    project(":onnxruntime").extensions.configure<com.android.build.gradle.LibraryExtension> {
+        sourceSets.getByName("main").jniLibs.setSrcDirs(emptyList<String>())
+    }
+    project(":onnxruntime").extensions.configure<com.android.build.api.variant.LibraryAndroidComponentsExtension> {
+        // The older FFI plugin hardcodes API 33 after applying AGP. Align its
+        // compile API after that DSL has run; leave target/min APIs unchanged.
+        finalizeDsl { library -> library.compileSdk = 37 }
+    }
+}
+
 // Firebase's native initializer also needs public project identifiers so a
 // notification can be delivered after process death. Read the same build-time
 // config as Flutter; never include a server credential or device token here.
@@ -41,7 +56,7 @@ android {
         // flag during build.
         versionCode = flutter.versionCode
         // Public release uses four segments; pubspec keeps Flutter's semver.
-        versionName = "1.0.4.5"
+        versionName = "1.0.4.6"
         if (relayPushDefines["RELAY_PUSH_PROVIDER"] == "fcm") {
             mapOf(
                 "google_api_key" to "RELAY_FCM_API_KEY",

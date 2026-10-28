@@ -4,6 +4,7 @@ import 'app_localization.dart';
 import 'auxiliary_llm_tasks.dart';
 import 'chat_segments.dart';
 import 'dialogue_language_guard.dart';
+import 'japanese_dialogue_filter.dart';
 
 class AsmrLanguagePolicy {
   const AsmrLanguagePolicy({
@@ -39,17 +40,20 @@ class AsmrSpeechSegment {
 }
 
 List<AsmrSpeechSegment> splitAsmrScript(String script) {
+  script = filterJapaneseDialogueArtifacts(script);
   final segments = <AsmrSpeechSegment>[];
   final current = StringBuffer();
   final tokens = RegExp(r'\[[^\]]*\]|[\s\S]')
-      .allMatches(script.replaceAll('\r\n', '\n').trim());
+      .allMatches(script.replaceAll('\r\n', '\n').trim())
+      .toList();
   void flush(Duration pause) {
     final text = current.toString().trim();
     current.clear();
     if (text.isNotEmpty) segments.add(AsmrSpeechSegment(text, pause));
   }
 
-  for (final token in tokens) {
+  for (var index = 0; index < tokens.length; index++) {
+    final token = tokens[index];
     final value = token.group(0)!;
     if (value == '\n') {
       flush(const Duration(milliseconds: 650));
@@ -62,7 +66,26 @@ List<AsmrSpeechSegment> splitAsmrScript(String script) {
     } else if ('，,、'.contains(value) && length >= 72) {
       flush(const Duration(milliseconds: 220));
     } else if (length >= 96 && !value.startsWith('[')) {
-      flush(const Duration(milliseconds: 180));
+      // A clipped …っ would be mistaken for a standalone breath by the
+      // per-clip display/TTS filters even though the complete text says …って.
+      // Read through short cues to keep that decision in the same clip.
+      var next = '';
+      for (var look = index + 1; look < tokens.length; look++) {
+        final candidate = tokens[look].group(0)!;
+        if (!candidate.startsWith('[')) {
+          next = candidate;
+          break;
+        }
+      }
+      final pendingTsu = 'っつッツ'.contains(value);
+      final pendingEllipsis =
+          '…⋯‥.．'.contains(value) && next.isNotEmpty && 'っつッツ'.contains(next);
+      if (!pendingTsu && !pendingEllipsis || next.isEmpty) {
+        flush(const Duration(milliseconds: 180));
+      } else if (length >= 256) {
+        // Do not let malformed, unbroken tsu runs grow the clip indefinitely.
+        throw const FormatException('ASMR 日语片段缺少可安全断句的位置');
+      }
     }
   }
   flush(Duration.zero);
@@ -74,7 +97,8 @@ List<AsmrSpeechSegment> splitAsmrScript(String script) {
 }
 
 String asmrSpokenText(String text) =>
-    text.replaceAll(RegExp(r'\[[^\]]*\]'), '').trim();
+    filterJapaneseDialogueArtifacts(text.replaceAll(RegExp(r'\[[^\]]*\]'), ''))
+        .trim();
 
 final _cues = RegExp(r'\[[^\[\]\r\n]+\]');
 final _appCues = RegExp(
@@ -158,7 +182,9 @@ AsmrSpeechSegment _inlineSegment(Object? row, bool last) {
     throw const FormatException('ASMR 缺少对应的原文或译文');
   }
   final text = _original(row['text'] as String);
-  final translation = (row['translation'] as String).trim();
+  final translation = filterJapaneseDialogueArtifacts(
+    row['translation'] as String,
+  ).trim();
   if (asmrSpokenText(text).isEmpty ||
       text.length > 96 ||
       text.contains('\n') ||
@@ -343,7 +369,8 @@ Future<List<AsmrSpeechSegment>> _validateInlineTranslations(
         throw const FormatException('ASMR 译文对应关系无效');
       }
       final id = row['id'] as int;
-      final text = (row['text'] as String).trim();
+      final text = filterJapaneseDialogueArtifacts(row['text'] as String)
+          .trim();
       if (!_plainTranslation(text) ||
           _copied(segments[id].text, text) ||
           assessDialogueLanguage(text, target) ==

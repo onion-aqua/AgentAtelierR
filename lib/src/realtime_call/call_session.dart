@@ -96,6 +96,8 @@ class RealtimeCallController extends CallUiController
   final Future<void> Function(String model) _prepareMcp;
   TtsProvider? _provider;
   late final StreamSubscription<LocalCallAsrEvent> _asrEvents;
+  StreamSubscription<CallAudioRoute>? _audioRouteEvents;
+  CallAudioRoute _audioRoute = CallAudioRoute.unknown;
   final playbackLevel = ValueNotifier<double>(0);
   CallUiPhase _phase = CallUiPhase.idle;
   CallContact? _contact;
@@ -191,7 +193,12 @@ class RealtimeCallController extends CallUiController
     contact: _contact,
     elapsed: Duration(seconds: _seconds),
     muted: _muted,
-    speaker: _speaker,
+    speaker: switch (_audioRoute) {
+      CallAudioRoute.speaker => true,
+      CallAudioRoute.unknown => _speaker,
+      _ => false,
+    },
+    audioRoute: _audioRoute,
     caption: _caption,
     captionTranslation:
         _captionTranslationLanguage == app.translationLanguage &&
@@ -204,6 +211,39 @@ class RealtimeCallController extends CallUiController
   );
   void _notify() {
     if (!_closed) notifyListeners();
+  }
+
+  Future<void> _watchAudioRoute(
+    CallPcmRouteControl routing,
+    int session,
+  ) async {
+    await _stopAudioRouteUpdates();
+    if (_closed || session != _sessionEpoch || !active) return;
+    _audioRouteEvents = routing.routes.listen(
+      (route) {
+        if (_closed || session != _sessionEpoch || !active) return;
+        // Stopping/rebuilding a Track temporarily has no routedDevice. Keep
+        // the last confirmed route for this call until a new one is observed;
+        // unknown is never evidence that playback moved back to the speaker.
+        if (route == CallAudioRoute.unknown) return;
+        if (_audioRoute == route) return;
+        _audioRoute = route;
+        _notify();
+      },
+      onError: (Object _) {
+        // A route-observation error must not cancel or regenerate speech.
+        if (_closed || session != _sessionEpoch || !active) return;
+        _audioRoute = CallAudioRoute.unknown;
+        _notify();
+      },
+    );
+  }
+
+  Future<void> _stopAudioRouteUpdates() async {
+    final events = _audioRouteEvents;
+    _audioRouteEvents = null;
+    _audioRoute = CallAudioRoute.unknown;
+    await events?.cancel();
   }
 
   bool _current(int session, int turn) =>
@@ -341,6 +381,8 @@ class RealtimeCallController extends CallUiController
     _interim = '';
     _seconds = 0;
     _muted = false;
+    _speaker = true;
+    _audioRoute = CallAudioRoute.unknown;
     _provider = app.ttsProvider;
     _phase = CallUiPhase.preparing;
     if (!incoming) _newRecord(false);
@@ -406,6 +448,14 @@ class RealtimeCallController extends CallUiController
       _notify();
       // Verify playback before acquiring microphone. No charge is incurred.
       final ready = await _serializeResources(() async {
+        if (session != _sessionEpoch || _closed) return false;
+        final routing = output;
+        if (routing is CallPcmRouteControl) {
+          final routeControl = routing as CallPcmRouteControl;
+          await routeControl.resetRoute();
+          if (session != _sessionEpoch || _closed) return false;
+          await _watchAudioRoute(routeControl, session);
+        }
         if (session != _sessionEpoch || _closed) return false;
         await output.start();
         if (session != _sessionEpoch || _closed) return false;
@@ -478,7 +528,10 @@ class RealtimeCallController extends CallUiController
   @override
   Future<void> setSpeaker(bool value) async {
     if (!active) return;
-    if (await output.setSpeaker(value)) {
+    final session = _sessionEpoch;
+    final changed = await output.setSpeaker(value);
+    if (_closed || session != _sessionEpoch || !active) return;
+    if (changed) {
       _speaker = value;
     } else {
       _error = '当前设备暂不支持切换此输出设备，可使用耳机。';
@@ -576,6 +629,10 @@ class RealtimeCallController extends CallUiController
   }
 
   Future<void> _runTurn(String input, int session, int turn) async {
+    if (_contact?.id.startsWith('primary:') == true) {
+      await app.prepareRagMemory(input);
+      if (!_current(session, turn)) return;
+    }
     _captionTranslation = '';
     _captionTranslationLanguage = null;
     _captionSourceLanguage = null;
@@ -783,7 +840,12 @@ class RealtimeCallController extends CallUiController
     if (_phase != CallUiPhase.speaking) {
       await _serializeResources(output.start);
       if (!_current(session, turn)) return;
-      if (!_speaker) await output.setSpeaker(false);
+      // Native routing preserves the current call's preference and hot-plug
+      // headset selection across Track restarts. Reapplying a bool here would
+      // override a newly connected Bluetooth output after an interruption.
+      if (!_speaker && output is! CallPcmRouteControl) {
+        await output.setSpeaker(false);
+      }
       if (!_current(session, turn)) return;
     }
     _speech = speech;
@@ -993,6 +1055,7 @@ class RealtimeCallController extends CallUiController
     _bargeTranscript = null;
     ++_sessionEpoch;
     ++_turnEpoch;
+    final routeCleanup = _stopAudioRouteUpdates();
     _ringTimeout?.cancel();
     _clock?.cancel();
     _clock = null;
@@ -1011,6 +1074,7 @@ class RealtimeCallController extends CallUiController
     _notify();
 
     final cleanup = () async {
+      await routeCleanup;
       await _cancelActiveProducers();
       await _serializeResources(() async {
         await Future.wait([
@@ -1042,12 +1106,14 @@ class RealtimeCallController extends CallUiController
     _bargeTranscript = null;
     ++_sessionEpoch;
     ++_turnEpoch;
+    final routeCleanup = _stopAudioRouteUpdates();
     _ringTimeout?.cancel();
     _clock?.cancel();
     _clock = null;
     _phase = error == null ? CallUiPhase.ended : CallUiPhase.failed;
     _error = error;
     _notify();
+    await routeCleanup;
     await _cancelActiveProducers();
     await _serializeResources(() async {
       await Future.wait([
@@ -1085,6 +1151,7 @@ class RealtimeCallController extends CallUiController
     AndroidCompanionRuntime.instance.removeListener(_externalAudioChanged);
     WidgetsBinding.instance.removeObserver(this);
     unawaited(_asrEvents.cancel());
+    unawaited(_stopAudioRouteUpdates());
     final cleanup =
         _finishing ??
         (() async {

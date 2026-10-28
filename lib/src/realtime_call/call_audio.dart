@@ -6,6 +6,9 @@ import 'dart:typed_data';
 import 'package:flutter/services.dart';
 
 import '../android_companion_runtime.dart';
+import 'call_ui_models.dart';
+
+export 'call_ui_models.dart' show CallAudioRoute;
 
 abstract interface class CallPcmOutput {
   Future<void> start();
@@ -15,23 +18,53 @@ abstract interface class CallPcmOutput {
   Future<bool> setSpeaker(bool value);
 }
 
+/// Optional route support; outputs without platform routing stay compatible.
+abstract interface class CallPcmRouteControl {
+  Stream<CallAudioRoute> get routes;
+  Future<void> resetRoute();
+}
+
 /// Android AudioTrack consumes 24 kHz PCM incrementally; no MP3 files or fake
 /// amplitude clocks. Writes are bounded to keep cancellation responsive.
-class AndroidCallPcmOutput implements CallPcmOutput {
+class AndroidCallPcmOutput implements CallPcmOutput, CallPcmRouteControl {
   AndroidCallPcmOutput({
     AndroidCompanionRuntime? runtime,
     MethodChannel? channel,
+    EventChannel? routesChannel,
     bool Function()? isAndroid,
   }) : runtime = runtime ?? AndroidCompanionRuntime.instance,
        _channel = channel ?? const MethodChannel(channelName),
+       _routesChannel = routesChannel ?? const EventChannel(routesChannelName),
        _isAndroid = isAndroid ?? (() => Platform.isAndroid);
 
   static const channelName = 'agent_atelier_r/realtime_pcm';
+  static const routesChannelName = 'agent_atelier_r/realtime_pcm_routes';
   final AndroidCompanionRuntime runtime;
   final MethodChannel _channel;
+  final EventChannel _routesChannel;
   final bool Function() _isAndroid;
   int _generation = 0;
   Object? _owner;
+  Stream<CallAudioRoute>? _routes;
+
+  @override
+  Stream<CallAudioRoute> get routes => !_isAndroid()
+      ? const Stream.empty()
+      : _routes ??= _routesChannel
+            .receiveBroadcastStream()
+            .where((event) => event is String)
+            .map(
+              (event) => CallAudioRoute.values.firstWhere(
+                (route) => route.name == event,
+                orElse: () => CallAudioRoute.unknown,
+              ),
+            )
+            .distinct();
+
+  @override
+  Future<void> resetRoute() async {
+    if (_isAndroid()) await _channel.invokeMethod<void>('resetRoute');
+  }
 
   Future<void> _release(Object owner) async {
     if (identical(_owner, owner)) _owner = null;

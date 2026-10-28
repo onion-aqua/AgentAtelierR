@@ -3,6 +3,7 @@ import 'dart:ui';
 import 'package:flutter/material.dart';
 
 import '../app_localization.dart';
+import '../japanese_dialogue_filter.dart';
 import 'call_ui_models.dart';
 
 export 'call_ui_models.dart';
@@ -460,8 +461,10 @@ class _RealtimeCallPageState extends State<RealtimeCallPage> {
     }
     if (!_showCaptions) return const SizedBox(height: 12);
     final transcript = snapshot.interimTranscript.trim();
-    final caption = snapshot.caption.trim();
-    final translation = snapshot.captionTranslation.trim();
+    final caption = filterJapaneseDialogueArtifacts(snapshot.caption).trim();
+    final translation = filterJapaneseDialogueArtifacts(
+      snapshot.captionTranslation,
+    ).trim();
     if (transcript.isEmpty && caption.isEmpty) {
       return const SizedBox(height: 12);
     }
@@ -615,10 +618,21 @@ class _RealtimeCallPageState extends State<RealtimeCallPage> {
           Expanded(
             child: _control(
               id: 'call-speaker',
-              icon: snapshot.speaker
-                  ? Icons.volume_up_rounded
-                  : Icons.hearing_rounded,
-              label: _t('扬声器', 'Speaker', 'スピーカー'),
+              icon: switch (snapshot.audioRoute) {
+                CallAudioRoute.bluetooth => Icons.bluetooth_audio_rounded,
+                CallAudioRoute.wired => Icons.headphones_rounded,
+                _ =>
+                  snapshot.speaker
+                      ? Icons.volume_up_rounded
+                      : Icons.hearing_rounded,
+              },
+              label: switch (snapshot.audioRoute) {
+                CallAudioRoute.bluetooth => _t('蓝牙', 'Bluetooth', 'Bluetooth'),
+                CallAudioRoute.wired => _t('耳机', 'Headphones', 'ヘッドホン'),
+                CallAudioRoute.earpiece => _t('听筒', 'Earpiece', '受話口'),
+                CallAudioRoute.system => _t('音频输出', 'Audio output', '音声出力'),
+                _ => _t('扬声器', 'Speaker', 'スピーカー'),
+              },
               selected: snapshot.speaker,
               onTap: () =>
                   _act(() => widget.controller.setSpeaker(!snapshot.speaker)),

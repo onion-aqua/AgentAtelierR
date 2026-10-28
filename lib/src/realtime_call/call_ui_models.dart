@@ -15,6 +15,9 @@ enum CallUiPhase {
 
 enum CallHistoryStatus { completed, missed, rejected, cancelled, failed }
 
+/// The last observed output for this call, separate from speaker preference.
+enum CallAudioRoute { unknown, speaker, earpiece, bluetooth, wired, system }
+
 @immutable
 class CallContact {
   const CallContact({
@@ -57,6 +60,7 @@ class CallUiSnapshot {
     this.elapsed = Duration.zero,
     this.muted = false,
     this.speaker = true,
+    this.audioRoute = CallAudioRoute.unknown,
     this.caption = '',
     this.captionTranslation = '',
     this.interimTranscript = '',
@@ -71,6 +75,7 @@ class CallUiSnapshot {
   final Duration elapsed;
   final bool muted;
   final bool speaker;
+  final CallAudioRoute audioRoute;
   final String caption;
   final String captionTranslation;
   final String interimTranscript;

@@ -18,6 +18,116 @@ import 'package:shared_preferences/shared_preferences.dart';
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
+  test(
+    'headset route survives sentences and interruption without bool overrides',
+    () async {
+      SharedPreferences.setMockInitialValues({});
+      final app = await AppController.load();
+      app.configureAi(
+        enabled: true,
+        baseUrl: 'https://example.test/v1',
+        model: 'model',
+      );
+      final output = _RoutingOutput();
+      final fixture = await _callFixture(
+        app,
+        reply: '莱莎：听到了。我们继续聊。',
+        output: output,
+        backend: _CountingReplyBackend(() => Stream.value('莱莎：听到了。我们继续聊。')),
+      );
+      final controller = fixture.controller;
+      await controller.startCall('primary:ryza');
+      expect(output.operations.take(2), ['resetRoute', 'start']);
+      expect(output.resets, 1);
+      output.routeEvents.add(CallAudioRoute.bluetooth);
+      await Future<void>.delayed(Duration.zero);
+      expect(controller.snapshot.audioRoute, CallAudioRoute.bluetooth);
+      expect(controller.snapshot.speaker, isFalse);
+      output.routeEvents.add(CallAudioRoute.unknown);
+      await Future<void>.delayed(Duration.zero);
+      expect(controller.snapshot.audioRoute, CallAudioRoute.bluetooth);
+      expect(controller.snapshot.speaker, isFalse);
+
+      // Turning speaker off explicitly chooses headset/earpiece fallback. It
+      // must not become a new force-route command before every speech segment.
+      await controller.setSpeaker(false);
+      await controller.sendText('先说两句');
+      await _waitUntil(
+        () => controller.snapshot.phase == CallUiPhase.listening,
+      );
+      await controller.interrupt();
+      await controller.sendText('再说两句');
+      await _waitUntil(
+        () => controller.snapshot.phase == CallUiPhase.listening,
+      );
+      expect(output.resets, 1);
+      expect(output.speakerChanges, [false]);
+      expect(output.starts, greaterThan(2));
+      expect(controller.snapshot.audioRoute, CallAudioRoute.bluetooth);
+
+      output.routeEvents.add(CallAudioRoute.speaker);
+      await Future<void>.delayed(Duration.zero);
+      expect(controller.snapshot.speaker, isTrue);
+      await controller.endCall();
+      expect(output.routeEvents.hasListener, isFalse);
+      expect(controller.snapshot.audioRoute, CallAudioRoute.unknown);
+      output.routeEvents.add(CallAudioRoute.bluetooth);
+      await Future<void>.delayed(Duration.zero);
+      expect(controller.snapshot.audioRoute, CallAudioRoute.unknown);
+
+      await controller.startCall('primary:ryza');
+      expect(output.resets, 2);
+      expect(controller.snapshot.speaker, isTrue);
+      output.routeEvents.add(CallAudioRoute.wired);
+      await Future<void>.delayed(Duration.zero);
+      expect(controller.snapshot.audioRoute, CallAudioRoute.wired);
+      expect(controller.snapshot.speaker, isFalse);
+      await controller.endCall();
+      controller.dispose();
+      app.dispose();
+      await output.routeEvents.close();
+      await fixture.directory.delete(recursive: true);
+    },
+  );
+
+  test(
+    'late speaker change and route errors cannot resurrect an ended call',
+    () async {
+      SharedPreferences.setMockInitialValues({});
+      final app = await AppController.load();
+      app.configureAi(
+        enabled: true,
+        baseUrl: 'https://example.test/v1',
+        model: 'model',
+      );
+      final output = _RoutingOutput();
+      final fixture = await _callFixture(app, reply: '', output: output);
+      final controller = fixture.controller;
+      await controller.startCall('primary:ryza');
+      output.routeEvents.add(CallAudioRoute.bluetooth);
+      await Future<void>.delayed(Duration.zero);
+      output.routeEvents.addError(StateError('route observer disconnected'));
+      await Future<void>.delayed(Duration.zero);
+      expect(controller.snapshot.phase, CallUiPhase.listening);
+      expect(controller.snapshot.audioRoute, CallAudioRoute.unknown);
+      expect(controller.snapshot.error, isNull);
+
+      output.speakerBarrier = Completer<bool>();
+      final changing = controller.setSpeaker(false);
+      await controller.endCall();
+      await controller.startCall('primary:ryza');
+      output.speakerBarrier!.complete(true);
+      await changing;
+      expect(controller.snapshot.speaker, isTrue);
+      expect(controller.snapshot.error, isNull);
+      await controller.endCall();
+      controller.dispose();
+      app.dispose();
+      await output.routeEvents.close();
+      await fixture.directory.delete(recursive: true);
+    },
+  );
+
   test('phone prefetches two sentences while first is pending and preserves playback order', () async {
     SharedPreferences.setMockInitialValues({});
     final app = await AppController.load();
@@ -674,6 +784,35 @@ class _RecordingOutput extends _FakeOutput {
   final values = <int>[];
   @override
   Future<void> write(Uint8List pcm) async => values.add(pcm.first);
+}
+
+class _RoutingOutput extends _FakeOutput implements CallPcmRouteControl {
+  final routeEvents = StreamController<CallAudioRoute>.broadcast();
+  final operations = <String>[];
+  final speakerChanges = <bool>[];
+  int resets = 0, starts = 0;
+  Completer<bool>? speakerBarrier;
+
+  @override
+  Stream<CallAudioRoute> get routes => routeEvents.stream;
+  @override
+  Future<void> resetRoute() async {
+    resets++;
+    operations.add('resetRoute');
+  }
+
+  @override
+  Future<void> start() async {
+    starts++;
+    operations.add('start');
+    routeEvents.add(CallAudioRoute.unknown);
+  }
+
+  @override
+  Future<bool> setSpeaker(bool value) async {
+    speakerChanges.add(value);
+    return speakerBarrier?.future ?? true;
+  }
 }
 
 class _BlockingSecondDrainOutput implements CallPcmOutput {

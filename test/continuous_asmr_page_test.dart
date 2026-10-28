@@ -7,9 +7,46 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:ryza_chat_mvp/src/app_controller.dart';
 import 'package:ryza_chat_mvp/src/app_localization.dart';
 import 'package:ryza_chat_mvp/src/continuous_asmr_page.dart';
+import 'package:ryza_chat_mvp/src/tts_text_normalizer.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+
+  test('ASMR clip boundaries preserve quotations through display and TTS', () {
+    for (final length in [94, 95]) {
+      for (final cue in ['', '[whispering]']) {
+        final source = '${'あ' * length}…っ$cueて言った。';
+        final clips = splitAsmrScript(source);
+        expect(clips.map((clip) => clip.text).join(), source);
+        expect(
+          clips.map((clip) => asmrSpokenText(clip.text)).join(),
+          asmrSpokenText(source),
+        );
+        expect(
+          clips
+              .map(
+                (clip) =>
+                    asmrSpokenText(normalizeFishAudioSynthesisText(clip.text)),
+              )
+              .join(),
+          asmrSpokenText(source),
+        );
+        expect(clips.every((clip) => clip.text.length < 128), isTrue);
+      }
+    }
+  });
+
+  test(
+    'ASMR sources and spoken display share the dialogue artifact filter',
+    () {
+      final segments = splitAsmrScript('[whispering]あ……っ、待って。……って言った。');
+      expect(
+        segments.map((segment) => segment.text).join(),
+        '[whispering]あ……、待って。……って言った。',
+      );
+      expect(asmrSpokenText('[whispering]あ……つ、つづけて。'), 'あ……、つづけて。');
+    },
+  );
 
   testWidgets('ASMR options fit narrow screens and update interface language', (
     tester,

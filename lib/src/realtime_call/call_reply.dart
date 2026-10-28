@@ -8,6 +8,7 @@ import '../app_controller.dart';
 import '../app_localization.dart';
 import '../chat_segments.dart';
 import '../dialogue_language_guard.dart';
+import '../japanese_dialogue_filter.dart';
 
 class CallReplyRequest {
   const CallReplyRequest({
@@ -452,8 +453,19 @@ class CallStreamingSpeechBuffer {
         continue;
       }
       _segment.write(char);
-      if (_isBoundary(char) || _segment.length >= 160) {
+      // Do not hard-split a pending tsu before a later kana establishes that
+      // it belongs to a word (for example …っ + て). Sentence punctuation and
+      // explicit flush still provide a stable boundary for artifact cleanup.
+      if (_isBoundary(char) ||
+          _segment.length >= 160 && !'っつッツ…⋯‥.．'.contains(char)) {
         _emitSegment(output, lineEnded: false);
+      } else if (_segment.length >= 168 && '…⋯‥.．'.contains(char)) {
+        // A long ellipsis is safe to split, retaining its last mark as context
+        // for a tsu arriving in the next transport delta. Keep the buffer
+        // bounded without producing a clip that starts with an ambiguous っ.
+        _emitSegment(output, lineEnded: false, keepTail: 1);
+      } else if (_segment.length >= 320) {
+        throw const FormatException('通话日语片段缺少可安全断句的位置');
       }
     }
     if (flush) {
@@ -493,13 +505,21 @@ class CallStreamingSpeechBuffer {
 
   bool _isBoundary(String char) => '。！？!?'.contains(char);
 
-  void _emitSegment(List<String> output, {required bool lineEnded}) {
-    var value = _segment.toString();
+  void _emitSegment(
+    List<String> output, {
+    required bool lineEnded,
+    int keepTail = 0,
+  }) {
+    final pending = _segment.toString();
+    var value = pending.substring(0, pending.length - keepTail);
     if (value.isEmpty) {
       if (lineEnded) _role = _CallLineRole.undecided;
       return;
     }
     _segment.clear();
+    if (keepTail > 0) {
+      _segment.write(pending.substring(pending.length - keepTail));
+    }
     final hidden = _hiddenPrefix.firstMatch(value);
     final spoken =
         _contactPrefix?.firstMatch(value) ?? _speechPrefix.firstMatch(value);
@@ -518,6 +538,7 @@ class CallStreamingSpeechBuffer {
           .replaceAll(RegExp(r'^\s*[（(][^）)\r\n]{0,80}[）)]\s*'), '')
           .replaceAll('```', '')
           .trim();
+      value = filterJapaneseDialogueArtifacts(value);
       if (value.isNotEmpty) output.add(value);
     }
     if (lineEnded) _role = _CallLineRole.undecided;

@@ -3838,6 +3838,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       return;
     }
 
+    await widget.controller.prepareRagMemory(text);
+    if (!mounted || generation != _replyGeneration) return;
     widget.controller.beginAssistantStream();
     StreamIterator<String>? iterator;
     LlmDialogueSignalTurn? signalTurn;

@@ -92,6 +92,33 @@ void main() {
   setUp(() => controller = _Calls());
   tearDown(() => controller.dispose());
 
+  testWidgets(
+    'CC hides assistant breath artifacts without altering user transcript',
+    (tester) async {
+      controller.show(
+        const CallUiSnapshot(
+          phase: CallUiPhase.speaking,
+          contact: _ryza,
+          caption: 'あ……っ、待って。',
+          captionTranslation: '……つ。待って。',
+          interimTranscript: 'あ……っ、私の声。',
+        ),
+      );
+      tester.view.physicalSize = const Size(390, 780);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      await tester.pumpWidget(
+        MaterialApp(home: RealtimeCallPage(controller: controller)),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('あ……、待って。'), findsOneWidget);
+      expect(find.text('……。待って。'), findsOneWidget);
+      expect(find.text('你：あ……っ、私の声。'), findsOneWidget);
+      expect(controller.snapshot.caption, 'あ……っ、待って。');
+    },
+  );
+
   Future<void> mount(
     WidgetTester tester, {
     Size size = const Size(390, 780),
@@ -269,6 +296,51 @@ void main() {
     );
     expect(find.textContaining('正在聆听'), findsNothing);
   });
+
+  testWidgets(
+    'actual Bluetooth output replaces speaker icon and can switch back',
+    (tester) async {
+      controller.show(
+        const CallUiSnapshot(
+          phase: CallUiPhase.listening,
+          contact: _ryza,
+          speaker: false,
+          audioRoute: CallAudioRoute.bluetooth,
+        ),
+      );
+      await mount(tester);
+      expect(find.text('蓝牙'), findsOneWidget);
+      expect(find.byIcon(Icons.bluetooth_audio_rounded), findsOneWidget);
+      await tester.tap(_key('call-speaker'));
+      await tester.pump();
+      expect(controller.actions, ['speaker:true']);
+
+      controller.show(
+        const CallUiSnapshot(
+          phase: CallUiPhase.listening,
+          contact: _ryza,
+          audioRoute: CallAudioRoute.speaker,
+        ),
+      );
+      await tester.pump();
+      expect(find.text('扬声器'), findsOneWidget);
+      expect(find.text('蓝牙'), findsNothing);
+      expect(find.byIcon(Icons.volume_up_rounded), findsOneWidget);
+
+      controller.show(
+        const CallUiSnapshot(
+          phase: CallUiPhase.listening,
+          contact: _ryza,
+          speaker: false,
+          audioRoute: CallAudioRoute.wired,
+        ),
+      );
+      await tester.pump();
+      expect(find.text('耳机'), findsOneWidget);
+      expect(find.byIcon(Icons.headphones_rounded), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   testWidgets('explicit contact menu offers an in-app call', (tester) async {
     await mount(tester);

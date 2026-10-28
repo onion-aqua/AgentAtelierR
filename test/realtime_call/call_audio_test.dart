@@ -35,6 +35,75 @@ void main() {
     messenger.setMockMethodCallHandler(channel, null);
   });
 
+  test('observes actual native routes and ignores malformed events', () async {
+    const routesName = 'test/realtime_pcm_routes';
+    const routesChannel = EventChannel(routesName);
+    const routeMethods = MethodChannel(routesName);
+    final methods = <String>[];
+    messenger.setMockMethodCallHandler(routeMethods, (call) async {
+      methods.add(call.method);
+      return null;
+    });
+    addTearDown(() => messenger.setMockMethodCallHandler(routeMethods, null));
+    final output = AndroidCallPcmOutput(
+      runtime: _FakeRuntime(),
+      channel: channel,
+      routesChannel: routesChannel,
+      isAndroid: () => true,
+    );
+    final routes = <CallAudioRoute>[];
+    final subscription = output.routes.listen(routes.add);
+    await Future<void>.delayed(Duration.zero);
+    for (final event in [
+      'unknown',
+      'bluetooth',
+      'bluetooth',
+      <String, Object>{'invalid': true},
+      'wired',
+      'speaker',
+      'earpiece',
+      'future_route',
+      'system',
+    ]) {
+      await messenger.handlePlatformMessage(
+        routesName,
+        const StandardMethodCodec().encodeSuccessEnvelope(event),
+        (_) {},
+      );
+    }
+    await Future<void>.delayed(Duration.zero);
+    expect(routes, [
+      CallAudioRoute.unknown,
+      CallAudioRoute.bluetooth,
+      CallAudioRoute.wired,
+      CallAudioRoute.speaker,
+      CallAudioRoute.earpiece,
+      CallAudioRoute.unknown,
+      CallAudioRoute.system,
+    ]);
+    await subscription.cancel();
+    expect(methods, ['listen', 'cancel']);
+  });
+
+  test('reset route is explicit and never repeated by track starts', () async {
+    final methods = <String>[];
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      methods.add(call.method);
+      return null;
+    });
+    final output = AndroidCallPcmOutput(
+      runtime: _FakeRuntime(),
+      channel: channel,
+      isAndroid: () => true,
+    );
+    await output.resetRoute();
+    await output.start();
+    await output.stop();
+    await output.start();
+    await output.stop();
+    expect(methods, ['resetRoute', 'start', 'stop', 'start', 'stop']);
+  });
+
   test('releases audio focus when native start fails', () async {
     final runtime = _FakeRuntime();
     messenger.setMockMethodCallHandler(channel, (call) async {

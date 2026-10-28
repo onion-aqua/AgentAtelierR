@@ -10,6 +10,7 @@ import 'app_controller.dart';
 import 'app_localization.dart';
 import 'chat_segments.dart';
 import 'dialogue_language_guard.dart';
+import 'japanese_dialogue_filter.dart';
 import 'npc_chat_contacts.dart';
 import 'npc_chat_models.dart';
 
@@ -241,8 +242,10 @@ class NpcChatService extends ChangeNotifier {
 
   bool isSending(String npcId) => _runs.containsKey(npcId);
 
-  String liveReply(String npcId) =>
-      filterAssistantControlMarkup(_runs[npcId]?.raw.toString() ?? '');
+  String liveReply(String npcId) => filterJapaneseDialogueArtifacts(
+    filterAssistantControlMarkup(_runs[npcId]?.raw.toString() ?? ''),
+    streaming: true,
+  );
 
   String? errorFor(String npcId) => _errors[npcId];
 

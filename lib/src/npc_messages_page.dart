@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'app_controller.dart';
 import 'app_localization.dart';
 import 'glass_ui.dart';
+import 'japanese_dialogue_filter.dart';
 import 'npc_chat_contacts.dart';
 import 'npc_chat_models.dart';
 import 'npc_chat_service.dart';
@@ -549,7 +550,11 @@ class _NpcMessagesPageState extends State<NpcMessagesPage> {
                     final preview = live.isNotEmpty
                         ? live
                         : messages.isNotEmpty
-                        ? messages.last.text
+                        ? messages.last.role == NpcChatRole.user
+                              ? messages.last.text
+                              : filterJapaneseDialogueArtifacts(
+                                  messages.last.text,
+                                )
                         : _language.text(
                             '点击开始私信',
                             'Start a private chat',
@@ -737,6 +742,12 @@ class _NpcMessagesPageState extends State<NpcMessagesPage> {
     bool live = false,
   }) {
     final colors = Theme.of(context).colorScheme;
+    final visibleText = user
+        ? text
+        : filterJapaneseDialogueArtifacts(text, streaming: live);
+    final translatedText = message?.translatedText == null
+        ? null
+        : filterJapaneseDialogueArtifacts(message!.translatedText!);
     return Align(
       key: message == null
           ? ValueKey('npc-live-${contact.id}')
@@ -764,14 +775,14 @@ class _NpcMessagesPageState extends State<NpcMessagesPage> {
                   ),
                   const SizedBox(height: 4),
                   SelectableText(
-                    text.isEmpty
+                    visibleText.isEmpty
                         ? _language.text('（无文本）', '(No text)', '（本文なし）')
-                        : text,
+                        : visibleText,
                   ),
-                  if (message?.translatedText?.trim().isNotEmpty ?? false) ...[
+                  if (translatedText?.trim().isNotEmpty ?? false) ...[
                     const Divider(height: 18),
                     SelectableText(
-                      message!.translatedText!,
+                      translatedText!,
                       style: Theme.of(context).textTheme.bodySmall
                           ?.copyWith(color: colors.onSurfaceVariant),
                     ),
