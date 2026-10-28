@@ -19,7 +19,7 @@ class DesktopUpdatesPage extends StatefulWidget {
   final Future<bool> Function(Uri)? openRelease;
 
   static final releaseUrl = Uri.parse(
-    'https://github.com/onion-aqua/AgentAtelierR/releases/tag/v1.0.4.2',
+    'https://github.com/onion-aqua/AgentAtelierR/releases/latest',
   );
 
   @override
@@ -72,7 +72,7 @@ class _DesktopUpdatesPageState extends State<DesktopUpdatesPage> {
         children: [
           const ListTile(
             leading: Icon(Icons.desktop_windows_rounded),
-            title: Text('AgentAtelierR Windows 1.0.4.2'),
+            title: Text('AgentAtelierR Windows'),
             subtitle: Text('Windows x64'),
           ),
           const SizedBox(height: 12),

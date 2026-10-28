@@ -25,8 +25,13 @@ Runtime 1.28.2 already bundled by Sherpa-ONNX 1.13.8 across all supported ABIs,
 including emulator x86_64. The app Gradle file removes only the embedding
 plugin's older 1.15.1 JNI source set; it does not alter the Pub cache or use a
 packaging `pickFirst` rule. The Dart FFI requests ORT API 14, which the newer
-runtime retains. Windows uses the embedding plugin's 1.15.1 DLL. No communication
-audio mode or voice service is involved.
+runtime retains. Windows also shares Sherpa's 1.28.2 `onnxruntime.dll`, plus its
+matching `onnxruntime_providers_shared.dll`. The repository's
+`windows/shared_onnx_runtime.cmake` removes the embedding plugin's older 1.15.1
+DLL from the bundle list before installation, so copy order cannot choose the
+runtime. Unexpected same-name DLLs or missing Sherpa files fail configuration;
+no plugin cache files or previously packaged releases are changed. No
+communication audio mode or voice service is involved.
 
 The background isolate uses two intra-op CPU threads, one inter-op thread, and a
 maximum of 128 BERT WordPiece tokens per sentence. This sequence limit is part of

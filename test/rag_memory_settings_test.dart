@@ -86,6 +86,10 @@ void main() {
       await tester.pumpAndSettle();
       expect(results, findsNothing);
     },
+    variant: TargetPlatformVariant({
+      TargetPlatform.android,
+      TargetPlatform.windows,
+    }),
   );
 
   testWidgets('read or undo cannot leave another save evidence visible', (

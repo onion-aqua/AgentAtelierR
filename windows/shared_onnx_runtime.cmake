@@ -1,0 +1,62 @@
+# ONNX Runtime is a process-wide dependency for Sherpa ASR and Dart embeddings.
+# Both plugins provide onnxruntime.dll, but the embedding plugin bundles 1.15.1
+# and Sherpa 1.13.8 requires its newer 1.28.2 runtime. Select the Sherpa copy
+# explicitly instead of relying on the generated plugin/install copy order.
+function(aar_select_shared_onnx_runtime output_var)
+  set(_aar_sherpa_runtime)
+  foreach(_aar_library IN LISTS sherpa_onnx_windows_bundled_libraries)
+    get_filename_component(_aar_name "${_aar_library}" NAME)
+    string(TOLOWER "${_aar_name}" _aar_name)
+    if(_aar_name STREQUAL "onnxruntime.dll")
+      list(APPEND _aar_sherpa_runtime "${_aar_library}")
+    endif()
+  endforeach()
+  list(LENGTH _aar_sherpa_runtime _aar_count)
+  if(NOT _aar_count EQUAL 1)
+    message(FATAL_ERROR "Expected exactly one Sherpa ONNX Runtime DLL")
+  endif()
+  list(GET _aar_sherpa_runtime 0 _aar_runtime)
+  if(NOT EXISTS "${_aar_runtime}")
+    message(FATAL_ERROR "Sherpa ONNX Runtime DLL is missing")
+  endif()
+  get_filename_component(_aar_runtime_real "${_aar_runtime}" REALPATH)
+  get_filename_component(_aar_runtime_dir "${_aar_runtime}" DIRECTORY)
+  set(_aar_provider "${_aar_runtime_dir}/onnxruntime_providers_shared.dll")
+  if(NOT EXISTS "${_aar_provider}")
+    message(FATAL_ERROR "Sherpa ONNX Runtime provider support DLL is missing")
+  endif()
+  get_filename_component(_aar_provider_real "${_aar_provider}" REALPATH)
+
+  set(_aar_libraries "${PLUGIN_BUNDLED_LIBRARIES}")
+  foreach(_aar_old_library IN LISTS onnxruntime_bundled_libraries)
+    get_filename_component(_aar_name "${_aar_old_library}" NAME)
+    string(TOLOWER "${_aar_name}" _aar_name)
+    if(_aar_name STREQUAL "onnxruntime.dll")
+      list(REMOVE_ITEM _aar_libraries "${_aar_old_library}")
+    endif()
+  endforeach()
+
+  # Reject unexpected same-name libraries rather than silently choosing one.
+  set(_aar_selected)
+  foreach(_aar_library IN LISTS _aar_libraries)
+    get_filename_component(_aar_name "${_aar_library}" NAME)
+    string(TOLOWER "${_aar_name}" _aar_name)
+    if(_aar_name STREQUAL "onnxruntime.dll" OR
+       _aar_name STREQUAL "onnxruntime_providers_shared.dll")
+      get_filename_component(_aar_library_real "${_aar_library}" REALPATH)
+      if(_aar_name STREQUAL "onnxruntime.dll" AND
+         NOT _aar_library_real STREQUAL _aar_runtime_real)
+        message(FATAL_ERROR "Unexpected conflicting ONNX Runtime DLL")
+      endif()
+      if(_aar_name STREQUAL "onnxruntime_providers_shared.dll" AND
+         NOT _aar_library_real STREQUAL _aar_provider_real)
+        message(FATAL_ERROR "Unexpected conflicting ONNX Runtime provider DLL")
+      endif()
+      # Add these exactly once below using the selected plugin's own paths.
+    else()
+      list(APPEND _aar_selected "${_aar_library}")
+    endif()
+  endforeach()
+  list(APPEND _aar_selected "${_aar_runtime}" "${_aar_provider}")
+  set(${output_var} "${_aar_selected}" PARENT_SCOPE)
+endfunction()

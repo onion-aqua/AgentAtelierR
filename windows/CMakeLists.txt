@@ -61,6 +61,15 @@ add_subdirectory("runner")
 # them to the application.
 include(flutter/generated_plugins.cmake)
 
+# Dart embeddings request the backwards-compatible ORT C API 14; share the
+# newer Sherpa runtime and include its provider support library on Windows.
+if("sherpa_onnx_windows" IN_LIST FLUTTER_FFI_PLUGIN_LIST)
+  include(shared_onnx_runtime.cmake)
+  aar_select_shared_onnx_runtime(PLUGIN_BUNDLED_LIBRARIES)
+elseif("onnxruntime" IN_LIST FLUTTER_FFI_PLUGIN_LIST)
+  message(FATAL_ERROR "The local memory encoder requires the shared Sherpa ONNX Runtime")
+endif()
+
 
 # === Installation ===
 # Support files are copied into place next to the executable, so that it can
