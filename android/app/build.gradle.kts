@@ -56,7 +56,7 @@ android {
         // flag during build.
         versionCode = flutter.versionCode
         // Public release uses four segments; pubspec keeps Flutter's semver.
-        versionName = "1.0.4.6"
+        versionName = "1.0.4.7"
         if (relayPushDefines["RELAY_PUSH_PROVIDER"] == "fcm") {
             mapOf(
                 "google_api_key" to "RELAY_FCM_API_KEY",

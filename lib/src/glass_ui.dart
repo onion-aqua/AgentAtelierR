@@ -123,6 +123,7 @@ class GlassSurface extends StatelessWidget {
     this.transparentFill = false,
     this.readableText = false,
     this.fillOpacity = 1,
+    this.backdropGroupKey,
   });
 
   final bool liquidGlass;
@@ -141,6 +142,9 @@ class GlassSurface extends StatelessWidget {
   /// refraction stays enabled; decorative glass can keep the lighter tint.
   final bool readableText;
   final double fillOpacity;
+
+  /// Only non-overlapping surfaces may share the same backdrop input.
+  final BackdropKey? backdropGroupKey;
 
   @override
   Widget build(BuildContext context) {
@@ -245,6 +249,7 @@ class GlassSurface extends StatelessWidget {
           dark: darkMode,
           blurSigma: blurSigma,
           filterBackdrop: needsBackdrop,
+          backdropGroupKey: backdropGroupKey,
           child: GlassBackdropScope(
             active: inheritedBackdrop || (liquidGlass && needsBackdrop),
             persistentRouteBackdrop: GlassBackdropScope.persistsAcrossRoutes(

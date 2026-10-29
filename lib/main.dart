@@ -40,6 +40,12 @@ void main() {
         'docs/third_party/ryza-ai-revive-LICENSE.txt',
       ),
     );
+    yield LicenseEntryWithLineBreaks(
+      ['design-systems / Lens (visual adaptation)'],
+      await rootBundle.loadString(
+        'docs/third_party/design-systems-LICENSE.txt',
+      ),
+    );
   });
   FlutterError.onError = (details) {
     RuntimeLog.instance.error(
@@ -129,7 +135,7 @@ class _BootstrapAppState extends State<_BootstrapApp> {
       ..start();
     try {
       await RuntimeLog.instance.initialize();
-      RuntimeLog.instance.info('App', '应用启动，版本 1.0.4.6');
+      RuntimeLog.instance.info('App', '应用启动，版本 1.0.4.7');
       await initSpineFlutter(enableMemoryDebugging: false);
       if (AppPlatformCapabilities.supportsVoiceAlarms) await Alarm.init();
       await AndroidCompanionRuntime.instance.initialize();

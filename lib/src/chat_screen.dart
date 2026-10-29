@@ -94,6 +94,10 @@ import 'scene_backdrop_bounds.dart';
 import 'character_performance.dart';
 import 'character_performance_queue.dart';
 import 'chat_segments.dart';
+import 'chat_bubble.dart';
+import 'chat_bubble_menu.dart';
+import 'chat_glass_surface.dart';
+import 'chat_message_edge_transition.dart';
 import 'frame_rate_controller.dart';
 import 'glass_ui.dart';
 import 'local_save_dialog.dart';
@@ -163,21 +167,24 @@ Rect conversationPanelBounds({
   required double keyboardInset,
   required double fraction,
   bool fullscreen = false,
+  bool edgeToEdge = false,
 }) {
   final width = max(0.0, viewport.width);
   final height = max(0.0, viewport.height);
   final inset = keyboardInset.clamp(0.0, height).toDouble();
-  final margin = fullscreen ? 0.0 : min(8.0, (height - inset) / 4);
+  final margin = fullscreen || edgeToEdge
+      ? 0.0
+      : min(8.0, (height - inset) / 4);
   final available = max(0.0, height - inset - margin);
   final compact = width < 360 || height < 500;
   final maxHeight = min(available, height * (compact ? 0.85 : 0.68));
   final panelHeight = fullscreen
       ? available
       : (height * fraction).clamp(min(176.0, maxHeight), maxHeight).toDouble();
-  final side = fullscreen
+  final side = fullscreen || edgeToEdge
       ? 0.0
       : (width >= 720 ? 18.0 : (compact ? 6.0 : 10.0));
-  final panelWidth = fullscreen
+  final panelWidth = fullscreen || edgeToEdge
       ? width
       : min(width >= 720 ? 540.0 : width, max(0.0, width - side * 2));
   return Rect.fromLTWH(
@@ -539,9 +546,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           SnackBar(
             content: Text(
               widget.controller.interfaceLanguage.text(
-                '右滑自动选择对话和已有语音，左滑取消；再次点击收藏按钮保存。',
-                'Swipe a message right to select it. Cached audio is included automatically; tap the collection button again to save.',
-                '会話を右にスワイプして選択。保存済み音声も含めます。もう一度ボタンを押して保存。',
+                '右滑选择、左滑取消，已有语音会一并选中；完成后点击“保存收藏”。',
+                'Swipe right to select or left to cancel. Cached audio is included; tap Save when done.',
+                '右スワイプで選択、左で解除。保存済み音声も含めます。完了後に保存してください。',
               ),
             ),
           ),
@@ -689,6 +696,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   // Sending a new message still restores automatic sizing below.
   double? _manualPanelFraction = 0.22;
   double? _lockedPanelFraction;
+  late bool _observedBubbleStyle;
   Size? _lastChatViewport;
   final List<ChatAttachment> _pendingAttachments = [];
   bool _showScrollToBottomIndicator = false;
@@ -765,6 +773,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     _inputController.addListener(_recordUserActivity);
     _narrationInputController.addListener(_recordUserActivity);
     _narrationBottomInputController.addListener(_recordUserActivity);
+    _observedBubbleStyle = widget.controller.chatBubbleStyle;
+    _manualPanelFraction = _observedBubbleStyle ? .65 : .22;
     widget.controller.addListener(_handleControllerChange);
     unawaited(() async {
       try {
@@ -863,6 +873,13 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
   void _handleControllerChange({bool forceAppearanceReload = false}) {
     _syncBackgroundVoicePolicy();
+    if (_observedBubbleStyle != widget.controller.chatBubbleStyle) {
+      setState(() {
+        _observedBubbleStyle = widget.controller.chatBubbleStyle;
+        _manualPanelFraction = _observedBubbleStyle ? .65 : .22;
+        _lockedPanelFraction = null;
+      });
+    }
     final characterChanged =
         _activeCharacterId != widget.controller.activeCharacterId;
     if (_waking &&
@@ -4715,16 +4732,29 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     String text, {
     String? displaySource,
     Future<String>? plannedPerformance,
+    ChatMessage? collectionTarget,
+    bool highlightLatest = true,
   }) async {
     final replyGeneration = _replyGeneration;
     final initialSpeechGeneration = _speechPlaybackGeneration;
     final characterId = widget.controller.activeCharacterId;
     final dataRevision = widget.controller.dataRevision;
+    bool targetIsCurrent() =>
+        collectionTarget == null ||
+        widget.controller.messages.any(
+          (message) =>
+              !message.isUser &&
+              !message.isFailure &&
+              message.collectionKey == collectionTarget.collectionKey &&
+              message.text == collectionTarget.text,
+        );
     bool performanceIsCurrent() =>
         mounted &&
         replyGeneration == _replyGeneration &&
         _conversationIsCurrent(characterId, dataRevision) &&
+        targetIsCurrent() &&
         _mayPlayVoice;
+    if (!targetIsCurrent()) return;
     Future<String> fallbackPerformance() async {
       if (plannedPerformance == null) return text;
       try {
@@ -4757,9 +4787,20 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       _stopSpeakingAnimation();
     }
 
-    final collectionMessage = widget.controller.messages
-        .where((m) => !m.isUser && m.text == (displaySource ?? text))
-        .lastOrNull;
+    // Historical replies can have identical text. A deliberate regeneration
+    // belongs to its selected message, rather than the latest text match.
+    final collectionMessage = collectionTarget != null
+        ? widget.controller.messages
+              .where(
+                (message) =>
+                    !message.isUser &&
+                    message.collectionKey == collectionTarget.collectionKey &&
+                    message.text == collectionTarget.text,
+              )
+              .firstOrNull
+        : widget.controller.messages
+              .where((m) => !m.isUser && m.text == (displaySource ?? text))
+              .lastOrNull;
     if (!_mayPlayVoice) {
       RuntimeLog.instance.warning(
         'ActionPlanner',
@@ -5041,10 +5082,12 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
               .where((s) => s.speaker == segment.speaker)
               .length,
         );
-        _showAssistantSegment(
-          displayIndex,
-          _readingDurationFor(segment.speechText),
-        );
+        if (highlightLatest) {
+          _showAssistantSegment(
+            displayIndex,
+            _readingDurationFor(segment.speechText),
+          );
+        }
         if (segment.isPrimary) {
           applyDispatched(dispatch.startPrimary(primaryOrdinalAt(index)));
         }
@@ -5147,9 +5190,15 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         await _deleteSpeechSegments(completedSegments);
         return;
       }
-      _lastSpeechSource = displaySource ?? text;
-      _lastSpeechPerformance = plannedText ?? text;
-      await _replaceLastSpeech(completedSegments);
+      if (highlightLatest) {
+        _lastSpeechSource = displaySource ?? text;
+        _lastSpeechPerformance = plannedText ?? text;
+        await _replaceLastSpeech(completedSegments);
+      } else {
+        // cacheVoice owns copies now; retain the actual latest reply's replay
+        // buffer and release this historical generation's temporary files.
+        await _deleteSpeechSegments(completedSegments);
+      }
       if (!performanceIsCurrent() || generation != _speechPlaybackGeneration) {
         return;
       }
@@ -5168,7 +5217,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         );
       }
       _stopSpeakingAnimation();
-      _showAssistantSegment(null, Duration.zero);
+      if (highlightLatest) _showAssistantSegment(null, Duration.zero);
       if (identical(_speechCancellation, cancellation)) {
         _speechCancellation = null;
       }
@@ -5629,13 +5678,26 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   }
 
   Future<void> _regenerateLastSpeech() async {
-    if (_awaitingWake || _isReplying || _regeneratingSpeech || !_mayPlayVoice) {
-      return;
-    }
     final message = widget.controller.messages
         .where((m) => !m.isUser && m.text.trim().isNotEmpty)
         .lastOrNull;
-    if (message == null) return;
+    if (message != null) await _regenerateMessageSpeech(message);
+  }
+
+  Future<void> _regenerateMessageSpeech(ChatMessage message) async {
+    if (_awaitingWake || _isReplying || _regeneratingSpeech || !_mayPlayVoice) {
+      return;
+    }
+    final target = widget.controller.messages
+        .where(
+          (current) =>
+              !current.isUser &&
+              !current.isFailure &&
+              current.collectionKey == message.collectionKey &&
+              current.text == message.text,
+        )
+        .firstOrNull;
+    if (target == null) return;
     if (!widget.controller.fishTtsEnabled) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -5650,8 +5712,12 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       );
       return;
     }
-    final source = message.text;
-    final performance = _lastSpeechSource == source
+    final latest = widget.controller.messages
+        .where((current) => !current.isUser && current.text.trim().isNotEmpty)
+        .lastOrNull;
+    final isLatest = latest?.collectionKey == target.collectionKey;
+    final source = target.text;
+    final performance = isLatest && _lastSpeechSource == source
         ? (_lastSpeechPerformance ?? source)
         : source;
     _cancelSpeechPlayback();
@@ -5661,7 +5727,12 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       _isReplying = true;
     });
     try {
-      await _playTtsIfConfigured(performance, displaySource: source);
+      await _playTtsIfConfigured(
+        performance,
+        displaySource: source,
+        collectionTarget: target,
+        highlightLatest: isLatest,
+      );
     } catch (error, stack) {
       RuntimeLog.instance.error('TTS', error, stack);
     } finally {
@@ -5677,6 +5748,105 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   Future<void> _replayLastSpeech() async {
     if (_awaitingWake) return;
     await _playCachedSpeech(_lastSpeech);
+  }
+
+  Future<void> _showBubbleMessageMenu(
+    ChatMessage message,
+    Offset position,
+    String? speechText,
+    ChatSpeaker? speaker,
+  ) async {
+    if (_awaitingWake || _calls.active || _savingCollection) return;
+    final characterId = widget.controller.activeCharacterId;
+    final revision = widget.controller.dataRevision;
+    final language = widget.controller.interfaceLanguage;
+    final canSpeak = !message.isUser && !message.isFailure && !_isReplying;
+    final action = await showChatBubbleMenu<String>(
+      context: context,
+      position: position,
+      liquidGlass: widget.controller.liquidGlassChatUi,
+      actions: [
+        ChatBubbleMenuAction(
+          key: const ValueKey('chat-message-action-undo'),
+          value: 'undo',
+          icon: Icons.undo_rounded,
+          enabled:
+              !_selectingCollection &&
+              widget.controller.messages.any((m) => m.isUser),
+          label: language.text(
+            '回退上一轮对话、状态与时间',
+            'Undo last turn, stats and time',
+            '直前の会話・状態・時刻を戻す',
+          ),
+        ),
+        if (!message.isUser) ...[
+          ChatBubbleMenuAction(
+            key: const ValueKey('chat-message-action-replay'),
+            value: 'replay',
+            icon: Icons.volume_up_outlined,
+            enabled:
+                canSpeak &&
+                !_selectingCollection &&
+                speechText != null &&
+                speaker != null,
+            label: language.text('重播语音', 'Replay speech', '音声を再生'),
+          ),
+          ChatBubbleMenuAction(
+            key: const ValueKey('chat-message-action-regenerate'),
+            value: 'regenerate',
+            icon: Icons.refresh_rounded,
+            enabled: canSpeak && !_selectingCollection && !_regeneratingSpeech,
+            label: language.text('重新生成语音', 'Regenerate speech', '音声を再生成'),
+          ),
+        ],
+        ChatBubbleMenuAction(
+          key: const ValueKey('chat-message-action-select'),
+          value: 'select',
+          icon: Icons.checklist_rounded,
+          enabled: !_isReplying,
+          label: language.text(
+            '选择文字与语音',
+            'Select text and audio',
+            'テキスト・音声を選択',
+          ),
+        ),
+      ],
+    );
+    // A menu can outlive a save/character change or a withdrawn message.
+    if (action == null ||
+        !_conversationIsCurrent(characterId, revision) ||
+        !widget.controller.messages.any(
+          (m) => m.collectionKey == message.collectionKey,
+        ) ||
+        _awaitingWake ||
+        _calls.active) {
+      return;
+    }
+    switch (action) {
+      case 'undo':
+        if (!_selectingCollection) _undoLastMessage();
+      case 'replay':
+        if (canSpeak && speechText != null && speaker != null) {
+          await _playMessageSpeech(message, speechText, speaker);
+        }
+      case 'regenerate':
+        if (!_selectingCollection) await _regenerateMessageSpeech(message);
+      case 'select':
+        if (_isReplying) return;
+        if (!_selectingCollection) await _toggleCollection();
+        if (!_conversationIsCurrent(characterId, revision) ||
+            !_selectingCollection) {
+          return;
+        }
+        setState(() {
+          _collectionSelection[message.collectionKey] = {
+            'text',
+            if (!message.isUser &&
+                _availableCollectionVoices.contains(message.collectionKey))
+              'voice',
+          };
+        });
+    }
   }
 
   Future<void> _playMessageSpeech(
@@ -7366,11 +7536,13 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     final viewportChanged =
         _lastChatViewport != null && _lastChatViewport != viewport;
     _lastChatViewport = viewport;
-    final automaticFraction = _automaticPanelFraction(
-      constraints.maxWidth,
-      constraints.maxHeight,
-      isWide,
-    );
+    final automaticFraction = widget.controller.chatBubbleStyle
+        ? .65
+        : _automaticPanelFraction(
+            constraints.maxWidth,
+            constraints.maxHeight,
+            isWide,
+          );
     final panelFraction =
         _lockedPanelFraction ?? _manualPanelFraction ?? automaticFraction;
     final showVoicePanel =
@@ -7386,6 +7558,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           ? max(panelFraction, 290 / max(1.0, viewport.height))
           : panelFraction,
       fullscreen: _conversationFullscreen,
+      edgeToEdge: widget.controller.chatBubbleStyle,
     );
     return Stack(
       fit: StackFit.expand,
@@ -7512,6 +7685,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           ),
         if (!widget.hideUi)
           AnimatedPositioned(
+            key: const ValueKey('chat-conversation-panel'),
             duration: viewportChanged
                 ? Duration.zero
                 : const Duration(milliseconds: 480),
@@ -7522,6 +7696,13 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
             height: panelBounds.height,
             child: _LiquidGlassConversation(
               language: widget.controller.interfaceLanguage,
+              bubbleStyle: widget.controller.chatBubbleStyle,
+              panelFraction: panelBounds.height / max(1.0, viewport.height),
+              onBubbleMenu: _showBubbleMessageMenu,
+              onCancelCollection: () => setState(() {
+                _selectingCollection = false;
+                _collectionSelection.clear();
+              }),
               characterProfile: _activeCharacterProfile,
               liquidGlass: liquidGlass,
               translationOnly:
@@ -9107,6 +9288,10 @@ class _LiquidGlassConversation extends StatelessWidget {
     required this.onToggleCollection,
     required this.onSelectCollection,
     required this.language,
+    required this.bubbleStyle,
+    required this.panelFraction,
+    required this.onBubbleMenu,
+    required this.onCancelCollection,
     required this.characterProfile,
     required this.liquidGlass,
     required this.translationOnly,
@@ -9160,6 +9345,10 @@ class _LiquidGlassConversation extends StatelessWidget {
   });
 
   final AppLanguage language;
+  final bool bubbleStyle;
+  final double panelFraction;
+  final void Function(ChatMessage, Offset, String?, ChatSpeaker?) onBubbleMenu;
+  final VoidCallback onCancelCollection;
   final VoidCallback? onWakeCharacter;
   final bool waking;
   final CharacterRuntimeProfile characterProfile;
@@ -9219,6 +9408,66 @@ class _LiquidGlassConversation extends StatelessWidget {
   final bool expanded;
   final VoidCallback onToggleExpanded;
 
+  Widget _surface(Widget child) => bubbleStyle
+      ? ChatConversationBackdrop(child: child)
+      : _LiquidGlassSurface(liquidGlass: liquidGlass, child: child);
+
+  Widget _messageViewport(Widget child) => bubbleStyle
+      ? ChatMessageEdgeTransition(
+          allowSceneBackdrop: liquidGlass,
+          child: ChatBubbleBackdropGroup(child: child),
+        )
+      : child;
+
+  Widget _controlSurface(BuildContext context, String key, Widget child) {
+    if (!bubbleStyle) return child;
+    final colors = Theme.of(context).colorScheme;
+    final glass = GlassStyleScope.resolve(context, fallback: liquidGlass);
+    final textStyle = DefaultTextStyle.of(context).style;
+    final iconTheme = IconTheme.of(context);
+    final sliderTheme = SliderTheme.of(context);
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 10),
+      child: ChatGlassSurface(
+        key: ValueKey(key),
+        liquidGlass: liquidGlass,
+        denseContent: true,
+        borderRadius: BorderRadius.circular(16),
+        fallbackColor: colors.surfaceContainerHigh.withValues(alpha: .90),
+        child: DefaultTextStyle(
+          style: glass
+              ? textStyle
+              : textStyle.copyWith(color: colors.onSurface),
+          child: IconTheme(
+            data: glass
+                ? iconTheme
+                : iconTheme.copyWith(color: colors.onSurface),
+            child: SliderTheme(
+              data: glass
+                  ? sliderTheme
+                  : sliderTheme.copyWith(
+                      activeTrackColor: colors.primary,
+                      inactiveTrackColor: colors.primary.withValues(alpha: .18),
+                      disabledActiveTrackColor: colors.onSurface.withValues(
+                        alpha: .28,
+                      ),
+                      disabledInactiveTrackColor: colors.onSurface.withValues(
+                        alpha: .12,
+                      ),
+                      thumbColor: colors.primary,
+                      disabledThumbColor: colors.onSurface.withValues(
+                        alpha: .38,
+                      ),
+                      overlayColor: colors.primary.withValues(alpha: .12),
+                    ),
+              child: child,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return LayoutBuilder(
@@ -9226,45 +9475,49 @@ class _LiquidGlassConversation extends StatelessWidget {
         clipBehavior: Clip.none,
         children: [
           Positioned.fill(
-            top: 18,
-            child: _LiquidGlassSurface(
-              liquidGlass: liquidGlass,
-              child: Column(
+            top: bubbleStyle ? 0 : 18,
+            child: _surface(
+              Column(
                 children: [
                   Expanded(
                     child: Stack(
                       children: [
                         Positioned.fill(
-                          child: MediaQuery(
-                            data: MediaQuery.of(context).copyWith(
-                              textScaler: TextScaler.linear(
-                                MediaQuery.textScalerOf(context).scale(14) /
-                                    14 *
-                                    (Theme.of(context)
-                                            .extension<DialogueAppearance>()
-                                            ?.fontScale ??
-                                        1),
+                          child: _messageViewport(
+                            MediaQuery(
+                              data: MediaQuery.of(context).copyWith(
+                                textScaler: TextScaler.linear(
+                                  MediaQuery.textScalerOf(context).scale(14) /
+                                      14 *
+                                      (Theme.of(context)
+                                              .extension<DialogueAppearance>()
+                                              ?.fontScale ??
+                                          1),
+                                ),
                               ),
-                            ),
-                            child: _GlassMessageList(
-                              characterProfile: characterProfile,
-                              selecting: selectingCollection,
-                              selection: collectionSelection,
-                              availableVoices: availableCollectionVoices,
-                              onSelectionChanged: savingCollection
-                                  ? null
-                                  : onSelectCollection,
-                              onPlaySpeech: onPlaySpeech,
-                              language: language,
-                              messages: messages,
-                              controller: scrollController,
-                              activeAssistantSegmentIndex:
-                                  activeAssistantSegmentIndex,
-                              activeSegmentDisplayDuration:
-                                  activeSegmentDisplayDuration,
-                              latestAssistantMessageKey:
-                                  latestAssistantMessageKey,
-                              translationOnly: translationOnly,
+                              child: _GlassMessageList(
+                                bubbleStyle: bubbleStyle,
+                                liquidGlass: liquidGlass,
+                                onBubbleMenu: onBubbleMenu,
+                                characterProfile: characterProfile,
+                                selecting: selectingCollection,
+                                selection: collectionSelection,
+                                availableVoices: availableCollectionVoices,
+                                onSelectionChanged: savingCollection
+                                    ? null
+                                    : onSelectCollection,
+                                onPlaySpeech: onPlaySpeech,
+                                language: language,
+                                messages: messages,
+                                controller: scrollController,
+                                activeAssistantSegmentIndex:
+                                    activeAssistantSegmentIndex,
+                                activeSegmentDisplayDuration:
+                                    activeSegmentDisplayDuration,
+                                latestAssistantMessageKey:
+                                    latestAssistantMessageKey,
+                                translationOnly: translationOnly,
+                              ),
                             ),
                           ),
                         ),
@@ -9279,11 +9532,64 @@ class _LiquidGlassConversation extends StatelessWidget {
                       ],
                     ),
                   ),
-                  Container(
-                    height: 1,
-                    color: Colors.white.withValues(alpha: 0.2),
-                  ),
-                  if (voiceControls == null) speechProgress,
+                  if (!bubbleStyle)
+                    Container(
+                      height: 1,
+                      color: Colors.white.withValues(alpha: 0.2),
+                    ),
+                  if (bubbleStyle && selectingCollection)
+                    _controlSurface(
+                      context,
+                      'chat-bubble-selection-surface',
+                      Material(
+                        key: const ValueKey('chat-bubble-selection-bar'),
+                        color: Colors.transparent,
+                        child: Row(
+                          children: [
+                            IconButton(
+                              key: const ValueKey(
+                                'chat-bubble-selection-cancel',
+                              ),
+                              onPressed: savingCollection
+                                  ? null
+                                  : onCancelCollection,
+                              tooltip: language.text(
+                                '退出选择',
+                                'Cancel selection',
+                                '選択を終了',
+                              ),
+                              icon: const Icon(Icons.close_rounded),
+                            ),
+                            Expanded(
+                              child: Text(
+                                language.text(
+                                  '已选择 ${collectionSelection.values.where((v) => v.isNotEmpty).length} 条',
+                                  '${collectionSelection.values.where((v) => v.isNotEmpty).length} selected',
+                                  '${collectionSelection.values.where((v) => v.isNotEmpty).length} 件選択中',
+                                ),
+                              ),
+                            ),
+                            TextButton.icon(
+                              key: const ValueKey('chat-bubble-selection-save'),
+                              onPressed: savingCollection
+                                  ? null
+                                  : onToggleCollection,
+                              icon: const Icon(
+                                Icons.bookmark_add_outlined,
+                                size: 18,
+                              ),
+                              label: Text(language.text('保存收藏', 'Save', '保存')),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  if (voiceControls == null)
+                    _controlSurface(
+                      context,
+                      'chat-bubble-playback-surface',
+                      speechProgress,
+                    ),
                   if (voiceControls != null && onWakeCharacter == null)
                     ConstrainedBox(
                       constraints: BoxConstraints(
@@ -9309,6 +9615,22 @@ class _LiquidGlassConversation extends StatelessWidget {
                                   waking: waking,
                                 )
                               : _GlassComposer(
+                                  bubbleStyle: bubbleStyle,
+                                  onSuggestReply:
+                                      bubbleStyle &&
+                                          !isReplying &&
+                                          !isSuggestingReply
+                                      ? onSuggestReply
+                                      : null,
+                                  onContinue:
+                                      bubbleStyle &&
+                                          canContinue &&
+                                          !isContinuing
+                                      ? onContinue
+                                      : null,
+                                  suggestionController: bubbleStyle
+                                      ? suggestionController
+                                      : null,
                                   availableHeight: min(
                                     MediaQuery.sizeOf(context).height * .5,
                                     max(0.0, constraints.maxHeight - 90),
@@ -9345,115 +9667,121 @@ class _LiquidGlassConversation extends StatelessWidget {
               ),
             ),
           ),
-          Positioned(
-            left: 12,
-            right: showFullscreenButton ? 116 : 64,
-            top: 0,
-            child: FittedBox(
-              fit: BoxFit.scaleDown,
-              alignment: Alignment.centerLeft,
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  _SuggestionQuotaButton(
-                    language: language,
-                    liquidGlass: liquidGlass,
-                    isSuggesting: isSuggestingReply,
-                    controller: suggestionController,
-                    onPressed:
-                        onWakeCharacter == null &&
-                            voiceControls == null &&
-                            !isReplying &&
-                            !selectingCollection &&
-                            !isSuggestingReply
-                        ? onSuggestReply
-                        : null,
-                  ),
-                  const SizedBox(width: 7),
-                  GlassIconButton(
-                    liquidGlass: liquidGlass,
-                    icon: Icons.undo_rounded,
-                    tooltip: language.text(
-                      '回退上一轮对话、状态与时间',
-                      'Undo last turn, stats and time',
-                      '直前の会話・状態・時刻を戻す',
+          if (!bubbleStyle)
+            Positioned(
+              left: 12,
+              right: showFullscreenButton ? 116 : 64,
+              top: 0,
+              child: FittedBox(
+                fit: BoxFit.scaleDown,
+                alignment: Alignment.centerLeft,
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    _SuggestionQuotaButton(
+                      language: language,
+                      liquidGlass: liquidGlass,
+                      isSuggesting: isSuggestingReply,
+                      controller: suggestionController,
+                      onPressed:
+                          onWakeCharacter == null &&
+                              voiceControls == null &&
+                              !isReplying &&
+                              !selectingCollection &&
+                              !isSuggestingReply
+                          ? onSuggestReply
+                          : null,
                     ),
-                    onPressed: canUndo && !selectingCollection ? onUndo : null,
-                    size: 36,
-                  ),
-                  const SizedBox(width: 7),
-                  GlassIconButton(
-                    liquidGlass: liquidGlass,
-                    icon: isContinuing
-                        ? Icons.autorenew_rounded
-                        : Icons.double_arrow_rounded,
-                    iconWidget: isContinuing
-                        ? const _RotatingIcon(Icons.autorenew_rounded)
-                        : null,
-                    tooltip: language.text(
-                      '让${characterProfile.names.chinese}继续对话',
-                      'Let ${characterProfile.names.english} continue',
-                      '${characterProfile.names.japanese}に会話を続けてもらう',
+                    const SizedBox(width: 7),
+                    GlassIconButton(
+                      liquidGlass: liquidGlass,
+                      icon: Icons.undo_rounded,
+                      tooltip: language.text(
+                        '回退上一轮对话、状态与时间',
+                        'Undo last turn, stats and time',
+                        '直前の会話・状態・時刻を戻す',
+                      ),
+                      onPressed: canUndo && !selectingCollection
+                          ? onUndo
+                          : null,
+                      size: 36,
                     ),
-                    onPressed:
-                        canContinue && !isContinuing && !selectingCollection
-                        ? onContinue
-                        : null,
-                    size: 36,
-                  ),
-                  const SizedBox(width: 7),
-                  GlassIconButton(
-                    liquidGlass: liquidGlass,
-                    icon: Icons.replay_rounded,
-                    iconWidget: regeneratingSpeech
-                        ? const _RotatingIcon(Icons.autorenew_rounded)
-                        : null,
-                    onLongPress:
-                        onWakeCharacter == null &&
-                            !isReplying &&
-                            !selectingCollection &&
-                            messages.any(
-                              (m) => !m.isUser && m.text.trim().isNotEmpty,
-                            )
-                        ? onRegenerateSpeech
-                        : null,
-                    tooltip: language.text(
-                      '点击重播语音，长按重新生成',
-                      'Tap to replay; hold to regenerate speech',
-                      'タップで再生、長押しで音声を再生成',
+                    const SizedBox(width: 7),
+                    GlassIconButton(
+                      liquidGlass: liquidGlass,
+                      icon: isContinuing
+                          ? Icons.autorenew_rounded
+                          : Icons.double_arrow_rounded,
+                      iconWidget: isContinuing
+                          ? const _RotatingIcon(Icons.autorenew_rounded)
+                          : null,
+                      tooltip: language.text(
+                        '让${characterProfile.names.chinese}继续对话',
+                        'Let ${characterProfile.names.english} continue',
+                        '${characterProfile.names.japanese}に会話を続けてもらう',
+                      ),
+                      onPressed:
+                          canContinue && !isContinuing && !selectingCollection
+                          ? onContinue
+                          : null,
+                      size: 36,
                     ),
-                    onPressed: canReplay && !selectingCollection
-                        ? onReplay
-                        : null,
-                    size: 36,
-                  ),
-                  const SizedBox(width: 7),
-                  GlassIconButton(
-                    liquidGlass: liquidGlass,
-                    icon: selectingCollection
-                        ? Icons.bookmark_add_rounded
-                        : Icons.checklist_rounded,
-                    tooltip: language.text(
-                      selectingCollection ? '保存收藏（未选择则退出）' : '多选收藏文字或语音',
-                      selectingCollection
-                          ? 'Save collection (empty selection exits)'
-                          : 'Select text or audio',
-                      selectingCollection ? 'お気に入りを保存（未選択で終了）' : 'テキスト・音声を選択',
+                    const SizedBox(width: 7),
+                    GlassIconButton(
+                      liquidGlass: liquidGlass,
+                      icon: Icons.replay_rounded,
+                      iconWidget: regeneratingSpeech
+                          ? const _RotatingIcon(Icons.autorenew_rounded)
+                          : null,
+                      onLongPress:
+                          onWakeCharacter == null &&
+                              !isReplying &&
+                              !selectingCollection &&
+                              messages.any(
+                                (m) => !m.isUser && m.text.trim().isNotEmpty,
+                              )
+                          ? onRegenerateSpeech
+                          : null,
+                      tooltip: language.text(
+                        '点击重播语音，长按重新生成',
+                        'Tap to replay; hold to regenerate speech',
+                        'タップで再生、長押しで音声を再生成',
+                      ),
+                      onPressed: canReplay && !selectingCollection
+                          ? onReplay
+                          : null,
+                      size: 36,
                     ),
-                    onPressed:
-                        isReplying || savingCollection || voiceControls != null
-                        ? null
-                        : onToggleCollection,
-                    size: 36,
-                  ),
-                ],
+                    const SizedBox(width: 7),
+                    GlassIconButton(
+                      liquidGlass: liquidGlass,
+                      icon: selectingCollection
+                          ? Icons.bookmark_add_rounded
+                          : Icons.checklist_rounded,
+                      tooltip: language.text(
+                        selectingCollection ? '保存收藏（未选择则退出）' : '多选收藏文字或语音',
+                        selectingCollection
+                            ? 'Save collection (empty selection exits)'
+                            : 'Select text or audio',
+                        selectingCollection ? 'お気に入りを保存（未選択で終了）' : 'テキスト・音声を選択',
+                      ),
+                      onPressed:
+                          isReplying ||
+                              savingCollection ||
+                              voiceControls != null
+                          ? null
+                          : onToggleCollection,
+                      size: 36,
+                    ),
+                  ],
+                ),
               ),
             ),
-          ),
           Positioned(
             right: 12,
             top: 0,
             child: Semantics(
+              key: const ValueKey('chat-panel-resize-handle'),
               label: language.text(
                 panelLocked ? '高度已锁定，长按解锁' : '拖动调整高度，长按锁定',
                 panelLocked
@@ -9467,9 +9795,18 @@ class _LiquidGlassConversation extends StatelessWidget {
                 onVerticalDragUpdate: panelLocked
                     ? null
                     : (details) => onDragUpdate(details.delta.dy),
-                child: _GlassDragHandle(
-                  liquidGlass: liquidGlass,
-                  locked: panelLocked,
+                child: Opacity(
+                  key: const ValueKey('chat-panel-resize-opacity'),
+                  opacity: bubbleStyle
+                      ? resizeHandleOpacity(
+                          panelFraction,
+                          fullscreen: conversationFullscreen,
+                        )
+                      : 1,
+                  child: _GlassDragHandle(
+                    liquidGlass: liquidGlass,
+                    locked: panelLocked,
+                  ),
                 ),
               ),
             ),
@@ -9547,6 +9884,9 @@ class _GlassDragHandle extends StatelessWidget {
 
 class _GlassMessageList extends StatelessWidget {
   const _GlassMessageList({
+    required this.bubbleStyle,
+    required this.liquidGlass,
+    required this.onBubbleMenu,
     required this.characterProfile,
     required this.selecting,
     required this.selection,
@@ -9563,6 +9903,9 @@ class _GlassMessageList extends StatelessWidget {
   });
 
   final AppLanguage language;
+  final bool bubbleStyle;
+  final bool liquidGlass;
+  final void Function(ChatMessage, Offset, String?, ChatSpeaker?) onBubbleMenu;
   final CharacterRuntimeProfile characterProfile;
   final void Function(ChatMessage, String, ChatSpeaker) onPlaySpeech;
   final List<ChatMessage> messages;
@@ -9584,14 +9927,52 @@ class _GlassMessageList extends StatelessWidget {
     return ListView.separated(
       controller: controller,
       reverse: true,
-      padding: const EdgeInsets.fromLTRB(14, 32, 14, 8),
+      padding: EdgeInsets.fromLTRB(14, bubbleStyle ? 20 : 32, 14, 8),
       itemCount: visibleMessages.length,
-      separatorBuilder: (_, _) =>
-          Divider(height: 1, color: Colors.white.withValues(alpha: 0.2)),
+      separatorBuilder: (_, _) => bubbleStyle
+          ? const SizedBox(height: 7)
+          : Divider(height: 1, color: Colors.white.withValues(alpha: 0.2)),
       itemBuilder: (context, index) {
         final messageIndex = visibleMessages.length - 1 - index;
         final message = visibleMessages[messageIndex];
         Widget buildMessage() {
+          if (bubbleStyle) {
+            return _BubbleMessageContent(
+              liquidGlass: liquidGlass,
+              key: index == 0 && !message.isUser
+                  ? latestAssistantMessageKey
+                  : null,
+              message: message,
+              language: language,
+              characterProfile: characterProfile,
+              translationOnly: translationOnly,
+              activeSegmentIndex: index == 0
+                  ? activeAssistantSegmentIndex
+                  : null,
+              onMenu: (position, text, speaker) =>
+                  onBubbleMenu(message, position, text, speaker),
+              onTapSpeech: selecting
+                  ? null
+                  : (text, speaker) => onPlaySpeech(message, text, speaker),
+              onTapSelect: !selecting || onSelectionChanged == null
+                  ? null
+                  : () {
+                      final value =
+                          !(selection[message.collectionKey]?.contains(
+                                'text',
+                              ) ??
+                              false);
+                      onSelectionChanged!(message.collectionKey, 'text', value);
+                      onSelectionChanged!(
+                        message.collectionKey,
+                        'voice',
+                        value &&
+                            !message.isUser &&
+                            availableVoices.contains(message.collectionKey),
+                      );
+                    },
+            );
+          }
           if (!message.isUser) {
             return Padding(
               key: index == 0 ? latestAssistantMessageKey : null,
@@ -9722,6 +10103,233 @@ class _GlassMessageList extends StatelessWidget {
           child: content,
         );
       },
+    );
+  }
+}
+
+class _BubbleMessageContent extends StatelessWidget {
+  const _BubbleMessageContent({
+    super.key,
+    required this.message,
+    required this.liquidGlass,
+    required this.language,
+    required this.characterProfile,
+    required this.translationOnly,
+    required this.activeSegmentIndex,
+    required this.onMenu,
+    this.onTapSpeech,
+    this.onTapSelect,
+  });
+
+  final ChatMessage message;
+  final bool liquidGlass;
+  final AppLanguage language;
+  final CharacterRuntimeProfile characterProfile;
+  final bool translationOnly;
+  final int? activeSegmentIndex;
+  final void Function(Offset, String?, ChatSpeaker?) onMenu;
+  final void Function(String, ChatSpeaker)? onTapSpeech;
+  final VoidCallback? onTapSelect;
+
+  Widget _avatar(String? asset) => ClipOval(
+    child: asset == null
+        ? const ColoredBox(
+            color: Color(0xFFD6E8DE),
+            child: Icon(
+              Icons.person_outline_rounded,
+              size: 18,
+              color: Color(0xFF345E50),
+            ),
+          )
+        : Image.asset(
+            asset,
+            fit: BoxFit.cover,
+            errorBuilder: (_, _, _) =>
+                const Icon(Icons.person_outline_rounded, size: 18),
+          ),
+  );
+
+  ({String name, String? avatar}) _speaker(ChatSegment segment) {
+    if (segment.speaker != ChatSpeaker.character) {
+      return (
+        name: language.text(
+          characterProfile.names.chinese,
+          characterProfile.names.english,
+          characterProfile.names.japanese,
+        ),
+        avatar: characterProfile.id == CharacterRuntimeIds.ryza
+            ? 'assets/images/chara_icons/ryza.png'
+            : characterProfile.switchAsset,
+      );
+    }
+    final id = segment.characterId ?? 'unknown';
+    final catalog = CharacterCatalog.current;
+    final profile =
+        characterProfile.id == CharacterRuntimeIds.ryza &&
+            !id.startsWith('sophie_')
+        ? catalog?.profile(id)
+        : null;
+    final contact =
+        characterProfile.id == CharacterRuntimeIds.sophie &&
+            id.startsWith('sophie_')
+        ? npcChatContactsFor(
+            CharacterRuntimeIds.sophie,
+            catalog ?? CharacterCatalog.empty(),
+          ).where((c) => c.id == id).firstOrNull
+        : null;
+    return (
+      name:
+          contact?.names.forLanguage(language) ??
+          profile?.names.forLanguage(language) ??
+          id,
+      avatar: contact?.avatarAsset ?? profile?.avatarAsset,
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final children = <Widget>[];
+    final key = message.collectionKey;
+    final textStyle = TextStyle(
+      color: Theme.of(context).extension<DialogueAppearance>()?.textColor,
+    );
+    final onlyTranslation =
+        translationOnly ||
+        Theme.of(context).extension<DialogueAppearance>()?.translationOnly ==
+            true;
+    if (message.isUser) {
+      final parts = parseUserComposerParts(message.text);
+      if (parts.narration.isNotEmpty) {
+        children.add(
+          ChatNarration(
+            textStyle: textStyle,
+            text: parts.narration,
+            onLongPressStart: (d) => onMenu(d.globalPosition, null, null),
+          ),
+        );
+      }
+      if (parts.speech.isNotEmpty || message.attachments.isNotEmpty) {
+        children.add(
+          ChatBubble(
+            textStyle: textStyle,
+            liquidGlass: liquidGlass,
+            messageKey: '$key:user',
+            isUser: true,
+            speakerLabel: language.text('你', 'You', 'あなた'),
+            avatar: _avatar(null),
+            originalText: parts.speech,
+            onLongPressStart: (d) => onMenu(d.globalPosition, null, null),
+            onTap: onTapSelect,
+            child: message.attachments.isEmpty
+                ? null
+                : _SentAttachmentLabels(
+                    attachments: message.attachments,
+                    glass: Theme.of(context).brightness == Brightness.dark,
+                  ),
+          ),
+        );
+      }
+      if (parts.bottomNarration.isNotEmpty) {
+        children.add(
+          ChatNarration(
+            textStyle: textStyle,
+            text: parts.bottomNarration,
+            onLongPressStart: (d) => onMenu(d.globalPosition, null, null),
+          ),
+        );
+      }
+    } else {
+      final runs = groupAssistantSegmentsForDisplay(
+        message.displayText,
+        defaultPrimaryCharacterId: characterProfile.id,
+      );
+      var offset = 0;
+      for (final run in runs) {
+        if (run.first.speaker == ChatSpeaker.narrator) {
+          children.add(
+            ChatNarration(
+              textStyle: textStyle,
+              text: run.map(displayTextForAssistantSegment).join('\n'),
+              onLongPressStart: (d) => onMenu(d.globalPosition, null, null),
+            ),
+          );
+          offset += run.length;
+          continue;
+        }
+        for (var i = 0; i < run.length;) {
+          final originalIndex = i;
+          final original = run[i];
+          final isOrphanTranslation =
+              original.speaker == ChatSpeaker.translation;
+          final text = isOrphanTranslation
+              ? ''
+              : displayTextForAssistantSegment(original);
+          final translations = <String>[
+            if (isOrphanTranslation) displayTextForAssistantSegment(original),
+          ];
+          i++;
+          while (i < run.length && run[i].speaker == ChatSpeaker.translation) {
+            translations.add(displayTextForAssistantSegment(run[i++]));
+          }
+          final identity = _speaker(original);
+          final canReplay =
+              !isOrphanTranslation &&
+              (original.speaker == ChatSpeaker.ryza ||
+                  isKlaudiaSpeechSegment(
+                    original,
+                    activeCharacterId: characterProfile.id,
+                  ));
+          children.add(
+            ChatBubble(
+              textStyle: textStyle,
+              liquidGlass: liquidGlass,
+              messageKey: '$key:${offset + originalIndex}',
+              isUser: false,
+              speakerLabel: identity.name,
+              avatar: _avatar(identity.avatar),
+              originalText: text,
+              translationText: translations.join('\n'),
+              translationOnly: onlyTranslation,
+              active:
+                  activeSegmentIndex != null &&
+                  activeSegmentIndex! >= offset + originalIndex &&
+                  activeSegmentIndex! < offset + i,
+              onLongPressStart: (d) => onMenu(
+                d.globalPosition,
+                canReplay ? text : null,
+                canReplay ? original.speaker : null,
+              ),
+              onTap:
+                  onTapSelect ??
+                  (canReplay && onTapSpeech != null
+                      ? () => onTapSpeech!(text, original.speaker)
+                      : null),
+            ),
+          );
+        }
+        offset += run.length;
+      }
+      if (message.attachments.isNotEmpty) {
+        children.add(
+          ChatBubble(
+            textStyle: textStyle,
+            liquidGlass: liquidGlass,
+            messageKey: '$key:attachments',
+            isUser: false,
+            originalText: '',
+            onLongPressStart: (d) => onMenu(d.globalPosition, null, null),
+            onTap: onTapSelect,
+            child: _SentAttachmentLabels(
+              attachments: message.attachments,
+              glass: Theme.of(context).brightness == Brightness.dark,
+            ),
+          ),
+        );
+      }
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: children,
     );
   }
 }
@@ -10558,6 +11166,10 @@ class _AttachmentThumbnail extends StatelessWidget {
 
 class _GlassComposer extends StatelessWidget {
   const _GlassComposer({
+    this.bubbleStyle = false,
+    this.onSuggestReply,
+    this.onContinue,
+    this.suggestionController,
     required this.availableHeight,
     required this.language,
     required this.characterProfile,
@@ -10584,6 +11196,10 @@ class _GlassComposer extends StatelessWidget {
   });
 
   final AppLanguage language;
+  final bool bubbleStyle;
+  final VoidCallback? onSuggestReply;
+  final VoidCallback? onContinue;
+  final AppController? suggestionController;
   final CharacterRuntimeProfile characterProfile;
   final TextEditingController controller;
   final TextEditingController narrationController;
@@ -10607,8 +11223,62 @@ class _GlassComposer extends StatelessWidget {
   final double availableHeight;
   final VoidCallback onToggleExpanded;
 
+  Widget _attachmentMenu() => _AttachmentMenuButton(
+    language: language,
+    liquidGlass: liquidGlass,
+    bubbleStyle: bubbleStyle,
+    enabled: !isReplying,
+    onTakePhoto: onTakePhoto,
+    onPickImage: onPickImage,
+    onPickFile: onPickFile,
+    onSuggestReply: onSuggestReply,
+    onContinue: onContinue,
+    suggestionController: suggestionController,
+    continueLabel: language.text(
+      '让${characterProfile.names.chinese}继续对话',
+      'Let ${characterProfile.names.english} continue',
+      '${characterProfile.names.japanese}に会話を続けてもらう',
+    ),
+  );
+
+  Widget _inputSurface(BuildContext context, Widget child) {
+    final content = Padding(
+      padding: const EdgeInsets.only(left: 14),
+      child: child,
+    );
+    if (!bubbleStyle) return content;
+    return ChatGlassSurface(
+      key: const ValueKey('chat-bubble-composer-surface'),
+      liquidGlass: liquidGlass,
+      borderRadius: BorderRadius.circular(24),
+      fallbackColor: Theme.of(context).colorScheme.surfaceContainerHigh
+          .withValues(alpha: .90),
+      child: content,
+    );
+  }
+
+  Widget _sendSurface(BuildContext context, Widget child) {
+    if (!bubbleStyle) return child;
+    return GlassSurface(
+      key: const ValueKey('chat-bubble-send-surface'),
+      liquidGlass: liquidGlass,
+      borderRadius: BorderRadius.circular(23),
+      fallbackColor: Theme.of(context).colorScheme.primary,
+      blurSigma: 10,
+      child: child,
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
+    final dark =
+        !bubbleStyle || Theme.of(context).brightness == Brightness.dark;
+    final colors = Theme.of(context).colorScheme;
+    final glass = GlassStyleScope.resolve(context, fallback: liquidGlass);
+    final foreground = bubbleStyle && !glass
+        ? colors.onSurface
+        : (dark ? Colors.white : const Color(0xFF203830));
+    final sendForeground = bubbleStyle && glass ? foreground : colors.onPrimary;
     return SafeArea(
       top: false,
       bottom: false,
@@ -10623,6 +11293,7 @@ class _GlassComposer extends StatelessWidget {
               glass: true,
             ),
           Row(
+            crossAxisAlignment: CrossAxisAlignment.end,
             children: [
               if (showMicrophone) ...[
                 IconButton(
@@ -10633,7 +11304,7 @@ class _GlassComposer extends StatelessWidget {
                     'Start voice chat',
                     '音声会話を開始',
                   ),
-                  color: Colors.white,
+                  color: foreground,
                   icon: const Icon(Icons.mic_none_rounded),
                 ),
                 const SizedBox(width: 4),
@@ -10655,92 +11326,110 @@ class _GlassComposer extends StatelessWidget {
                     minHeight: 46,
                     maxHeight: splitNarration ? double.infinity : 96,
                   ),
-                  padding: const EdgeInsets.only(left: 14),
-                  decoration: BoxDecoration(
-                    color: Colors.white.withValues(alpha: 0.12),
-                    borderRadius: BorderRadius.circular(18),
-                    border: Border.all(
-                      color: Colors.white.withValues(alpha: 0.28),
-                      width: 0,
-                    ),
-                  ),
-                  child: splitNarration
-                      ? NarrationComposerFields(
-                          controllers: [
-                            narrationController,
-                            controller,
-                            bottomNarrationController,
-                          ],
-                          hints: [
-                            language.text(
-                              '旁白（环境、动作、神态）',
-                              'Opening narration',
-                              '上部ナレーション',
+                  decoration: bubbleStyle
+                      ? null
+                      : BoxDecoration(
+                          color: Colors.white.withValues(alpha: 0.12),
+                          borderRadius: BorderRadius.circular(18),
+                          border: Border.all(
+                            color: foreground.withValues(
+                              alpha: bubbleStyle ? 0.12 : 0.28,
                             ),
-                            language.text(
-                              '你想说的话',
-                              'What you want to say',
-                              'あなたが話す内容',
-                            ),
-                            language.text(
-                              '下方旁白（反应、收尾、气氛）',
-                              'Closing narration',
-                              '下部ナレーション',
-                            ),
-                          ],
-                          expanded: expanded,
-                          onToggleExpanded: onToggleExpanded,
-                          expandLabel: expanded
-                              ? language.text(
-                                  '收起输入框',
-                                  'Collapse input',
-                                  '入力欄を縮小',
-                                )
-                              : language.text(
-                                  '放大输入框',
-                                  'Enlarge input',
-                                  '入力欄を拡大',
-                                ),
-                          readOnly: isReplying && !unlockInputWhileReplying,
-                        )
-                      : TextField(
-                          controller: controller,
-                          readOnly: isReplying && !unlockInputWhileReplying,
-                          minLines: 1,
-                          maxLines: 3,
-                          textAlignVertical: TextAlignVertical.center,
-                          textInputAction: TextInputAction.send,
-                          onSubmitted: isReplying ? null : onSubmitted,
-                          style: const TextStyle(color: Colors.white),
-                          cursorColor: Colors.white,
-                          decoration: InputDecoration(
-                            isDense: true,
-                            contentPadding: const EdgeInsets.symmetric(
-                              vertical: 13,
-                            ),
-                            hintText: !isReplying
-                                ? language.text(
-                                    '和${characterProfile.names.chinese}说点什么…',
-                                    'Say something to ${characterProfile.names.english}…',
-                                    '${characterProfile.names.japanese}に話しかける…',
-                                  )
-                                : language.text(
-                                    '${characterProfile.names.chinese}正在回复…',
-                                    '${characterProfile.names.english} is replying…',
-                                    '${characterProfile.names.japanese}が返信中…',
-                                  ),
-                            hintStyle: const TextStyle(color: Colors.white60),
-                            border: InputBorder.none,
-                            suffixIcon: _AttachmentMenuButton(
-                              language: language,
-                              liquidGlass: liquidGlass,
-                              enabled: !isReplying,
-                              onTakePhoto: onTakePhoto,
-                              onPickImage: onPickImage,
-                              onPickFile: onPickFile,
-                            ),
+                            width: 0,
                           ),
                         ),
+                  child: _inputSurface(
+                    context,
+                    splitNarration
+                        ? Stack(
+                            children: [
+                              Padding(
+                                padding: EdgeInsets.only(
+                                  right: bubbleStyle ? 44 : 0,
+                                ),
+                                child: NarrationComposerFields(
+                                  foregroundColor: foreground,
+                                  controllers: [
+                                    narrationController,
+                                    controller,
+                                    bottomNarrationController,
+                                  ],
+                                  hints: [
+                                    language.text(
+                                      '旁白（环境、动作、神态）',
+                                      'Opening narration',
+                                      '上部ナレーション',
+                                    ),
+                                    language.text(
+                                      '你想说的话',
+                                      'What you want to say',
+                                      'あなたが話す内容',
+                                    ),
+                                    language.text(
+                                      '下方旁白（反应、收尾、气氛）',
+                                      'Closing narration',
+                                      '下部ナレーション',
+                                    ),
+                                  ],
+                                  expanded: expanded,
+                                  onToggleExpanded: onToggleExpanded,
+                                  expandLabel: expanded
+                                      ? language.text(
+                                          '收起输入框',
+                                          'Collapse input',
+                                          '入力欄を縮小',
+                                        )
+                                      : language.text(
+                                          '放大输入框',
+                                          'Enlarge input',
+                                          '入力欄を拡大',
+                                        ),
+                                  readOnly:
+                                      isReplying && !unlockInputWhileReplying,
+                                ),
+                              ),
+                              if (bubbleStyle)
+                                Positioned(
+                                  right: 0,
+                                  bottom: 0,
+                                  child: _attachmentMenu(),
+                                ),
+                            ],
+                          )
+                        : TextField(
+                            controller: controller,
+                            readOnly: isReplying && !unlockInputWhileReplying,
+                            minLines: 1,
+                            maxLines: 3,
+                            textAlignVertical: TextAlignVertical.center,
+                            textInputAction: TextInputAction.send,
+                            onSubmitted: isReplying ? null : onSubmitted,
+                            style: TextStyle(color: foreground),
+                            cursorColor: foreground,
+                            decoration: InputDecoration(
+                              isDense: true,
+                              contentPadding: const EdgeInsets.symmetric(
+                                vertical: 13,
+                              ),
+                              hintText: !isReplying
+                                  ? language.text(
+                                      '和${characterProfile.names.chinese}说点什么…',
+                                      'Say something to ${characterProfile.names.english}…',
+                                      '${characterProfile.names.japanese}に話しかける…',
+                                    )
+                                  : language.text(
+                                      '${characterProfile.names.chinese}正在回复…',
+                                      '${characterProfile.names.english} is replying…',
+                                      '${characterProfile.names.japanese}が返信中…',
+                                    ),
+                              hintStyle: TextStyle(
+                                color: foreground.withValues(alpha: .55),
+                              ),
+                              border: InputBorder.none,
+                              suffixIcon: _attachmentMenu(),
+                            ),
+                          ),
+                  ),
                 ),
               ),
               const SizedBox(width: 8),
@@ -10759,29 +11448,36 @@ class _GlassComposer extends StatelessWidget {
                       ),
                 child: GestureDetector(
                   onLongPress: onToggleNarration,
-                  child: IconButton.filled(
-                    key: const ValueKey('chat-send-button'),
-                    onPressed: isReplying ? onCancel : onSend,
-                    style: IconButton.styleFrom(
-                      fixedSize: const Size.square(46),
-                      backgroundColor: Theme.of(context).colorScheme.primary,
-                      foregroundColor: Theme.of(context).colorScheme.onPrimary,
-                    ),
-                    icon: isReplying
-                        ? Stack(
-                            alignment: Alignment.center,
-                            children: [
-                              const SizedBox.square(
-                                dimension: 27,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2,
-                                  color: Colors.white70,
+                  child: _sendSurface(
+                    context,
+                    IconButton.filled(
+                      key: const ValueKey('chat-send-button'),
+                      onPressed: isReplying ? onCancel : onSend,
+                      style: IconButton.styleFrom(
+                        fixedSize: const Size.square(46),
+                        backgroundColor: bubbleStyle
+                            ? Colors.transparent
+                            : Theme.of(context).colorScheme.primary,
+                        foregroundColor: sendForeground,
+                      ),
+                      icon: isReplying
+                          ? Stack(
+                              alignment: Alignment.center,
+                              children: [
+                                SizedBox.square(
+                                  dimension: 27,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                    color: sendForeground.withValues(
+                                      alpha: .70,
+                                    ),
+                                  ),
                                 ),
-                              ),
-                              const Icon(Icons.close_rounded, size: 19),
-                            ],
-                          )
-                        : const Icon(Icons.arrow_upward_rounded),
+                                const Icon(Icons.close_rounded, size: 19),
+                              ],
+                            )
+                          : const Icon(Icons.arrow_upward_rounded),
+                    ),
                   ),
                 ),
               ),
@@ -10795,6 +11491,11 @@ class _GlassComposer extends StatelessWidget {
 
 class _AttachmentMenuButton extends StatefulWidget {
   const _AttachmentMenuButton({
+    this.bubbleStyle = false,
+    this.onSuggestReply,
+    this.onContinue,
+    this.suggestionController,
+    this.continueLabel,
     required this.language,
     required this.liquidGlass,
     required this.enabled,
@@ -10804,6 +11505,11 @@ class _AttachmentMenuButton extends StatefulWidget {
   });
 
   final AppLanguage language;
+  final bool bubbleStyle;
+  final VoidCallback? onSuggestReply;
+  final VoidCallback? onContinue;
+  final AppController? suggestionController;
+  final String? continueLabel;
   final bool liquidGlass;
   final bool enabled;
   final VoidCallback onTakePhoto;
@@ -10814,11 +11520,25 @@ class _AttachmentMenuButton extends StatefulWidget {
   State<_AttachmentMenuButton> createState() => _AttachmentMenuButtonState();
 }
 
-class _AttachmentMenuButtonState extends State<_AttachmentMenuButton> {
+class _AttachmentMenuButtonState extends State<_AttachmentMenuButton>
+    with WidgetsBindingObserver {
   final _layerLink = LayerLink();
   OverlayEntry? _overlayEntry;
 
   bool get _expanded => _overlayEntry != null;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void didChangeMetrics() {
+    // Width and available space are measured at open time. Reopen at the new
+    // anchor after a keyboard, rotation or window-size change.
+    if (_expanded) _close();
+  }
 
   void _toggle() {
     if (_expanded) {
@@ -10826,6 +11546,12 @@ class _AttachmentMenuButtonState extends State<_AttachmentMenuButton> {
       return;
     }
     if (!widget.enabled) return;
+    final box = context.findRenderObject()! as RenderBox;
+    final topRight = box.localToGlobal(Offset(box.size.width, 0));
+    final safeTop = MediaQuery.paddingOf(context).top;
+    final safeLeft = MediaQuery.paddingOf(context).left;
+    final menuWidth = min(240.0, max(1.0, topRight.dx - safeLeft - 8));
+    final menuHeight = max(1.0, topRight.dy - safeTop - 8);
     _overlayEntry = OverlayEntry(
       builder: (overlayContext) => Stack(
         children: [
@@ -10843,33 +11569,75 @@ class _AttachmentMenuButtonState extends State<_AttachmentMenuButton> {
             offset: const Offset(0, -8),
             child: Material(
               type: MaterialType.transparency,
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.end,
-                children: [
-                  if (AppPlatformCapabilities.supportsPhotoCapture) ...[
-                    _AttachmentMenuOption(
-                      liquidGlass: widget.liquidGlass,
-                      icon: Icons.camera_alt_outlined,
-                      label: widget.language.text('拍照', 'Camera', '撮影'),
-                      onPressed: () => _select(widget.onTakePhoto),
-                    ),
-                    const SizedBox(height: 6),
-                  ],
-                  _AttachmentMenuOption(
-                    liquidGlass: widget.liquidGlass,
-                    icon: Icons.image_outlined,
-                    label: widget.language.text('图片', 'Image', '画像'),
-                    onPressed: () => _select(widget.onPickImage),
+              child: ConstrainedBox(
+                constraints: BoxConstraints(
+                  maxWidth: menuWidth,
+                  maxHeight: menuHeight,
+                ),
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      if (AppPlatformCapabilities.supportsPhotoCapture) ...[
+                        _AttachmentMenuOption(
+                          liquidGlass: widget.liquidGlass,
+                          icon: Icons.camera_alt_outlined,
+                          label: widget.language.text('拍照', 'Camera', '撮影'),
+                          onPressed: () => _select(widget.onTakePhoto),
+                        ),
+                        const SizedBox(height: 6),
+                      ],
+                      _AttachmentMenuOption(
+                        liquidGlass: widget.liquidGlass,
+                        icon: Icons.image_outlined,
+                        label: widget.language.text('图片', 'Image', '画像'),
+                        onPressed: () => _select(widget.onPickImage),
+                      ),
+                      const SizedBox(height: 6),
+                      _AttachmentMenuOption(
+                        liquidGlass: widget.liquidGlass,
+                        icon: Icons.description_outlined,
+                        label: widget.language.text('文件', 'File', 'ファイル'),
+                        onPressed: () => _select(widget.onPickFile),
+                      ),
+                      if (widget.bubbleStyle) ...[
+                        const SizedBox(height: 6),
+                        _AttachmentMenuOption(
+                          liquidGlass: widget.liquidGlass,
+                          icon: Icons.auto_awesome_outlined,
+                          label:
+                              widget.language.text(
+                                '生成建议回复',
+                                'Suggest a reply',
+                                '返信案を作成',
+                              ) +
+                              (widget.suggestionController == null
+                                  ? ''
+                                  : ' (${widget.suggestionController!.suggestionUsesRemaining()})'),
+                          onPressed: widget.onSuggestReply == null
+                              ? null
+                              : () => _select(widget.onSuggestReply!),
+                        ),
+                        const SizedBox(height: 6),
+                        _AttachmentMenuOption(
+                          liquidGlass: widget.liquidGlass,
+                          icon: Icons.double_arrow_rounded,
+                          label:
+                              widget.continueLabel ??
+                              widget.language.text(
+                                '继续对话',
+                                'Continue conversation',
+                                '会話を続ける',
+                              ),
+                          onPressed: widget.onContinue == null
+                              ? null
+                              : () => _select(widget.onContinue!),
+                        ),
+                      ],
+                    ],
                   ),
-                  const SizedBox(height: 6),
-                  _AttachmentMenuOption(
-                    liquidGlass: widget.liquidGlass,
-                    icon: Icons.description_outlined,
-                    label: widget.language.text('文件', 'File', 'ファイル'),
-                    onPressed: () => _select(widget.onPickFile),
-                  ),
-                ],
+                ),
               ),
             ),
           ),
@@ -10899,6 +11667,7 @@ class _AttachmentMenuButtonState extends State<_AttachmentMenuButton> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _overlayEntry?.remove();
     _overlayEntry = null;
     super.dispose();
@@ -10917,7 +11686,14 @@ class _AttachmentMenuButtonState extends State<_AttachmentMenuButton> {
                 '添付メニューを閉じる',
               )
             : widget.language.text('添加附件', 'Add attachment', '添付を追加'),
-        color: Colors.white,
+        color:
+            widget.bubbleStyle &&
+                !GlassStyleScope.resolve(context, fallback: widget.liquidGlass)
+            ? Theme.of(context).colorScheme.onSurface
+            : widget.bubbleStyle &&
+                  Theme.of(context).brightness != Brightness.dark
+            ? const Color(0xFF203830)
+            : Colors.white,
         icon: AnimatedSwitcher(
           duration: const Duration(milliseconds: 180),
           child: Icon(
@@ -10942,7 +11718,7 @@ class _AttachmentMenuOption extends StatelessWidget {
   final bool liquidGlass;
   final IconData icon;
   final String label;
-  final VoidCallback onPressed;
+  final VoidCallback? onPressed;
 
   @override
   Widget build(BuildContext context) {
@@ -10955,14 +11731,27 @@ class _AttachmentMenuOption extends StatelessWidget {
         borderRadius: BorderRadius.circular(20),
         onTap: onPressed,
         child: SizedBox(
-          width: 116,
-          height: 40,
+          width: min(240, MediaQuery.sizeOf(context).width - 32),
+          height: 44,
           child: Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Icon(icon, color: Colors.white, size: 19),
+              Icon(
+                icon,
+                color: onPressed == null ? Colors.white38 : Colors.white,
+                size: 19,
+              ),
               const SizedBox(width: 8),
-              Text(label, style: const TextStyle(color: Colors.white)),
+              Flexible(
+                child: Text(
+                  label,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: onPressed == null ? Colors.white38 : Colors.white,
+                  ),
+                ),
+              ),
             ],
           ),
         ),

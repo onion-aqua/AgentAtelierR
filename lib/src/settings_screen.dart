@@ -410,6 +410,22 @@ class SettingsScreenState extends State<SettingsScreen> {
                   onTap: () => _showLanguageSettings(context),
                 ),
                 SwitchListTile(
+                  key: const ValueKey('settings-chat-bubble-style'),
+                  value: controller.chatBubbleStyle,
+                  onChanged: controller.setChatBubbleStyle,
+                  secondary: const Icon(Icons.chat_bubble_outline_rounded),
+                  title: Text(
+                    language.text('聊天框样式', 'Chat bubble style', 'チャット表示スタイル'),
+                  ),
+                  subtitle: Text(
+                    language.text(
+                      '开启气泡对话，长按消息显示操作菜单',
+                      'Use chat bubbles; hold a message for actions',
+                      '吹き出し表示に切り替え、長押しで操作メニューを表示',
+                    ),
+                  ),
+                ),
+                SwitchListTile(
                   value: controller.liquidGlassChatUi,
                   onChanged: controller.setLiquidGlassChatUi,
                   secondary: const Icon(Icons.blur_on_rounded),
@@ -1425,9 +1441,9 @@ class SettingsScreenState extends State<SettingsScreen> {
                   title: const Text('AgentAtelierR'),
                   subtitle: Text(
                     language.text(
-                      '版本 1.0.4.6',
-                      'Version 1.0.4.6',
-                      'バージョン 1.0.4.6',
+                      '版本 1.0.4.7',
+                      'Version 1.0.4.7',
+                      'バージョン 1.0.4.7',
                     ),
                   ),
                 ),

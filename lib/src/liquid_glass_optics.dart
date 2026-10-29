@@ -12,6 +12,7 @@ class LiquidGlassOptics extends StatelessWidget {
     required this.dark,
     required this.blurSigma,
     required this.filterBackdrop,
+    this.backdropGroupKey,
     required this.child,
   });
 
@@ -20,10 +21,12 @@ class LiquidGlassOptics extends StatelessWidget {
   final bool dark;
   final double blurSigma;
   final bool filterBackdrop;
+  final BackdropKey? backdropGroupKey;
   final Widget child;
 
   @override
   Widget build(BuildContext context) => BackdropFilter(
+    backdropGroupKey: backdropGroupKey,
     enabled: enabled && filterBackdrop,
     filter: ui.ImageFilter.blur(
       sigmaX: (blurSigma * .08).clamp(0.0, 1.2),

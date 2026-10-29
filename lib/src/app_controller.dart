@@ -1567,6 +1567,7 @@ class AppController extends ChangeNotifier {
   bool ambientEnabled = false;
   double ambientVolume = 0.45;
   bool liquidGlassChatUi = false;
+  bool chatBubbleStyle = false;
   bool pauseCharacterAnimationOnFullscreenPages = true;
   bool gazeTrackingEnabled = true;
   bool showMicrophoneButton = false;
@@ -1985,6 +1986,7 @@ class AppController extends ChangeNotifier {
     ambientEnabled = _preferences.getBool('ambient_enabled') ?? false;
     ambientVolume = _preferences.getDouble('ambient_volume') ?? 0.45;
     liquidGlassChatUi = _preferences.getBool('liquid_glass_chat_ui') ?? false;
+    chatBubbleStyle = _preferences.getBool('chat_bubble_style') ?? false;
     pauseCharacterAnimationOnFullscreenPages =
         _preferences.getBool('pause_character_animation_on_fullscreen_pages') ??
         true;
@@ -4871,6 +4873,7 @@ $japanesePunctuationRule
     'ambientEnabled': ambientEnabled,
     'ambientVolume': ambientVolume,
     'liquidGlassChatUi': liquidGlassChatUi,
+    'chatBubbleStyle': chatBubbleStyle,
     'pauseCharacterAnimationOnFullscreenPages':
         pauseCharacterAnimationOnFullscreenPages,
     'showMicrophoneButton': showMicrophoneButton,
@@ -5706,6 +5709,7 @@ $japanesePunctuationRule
     ambientEnabled = data['ambientEnabled'] as bool? ?? false;
     ambientVolume = (data['ambientVolume'] as num?)?.toDouble() ?? 0.45;
     liquidGlassChatUi = data['liquidGlassChatUi'] as bool? ?? false;
+    chatBubbleStyle = data['chatBubbleStyle'] as bool? ?? false;
     pauseCharacterAnimationOnFullscreenPages =
         data['pauseCharacterAnimationOnFullscreenPages'] as bool? ?? true;
     showMicrophoneButton = data['showMicrophoneButton'] as bool? ?? false;
@@ -6850,6 +6854,11 @@ $japanesePunctuationRule
     _changed();
   }
 
+  void setChatBubbleStyle(bool value) {
+    chatBubbleStyle = value;
+    _changed();
+  }
+
   void setPauseCharacterAnimationOnFullscreenPages(bool value) {
     pauseCharacterAnimationOnFullscreenPages = value;
     _changed();
@@ -7409,6 +7418,7 @@ $japanesePunctuationRule
       _preferences.setBool('ambient_enabled', ambientEnabled),
       _preferences.setDouble('ambient_volume', ambientVolume),
       _preferences.setBool('liquid_glass_chat_ui', liquidGlassChatUi),
+      _preferences.setBool('chat_bubble_style', chatBubbleStyle),
       _preferences.setBool(
         'pause_character_animation_on_fullscreen_pages',
         pauseCharacterAnimationOnFullscreenPages,

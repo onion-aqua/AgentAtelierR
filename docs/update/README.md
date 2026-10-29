@@ -21,8 +21,8 @@ bootstrap publication, and is not a reservation or a published release.
 
 The isolated `device-test` channel now has a genuine bootstrap and device
 observations; see [the 2026-10-19 device test record](DEVICE_TEST_2026-10-19.md).
-Production `stable` is published. Version 1.0.4.6 uses release sequence 64 and
-Android build 61. Gitee and GitHub Git mirrors carry relative channel pointers
+Production `stable` is published. Version 1.0.4.7 uses release sequence 65 and
+Android build 62. Gitee and GitHub Git mirrors carry relative channel pointers
 and notes; signed manifests and immutable artifacts are published at the
 configured self-hosted origin. Gitee Git publication does not imply Gitee
 Release API or attachment publication.

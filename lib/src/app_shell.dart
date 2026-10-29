@@ -618,6 +618,9 @@ class _AppShellState extends State<AppShell>
                                 left: MediaQuery.paddingOf(context).left + 8,
                                 top: safeTop + 8,
                                 child: GlassIconButton(
+                                  key: const ValueKey(
+                                    'chat-ui-visibility-toggle',
+                                  ),
                                   liquidGlass:
                                       widget.controller.liquidGlassChatUi,
                                   size: 48,
