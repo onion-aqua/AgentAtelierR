@@ -23,6 +23,7 @@ import 'llm_dialogue_signal.dart';
 import 'mimo_tts_config.dart';
 import 'qwen_tts_config.dart';
 import 'fish_drama3_tags.dart';
+import 'fish_mcp_sentence_timing.dart';
 import 'fish_s2_tags.dart';
 import 'fish_speech_speed_defaults.dart';
 import 'memory_timeline.dart';
@@ -1482,6 +1483,7 @@ class AppController extends ChangeNotifier {
   String fishAudioLatency = 'normal';
   double fishAudioSpeed = FishSpeechSpeedDefaults.defaultForProvider(null);
   String fishMcpModel = '';
+  int fishMcpSentencePauseMs = 220;
   bool get fishMcpUsesDrama3 =>
       ttsProvider == TtsProvider.fishAudioMcp &&
       isFishDrama3Model(fishMcpModel);
@@ -1710,7 +1712,8 @@ class AppController extends ChangeNotifier {
                   message.text.isNotEmpty || message.attachments.isNotEmpty,
             )
             .toList();
-      } on FormatException {
+      } on Object {
+        RuntimeLog.instance.warning('ChatPersistence', '对话缓存格式无效，使用初始会话');
         messages = [_initialMessage];
       }
     }
@@ -1821,6 +1824,10 @@ class AppController extends ChangeNotifier {
         _preferences.getDouble('fish_audio_speed') ??
         FishSpeechSpeedDefaults.defaultForProvider(ttsProvider.name);
     fishMcpModel = _preferences.getString('fish_mcp_model') ?? '';
+    final savedFishMcpPause = _preferences.get('fish_mcp_sentence_pause_ms');
+    fishMcpSentencePauseMs = clampFishMcpSentencePauseMs(
+      savedFishMcpPause is num ? savedFishMcpPause : null,
+    );
     fishMcpVoice = _preferences.getString('fish_mcp_voice') ?? '';
     fishMcpAsmrVoice = _preferences.getString('fish_mcp_asmr_voice') ?? '';
     fishMcpAutoFallback =
@@ -4656,6 +4663,7 @@ $japanesePunctuationRule
     required String voice,
     String? asmrVoice,
     double? speed,
+    num? sentencePauseMs,
     required bool autoFallback,
   }) {
     fishMcpModel = model.trim();
@@ -4663,6 +4671,9 @@ $japanesePunctuationRule
     if (asmrVoice != null) fishMcpAsmrVoice = asmrVoice.trim();
     if (speed != null && speed.isFinite) {
       fishAudioSpeed = speed.clamp(0.5, 2.0);
+    }
+    if (sentencePauseMs != null) {
+      fishMcpSentencePauseMs = clampFishMcpSentencePauseMs(sentencePauseMs);
     }
     fishMcpAutoFallback = autoFallback;
     ttsProvider = TtsProvider.fishAudioMcp;
@@ -4946,6 +4957,7 @@ $japanesePunctuationRule
       'fishAudioLatency': fishAudioLatency,
       'fishAudioSpeed': fishAudioSpeed,
       'fishMcpModel': fishMcpModel,
+      'fishMcpSentencePauseMs': fishMcpSentencePauseMs,
       'fishMcpVoice': fishMcpVoice,
       'fishMcpAsmrVoice': fishMcpAsmrVoice,
       'fishMcpAutoFallback': fishMcpAutoFallback,
@@ -5064,14 +5076,17 @@ $japanesePunctuationRule
     }
   }
 
-  String get _characterSaveSlotPrefix =>
-      activeCharacterId == CharacterRuntimeIds.ryza
+  String _saveSlotPrefixFor(String characterId) =>
+      characterId == CharacterRuntimeIds.ryza
       ? _localSaveSlotPrefix
-      : 'local_save_slot_${activeCharacterId}_';
-  String get _characterActiveSaveSlotKey =>
-      activeCharacterId == CharacterRuntimeIds.ryza
+      : 'local_save_slot_${characterId}_';
+  String get _characterSaveSlotPrefix => _saveSlotPrefixFor(activeCharacterId);
+  String _activeSaveSlotKeyFor(String characterId) =>
+      characterId == CharacterRuntimeIds.ryza
       ? _activeLocalSaveSlotKey
-      : 'active_local_save_slot_$activeCharacterId';
+      : 'active_local_save_slot_$characterId';
+  String get _characterActiveSaveSlotKey =>
+      _activeSaveSlotKeyFor(activeCharacterId);
 
   /// The slot currently selected by the player. This is application metadata,
   /// so it is intentionally kept outside each game snapshot.
@@ -5082,15 +5097,21 @@ $japanesePunctuationRule
         : null;
   }
 
-  Future<void> _setActiveLocalSaveSlot(int? index) async {
+  Future<void> _setActiveLocalSaveSlot(
+    int? index, {
+    String? characterId,
+  }) async {
+    final key = _activeSaveSlotKeyFor(characterId ?? activeCharacterId);
     if (index == null) {
-      await _preferences.remove(_characterActiveSaveSlotKey);
+      if (!await _preferences.remove(key)) {
+        throw StateError('活动存档槽位删除失败');
+      }
       return;
     }
     if (index < 0 || index >= localSaveSlotCount) {
       throw RangeError.range(index, 0, localSaveSlotCount - 1, 'index');
     }
-    if (!await _preferences.setInt(_characterActiveSaveSlotKey, index)) {
+    if (!await _preferences.setInt(key, index)) {
       throw StateError('活动存档槽位写入失败');
     }
   }
@@ -5152,7 +5173,7 @@ $japanesePunctuationRule
         jsonEncode(data),
       );
       if (!saved) throw StateError('存档写入失败');
-      await _setActiveLocalSaveSlot(index);
+      await _setActiveLocalSaveSlot(index, characterId: characterId);
       notifyListeners();
     });
   }
@@ -5246,27 +5267,35 @@ $japanesePunctuationRule
     if (index < 0 || index >= localSaveSlotCount) {
       throw RangeError.range(index, 0, localSaveSlotCount - 1, 'index');
     }
-    final raw = _preferences.getString('$_characterSaveSlotPrefix$index');
-    if (raw == null || raw.isEmpty) throw const FormatException('存档槽位为空');
-    final data = jsonDecode(raw) as Map<String, dynamic>;
-    if (data['format'] != 'agent-atelier-r-save-slot' ||
-        data['version'] != 1 ||
-        data['snapshot'] is! Map<String, dynamic>) {
-      throw const FormatException('存档格式无效');
-    }
-    await _importGameState(data['snapshot'] as Map<String, dynamic>);
-    final snapshot = data['snapshot'] as Map<String, dynamic>;
-    if (!snapshot.containsKey('virtualPhoneCarrier')) {
-      snapshot['virtualPhoneCarrier'] = virtualPhoneCarrier.toJson();
-      if (!await _preferences.setString(
-        '$_characterSaveSlotPrefix$index',
-        jsonEncode(data),
-      )) {
-        throw StateError('旧存档运营商信息写入失败');
+    final characterId = activeCharacterId;
+    final switchGeneration = _characterSwitchGeneration;
+    final key = '${_saveSlotPrefixFor(characterId)}$index';
+    await _serializeLocalSlotWrite(() async {
+      if (activeCharacterId != characterId ||
+          _characterSwitchGeneration != switchGeneration) {
+        throw StateError('人物已切换，请重新读取存档');
       }
-    }
-    await _setActiveLocalSaveSlot(index);
-    notifyListeners();
+      final raw = _preferences.getString(key);
+      if (raw == null || raw.isEmpty) throw const FormatException('存档槽位为空');
+      final data = jsonDecode(raw) as Map<String, dynamic>;
+      if (data['format'] != 'agent-atelier-r-save-slot' ||
+          data['version'] != 1 ||
+          data['snapshot'] is! Map<String, dynamic>) {
+        throw const FormatException('存档格式无效');
+      }
+      final restoredCarrier = await _importGameState(
+        data['snapshot'] as Map<String, dynamic>,
+      );
+      final snapshot = data['snapshot'] as Map<String, dynamic>;
+      if (!snapshot.containsKey('virtualPhoneCarrier')) {
+        snapshot['virtualPhoneCarrier'] = restoredCarrier.toJson();
+        if (!await _preferences.setString(key, jsonEncode(data))) {
+          throw StateError('旧存档运营商信息写入失败');
+        }
+      }
+      await _setActiveLocalSaveSlot(index, characterId: characterId);
+      notifyListeners();
+    });
   }
 
   Map<String, dynamic> exportLocalSlot(
@@ -5284,6 +5313,16 @@ $japanesePunctuationRule
     data['snapshot'] = snapshot;
     if (!includeConversationHistory) {
       snapshot['messages'] = <Map<String, dynamic>>[];
+      // The RAG archive contains full user/assistant transcripts, including
+      // turns already trimmed from the visible message list. Omitting history
+      // must omit those transcripts too; curated memory summaries stay intact.
+      snapshot['ragMemoryArchive'] = RagMemoryArchive(
+        characterId: normalizeCharacterRuntimeId(
+          snapshot['characterId'] as String?,
+        ),
+      ).toJson();
+      snapshot['recentMemoryCheckpoints'] = <Map<String, Object>>[];
+      snapshot['lastRecentMemoryMessageId'] = null;
       final npcState = NpcChatState.fromJson(snapshot['npcChats']);
       snapshot['npcChats'] = NpcChatState(contactIds: npcState.contactIds)
           .toJson();
@@ -5296,15 +5335,21 @@ $japanesePunctuationRule
   }
 
   Future<void> renameLocalSlot(int index, String name) async {
-    final data = exportLocalSlot(index);
-    data['name'] = name.trim().substring(0, name.trim().length.clamp(0, 60));
-    if (!await _preferences.setString(
-      '$_characterSaveSlotPrefix$index',
-      jsonEncode(data),
-    )) {
-      throw StateError('存档写入失败');
-    }
-    notifyListeners();
+    final characterId = activeCharacterId;
+    await _serializeLocalSlotWrite(() async {
+      if (activeCharacterId != characterId) {
+        throw StateError('人物已切换，请重新修改存档名称');
+      }
+      final data = exportLocalSlot(index);
+      data['name'] = name.trim().substring(0, name.trim().length.clamp(0, 60));
+      if (!await _preferences.setString(
+        '${_saveSlotPrefixFor(characterId)}$index',
+        jsonEncode(data),
+      )) {
+        throw StateError('存档写入失败');
+      }
+      notifyListeners();
+    });
   }
 
   Future<void> importLocalSlot(int index, Map<String, dynamic> data) async {
@@ -5353,12 +5398,14 @@ $japanesePunctuationRule
               ),
         'snapshot': snapshot,
       };
-      if (!await _preferences.setString(
-        '$_characterSaveSlotPrefix$index',
-        jsonEncode(normalized),
-      )) {
-        throw StateError('存档写入失败');
-      }
+      await _serializeLocalSlotWrite(() async {
+        if (!await _preferences.setString(
+          '${_saveSlotPrefixFor(importedCharacter)}$index',
+          jsonEncode(normalized),
+        )) {
+          throw StateError('存档写入失败');
+        }
+      });
     } finally {
       candidate.dispose();
     }
@@ -5369,14 +5416,17 @@ $japanesePunctuationRule
     if (index < 0 || index >= localSaveSlotCount) {
       throw RangeError.range(index, 0, localSaveSlotCount - 1, 'index');
     }
-    final removed = await _preferences.remove(
-      '$_characterSaveSlotPrefix$index',
-    );
-    if (!removed) throw StateError('存档删除失败');
-    if (activeLocalSaveSlot == index) {
-      await _setActiveLocalSaveSlot(null);
-    }
-    notifyListeners();
+    final characterId = activeCharacterId;
+    await _serializeLocalSlotWrite(() async {
+      final removed = await _preferences.remove(
+        '${_saveSlotPrefixFor(characterId)}$index',
+      );
+      if (!removed) throw StateError('存档删除失败');
+      if (_preferences.getInt(_activeSaveSlotKeyFor(characterId)) == index) {
+        await _setActiveLocalSaveSlot(null, characterId: characterId);
+      }
+      notifyListeners();
+    });
   }
 
   Future<void> importData(Map<String, dynamic> data) async {
@@ -5430,20 +5480,37 @@ $japanesePunctuationRule
     _changed();
   }
 
-  Future<void> _importGameState(Map<String, dynamic> data) async {
+  Future<VirtualPhoneCarrier> _importGameState(
+    Map<String, dynamic> data,
+  ) async {
+    final characterId = activeCharacterId;
+    final switchGeneration = _characterSwitchGeneration;
+    final revision = dataRevision;
     final candidate = AppController._(
       _preferences,
       characterCatalog,
       worldTravelCatalog,
     );
-    candidate._applyImportedData(exportData());
-    candidate._applyGameState(data);
-    await candidate._hydrateMessageAttachments();
-
-    _advanceDataRevision();
-    _applyGameState(data);
-    messages = candidate.messages;
-    _changed();
+    try {
+      candidate._applyImportedData(exportData());
+      candidate._applyGameState(data);
+      await candidate._hydrateMessageAttachments();
+      // A save with thumbnails may finish after the user leaves this page and
+      // switches character/save. Do not invalidate or mutate that new session.
+      if (activeCharacterId != characterId ||
+          _characterSwitchGeneration != switchGeneration ||
+          dataRevision != revision) {
+        throw StateError('人物或存档已切换，请重新读取存档');
+      }
+      _advanceDataRevision();
+      _applyGameState(data);
+      messages = candidate.messages;
+      final restoredCarrier = virtualPhoneCarrier;
+      _changed();
+      return restoredCarrier;
+    } finally {
+      candidate.dispose();
+    }
   }
 
   void _applyGameState(Map<String, dynamic> data) {
@@ -5651,7 +5718,7 @@ $japanesePunctuationRule
               message.text.isNotEmpty || message.attachments.isNotEmpty,
         )
         .toList();
-    if (importedMessages.isNotEmpty) {
+    if (data.containsKey('messages')) {
       messages = importedMessages.length <= 60
           ? importedMessages
           : importedMessages.sublist(importedMessages.length - 60);
@@ -5873,6 +5940,12 @@ $japanesePunctuationRule
         (preferences['fishAudioSpeed'] as num?)?.toDouble() ??
         FishSpeechSpeedDefaults.defaultForProvider(ttsProvider.name);
     fishMcpModel = preferences['fishMcpModel'] as String? ?? fishMcpModel;
+    if (preferences.containsKey('fishMcpSentencePauseMs')) {
+      final importedPause = preferences['fishMcpSentencePauseMs'];
+      fishMcpSentencePauseMs = clampFishMcpSentencePauseMs(
+        importedPause is num ? importedPause : null,
+      );
+    }
     fishMcpVoice = preferences['fishMcpVoice'] as String? ?? fishMcpVoice;
     fishMcpAsmrVoice =
         preferences['fishMcpAsmrVoice'] as String? ?? fishMcpAsmrVoice;
@@ -7327,6 +7400,7 @@ $japanesePunctuationRule
       _preferences.setString('fish_audio_latency', fishAudioLatency),
       _preferences.setDouble('fish_audio_speed', fishAudioSpeed),
       _preferences.setString('fish_mcp_model', fishMcpModel),
+      _preferences.setInt('fish_mcp_sentence_pause_ms', fishMcpSentencePauseMs),
       _preferences.setString('fish_mcp_voice', fishMcpVoice),
       _preferences.setString('fish_mcp_asmr_voice', fishMcpAsmrVoice),
       _preferences.setBool('fish_mcp_auto_fallback', fishMcpAutoFallback),

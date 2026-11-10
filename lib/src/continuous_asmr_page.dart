@@ -16,6 +16,7 @@ import 'ai_services.dart';
 import 'qwen_tts_config.dart';
 import 'fish_mcp_protocol.dart';
 import 'fish_mcp_service.dart';
+import 'fish_mcp_sentence_timing.dart';
 import 'chat_segments.dart';
 import 'continuous_asmr_script.dart';
 import 'dialogue_language_guard.dart';
@@ -91,6 +92,8 @@ class _AsmrClip {
     required this.languagePolicy,
     this.translation,
     this.audioError,
+    this.usedFishMcp = false,
+    this.mcpSentencePauseMs = 0,
   });
   final String path;
   String title;
@@ -101,6 +104,15 @@ class _AsmrClip {
   Duration? duration;
   String? translation;
   final String? audioError;
+  final bool usedFishMcp;
+  final int mcpSentencePauseMs;
+}
+
+class _AsmrSynthesis {
+  const _AsmrSynthesis(this.path, this.usedFishMcp, this.mcpSentencePauseMs);
+  final String path;
+  final bool usedFishMcp;
+  final int mcpSentencePauseMs;
 }
 
 class AsmrPlaybackSurface extends StatelessWidget {
@@ -253,7 +265,7 @@ class _ContinuousAsmrPageState extends State<ContinuousAsmrPage> {
     required AsmrLanguagePolicy languagePolicy,
   }) async {
     final providerKey = c.ttsProvider.name;
-    final preparations = OrderedSpeechPreparation<String>(
+    final preparations = OrderedSpeechPreparation<_AsmrSynthesis>(
       length: segments.length,
       concurrency: SpeechConcurrencyPolicy.limit(providerKey),
       prepare: (index) => _synthesize(
@@ -264,7 +276,7 @@ class _ContinuousAsmrPageState extends State<ContinuousAsmrPage> {
         stereoPosition: stereoPosition,
         language: languagePolicy.replyLanguage,
       ),
-      dispose: _deleteClipFile,
+      dispose: (prepared) => _deleteClipFile(prepared.path),
       isCurrent: () => _isCurrent(generation),
       onError: (error) => SpeechConcurrencyPolicy.observe(providerKey, error),
     );
@@ -281,9 +293,9 @@ class _ContinuousAsmrPageState extends State<ContinuousAsmrPage> {
         }
         if (!_isCurrent(generation)) break;
         final segment = segments[index];
-        late final String path;
+        late final _AsmrSynthesis prepared;
         try {
-          path = (await preparations.take(
+          prepared = (await preparations.take(
             index,
             capacity: 3 - _buffer.length,
           )).unwrap();
@@ -319,17 +331,19 @@ class _ContinuousAsmrPageState extends State<ContinuousAsmrPage> {
           continue;
         }
         if (!_isCurrent(generation)) {
-          await _deleteClipFile(path);
+          await _deleteClipFile(prepared.path);
           break;
         }
         final clip = _AsmrClip(
-          path,
+          prepared.path,
           '$topic · $_nextClipNumber',
           asmrSpokenText(segment.text),
           index,
           segment.pauseAfter,
           languagePolicy: languagePolicy,
           translation: segment.translation ?? _translations[index],
+          usedFishMcp: prepared.usedFishMcp,
+          mcpSentencePauseMs: prepared.mcpSentencePauseMs,
         );
         _nextClipNumber++;
         final followLatest =
@@ -734,10 +748,21 @@ class _ContinuousAsmrPageState extends State<ContinuousAsmrPage> {
       _playing = true;
       _status = t('正在等待语音…', 'Waiting for audio…', '音声を待っています…');
     });
+    _AsmrClip? previousClip;
+    Stopwatch? previousClipFinished;
     try {
       while (_isCurrent(generation)) {
         final clip = await _takeBufferedClip(generation);
         if (clip == null) break;
+        if (previousClip?.usedFishMcp == true && clip.usedFishMcp) {
+          final remaining =
+              Duration(milliseconds: previousClip!.mcpSentencePauseMs) -
+              previousClipFinished!.elapsed;
+          if (remaining > Duration.zero) {
+            await Future<void>.delayed(remaining);
+            if (!_isCurrent(generation)) break;
+          }
+        }
         setState(() {
           _activeClip = clip;
           _status = t('正在播放', 'Playing', '再生中');
@@ -775,6 +800,8 @@ class _ContinuousAsmrPageState extends State<ContinuousAsmrPage> {
           if (identical(_playback, playback)) _playback = null;
         }
         if (!_isCurrent(generation)) break;
+        previousClip = clip;
+        previousClipFinished = Stopwatch()..start();
         setState(() => _rounds++);
         if (clip.pauseAfter > Duration.zero) {
           await Future<void>.delayed(clip.pauseAfter);
@@ -898,7 +925,7 @@ class _ContinuousAsmrPageState extends State<ContinuousAsmrPage> {
     }
   }
 
-  Future<String> _synthesize(
+  Future<_AsmrSynthesis> _synthesize(
     String ttsText,
     String apiKey, {
     required int generation,
@@ -908,6 +935,9 @@ class _ContinuousAsmrPageState extends State<ContinuousAsmrPage> {
   }) async {
     final provider = c.ttsProvider;
     final requestedSpeed = c.fishAudioSpeed;
+    final sentencePauseMs = clampFishMcpSentencePauseMs(
+      c.fishMcpSentencePauseMs,
+    );
     var actualProvider = provider;
     final playbackFormat = provider == TtsProvider.mimo || !Platform.isAndroid
         ? 'wav'
@@ -961,6 +991,7 @@ class _ContinuousAsmrPageState extends State<ContinuousAsmrPage> {
           },
           format: playbackFormat,
           speed: requestedSpeed,
+          sentencePauseMs: sentencePauseMs,
         );
       } on Object catch (error) {
         RuntimeLog.instance.warning(
@@ -1168,7 +1199,11 @@ class _ContinuousAsmrPageState extends State<ContinuousAsmrPage> {
               'actualProvider=${actualProvider.label}, '
               'durationMs=${actualDuration.inMilliseconds}, bytes=${bytes.length}',
         );
-        return path;
+        return _AsmrSynthesis(
+          path,
+          actualProvider == TtsProvider.fishAudioMcp,
+          sentencePauseMs,
+        );
       } on TtsAudioQualityException catch (error) {
         await _deleteClipFile(path);
         if (provider == TtsProvider.fishAudioMcp) {

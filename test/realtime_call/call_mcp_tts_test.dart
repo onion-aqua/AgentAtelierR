@@ -106,6 +106,7 @@ void main() {
         model: 'drama-3',
         language: 'ja',
         speed: .8,
+        sentencePauseMs: 800,
       );
       expect(calls, 0);
       expect(await _collect(speech.pcm), orderedEquals(wave.sublist(44)));
@@ -115,6 +116,7 @@ void main() {
       expect(request!.model, 'drama-3');
       expect(request!.language, 'ja');
       expect(request!.speed, .8);
+      expect(request!.sentencePauseMs, 800);
       await _until(() => !file.existsSync());
       await speech.cancel();
       expect(request!.isCurrent(), isFalse);

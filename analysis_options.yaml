@@ -12,6 +12,8 @@ include: package:flutter_lints/flutter.yaml
 analyzer:
   exclude:
     - build/**
+    # Generated distribution copies/temporary migration fixtures are not source.
+    - dist/**
     - android/**
     - packages/**
     - windows/**

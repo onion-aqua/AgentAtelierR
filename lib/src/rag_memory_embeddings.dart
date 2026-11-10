@@ -61,7 +61,9 @@ class RagMemoryEmbeddings {
       // Some Android engines leave flutter/assets requests from background
       // messengers pending indefinitely; hashing and inference still stay off UI.
       final support = await getApplicationSupportDirectory();
+      if (_disposed) throw StateError('The local memory encoder is disposed.');
       final vocabulary = await rootBundle.load('$assetDirectory/vocab.txt');
+      if (_disposed) throw StateError('The local memory encoder is disposed.');
       _worker = await Isolate.spawn(
         _runMemoryEmbeddingWorker,
         [
@@ -83,13 +85,19 @@ class RagMemoryEmbeddings {
         throw StateError('The local memory encoder is disposed.');
       }
       await ready.future.timeout(const Duration(seconds: 90));
-    } on Object {
+    } on Object catch (error, stackTrace) {
+      // Concurrent callers share this completer. Errors before the worker
+      // starts (for example a transient storage/plugin failure) must also
+      // settle it, otherwise every later request waits forever.
+      if (!ready.isCompleted) ready.completeError(error, stackTrace);
       _available = false;
       _worker?.kill(priority: Isolate.immediate);
       _worker = null;
       _receive?.close();
       _receive = null;
       _commands = null;
+      if (!(_closed?.isCompleted ?? true)) _closed!.complete();
+      _ready = null;
       rethrow;
     }
   }
@@ -97,13 +105,24 @@ class RagMemoryEmbeddings {
   void _handle(dynamic message) {
     if (message is! Map) {
       final error = StateError('The local memory encoder stopped.');
+      final hadInitialized = _available;
       _available = false;
+      _commands = null;
       if (!(_ready?.isCompleted ?? true)) _ready!.completeError(error);
       for (final task in _pending.values) {
         if (!task.isCompleted) task.completeError(error);
       }
       _pending.clear();
       if (!(_closed?.isCompleted ?? true)) _closed!.complete();
+      if (hadInitialized) {
+        // A completed initialization is no longer reusable after worker exit.
+        // Before initialization completes, its catch block owns this cleanup.
+        _worker?.kill(priority: Isolate.immediate);
+        _worker = null;
+        _receive?.close();
+        _receive = null;
+        _ready = null;
+      }
       return;
     }
     switch (message['type']) {
@@ -215,6 +234,7 @@ class RagMemoryEmbeddings {
     _disposed = true;
     _available = false;
     final error = StateError('The local memory encoder is disposed.');
+    if (!(_ready?.isCompleted ?? true)) _ready!.completeError(error);
     for (final task in _pending.values) {
       if (!task.isCompleted) task.completeError(error);
     }

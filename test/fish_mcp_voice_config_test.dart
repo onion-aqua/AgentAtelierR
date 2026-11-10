@@ -18,6 +18,98 @@ void main() {
     return controller;
   }
 
+  test('MCP sentence pause defaults, persists and can be disabled', () async {
+    final controller = await load();
+    expect(controller.fishMcpSentencePauseMs, 220);
+    controller.configureFishMcp(
+      model: 'drama-3',
+      voice: '',
+      sentencePauseMs: 460,
+      autoFallback: false,
+    );
+    final preferences = await SharedPreferences.getInstance();
+    expect(preferences.getInt('fish_mcp_sentence_pause_ms'), 460);
+    final restored = await load();
+    expect(restored.fishMcpSentencePauseMs, 460);
+    restored.configureFishMcp(
+      model: 'drama-3',
+      voice: '',
+      sentencePauseMs: 0,
+      autoFallback: false,
+    );
+    expect((await load()).fishMcpSentencePauseMs, 0);
+  });
+
+  test('MCP sentence pause normalizes unsafe values', () async {
+    final controller = await load();
+    for (final entry in <num, int>{
+      -40: 0,
+      900: 800,
+      double.nan: 220,
+      double.infinity: 220,
+      double.negativeInfinity: 220,
+    }.entries) {
+      controller.configureFishMcp(
+        model: '',
+        voice: '',
+        sentencePauseMs: entry.key,
+        autoFallback: false,
+      );
+      expect(controller.fishMcpSentencePauseMs, entry.value);
+    }
+    controller.configureFishMcp(
+      model: '',
+      voice: '',
+      sentencePauseMs: 400,
+      autoFallback: false,
+    );
+    controller.configureFishMcp(model: '', voice: '', autoFallback: false);
+    expect(controller.fishMcpSentencePauseMs, 400);
+  });
+
+  test(
+    'MCP sentence pause safely restores invalid legacy preferences',
+    () async {
+      for (final entry in <Object, int>{
+        'broken': 220,
+        950: 800,
+        -20: 0,
+      }.entries) {
+        SharedPreferences.setMockInitialValues({
+          'fish_mcp_sentence_pause_ms': entry.key,
+        });
+        expect((await load()).fishMcpSentencePauseMs, entry.value);
+      }
+    },
+  );
+
+  test(
+    'MCP sentence pause round trips portable backup and legacy omissions',
+    () async {
+      final source = await load();
+      source.configureFishMcp(
+        model: 'drama-3',
+        voice: '',
+        sentencePauseMs: 600,
+        autoFallback: false,
+      );
+      final backup =
+          jsonDecode(jsonEncode(source.exportData())) as Map<String, dynamic>;
+      expect((backup['preferences'] as Map)['fishMcpSentencePauseMs'], 600);
+      final target = await load();
+      await target.importData(backup);
+      expect(target.fishMcpSentencePauseMs, 600);
+      expect((await load()).fishMcpSentencePauseMs, 600);
+
+      (backup['preferences'] as Map).remove('fishMcpSentencePauseMs');
+      await target.importData(backup);
+      expect(target.fishMcpSentencePauseMs, 600);
+      (backup['preferences'] as Map)['fishMcpSentencePauseMs'] = 'broken';
+      await target.importData(backup);
+      expect(target.fishMcpSentencePauseMs, 220);
+    },
+  );
+
   test(
     'REST fallback sends the selected MCP model instead of the old API model',
     () async {

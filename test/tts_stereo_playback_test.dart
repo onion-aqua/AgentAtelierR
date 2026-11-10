@@ -9,12 +9,14 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
 import 'package:ryza_chat_mvp/src/app_controller.dart';
 import 'package:ryza_chat_mvp/src/app_localization.dart';
 import 'package:ryza_chat_mvp/src/android_companion_runtime.dart';
 import 'package:ryza_chat_mvp/src/audio_envelope.dart';
 import 'package:ryza_chat_mvp/src/chat_screen.dart';
 import 'package:ryza_chat_mvp/src/continuous_asmr_page.dart';
+import 'package:ryza_chat_mvp/src/fish_mcp_service.dart';
 import 'package:ryza_chat_mvp/src/runtime_log.dart';
 import 'package:ryza_chat_mvp/src/tts_spatial_settings.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -23,7 +25,12 @@ import 'package:shared_preferences/shared_preferences.dart';
 // the native player is replaced; inspect the WAV actually handed to playback.
 final _nativeTrace = <String>[];
 
-void main() {
+void main() => runSpeechPlaybackTests();
+
+// MCP's ordinary-chat fixtures exercise the character-scoped voice store too.
+// Register them in their own test isolate so its static store/Future queue does
+// not survive into another widget test's inactive FakeAsync clock.
+void runSpeechPlaybackTests({bool mcpTiming = false}) {
   TestWidgetsFlutterBinding.ensureInitialized();
   final audio = _AudioCapture();
   setUpAll(() async {
@@ -38,6 +45,91 @@ void main() {
     audio.reset();
     await AndroidCompanionRuntime.instance.refresh();
   });
+
+  for (final cancelDuringPause in mcpTiming ? [false, true] : <bool>[]) {
+    testWidgets(
+      'MCP clip pause ${cancelDuringPause ? 'cancels with the conversation' : 'is preserved by cached replay'}',
+      (tester) async {
+        final fixture = await _Fixture.create(
+          tester,
+          reply: '苏菲：「这是第一句测试。」\n苏菲：「这是第二句测试。」',
+        );
+        final app = fixture.controller
+          ..ttsProvider = TtsProvider.fishAudioMcp
+          ..fishMcpSentencePauseMs = 800;
+        const configuredPause = Duration(milliseconds: 800);
+        final service = _FixtureMcp(fixture.directory);
+        addTearDown(service.dispose);
+        await tester.pumpWidget(
+          MaterialApp(
+            home: ChatScreen(
+              controller: app,
+              fishMcpService: service,
+              onMenuPressed: () {},
+              onShopPressed: () {},
+              hideUi: false,
+            ),
+          ),
+        );
+        await tester.enterText(find.byType(TextField), '说两句。');
+        await tester.tap(find.byKey(const ValueKey('chat-send-button')));
+        await _waitFor(
+          tester,
+          () => audio.played.length == 1 && service.requests == 2,
+        );
+        await audio.complete(audio.played.last.playerId);
+        if (cancelDuringPause) {
+          await tester.runAsync(() => app.importData(app.exportData()));
+          await tester.pump(configuredPause * 2);
+          expect(audio.played, hasLength(1));
+          await _waitForNoSpeechCache(tester, fixture.directory);
+        } else {
+          await tester.pump();
+          await tester.pump(configuredPause - const Duration(milliseconds: 20));
+          expect(audio.played, hasLength(1));
+          await _waitFor(tester, () => audio.played.length == 2);
+          await audio.complete(audio.played.last.playerId);
+          await _waitFor(
+            tester,
+            () =>
+                tester
+                        .widget<IconButton>(
+                          find.byKey(const ValueKey('chat-send-button')),
+                        )
+                        .icon
+                    is Icon,
+          );
+          final replay = find.byTooltip('点击重播语音，长按重新生成');
+          await _waitFor(tester, () => replay.evaluate().isNotEmpty);
+          await tester.ensureVisible(replay);
+          // Existing synthesized files retain their pacing after settings change.
+          app.fishMcpSentencePauseMs = 0;
+          await tester.tap(replay);
+          await _waitFor(tester, () => audio.played.length == 3);
+          await audio.complete(audio.played.last.playerId);
+          await tester.pumpAndSettle();
+          await tester.runAsync(
+            () => Future<void>.delayed(const Duration(milliseconds: 50)),
+          );
+          await tester.pump();
+          await tester.pump(configuredPause - const Duration(milliseconds: 20));
+          expect(audio.played, hasLength(3));
+          await _waitFor(tester, () => audio.played.length == 4);
+          await audio.complete(audio.played.last.playerId);
+          expect(
+            service.requests,
+            2,
+            reason: 'Replay must use both cached files.',
+          );
+        }
+        expect(fixture.ttsRequests, 0, reason: 'MCP must not request REST.');
+        expect(service.pauseSettings, [800, 800]);
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
+
+  if (mcpTiming) return;
 
   testWidgets(
     'normal replies play fixed left stereo even if settings change during TTS',
@@ -789,6 +881,43 @@ class _PlayedAudio {
   const _PlayedAudio(this.playerId, this.bytes);
   final String playerId;
   final Uint8List bytes;
+}
+
+class _FixtureMcp extends FishMcpService {
+  _FixtureMcp(this.directory)
+    : super.forTesting(
+        client: null,
+        downloadClient: http.Client(),
+        temporaryDirectory: () async => directory,
+      );
+  final Directory directory;
+  int requests = 0;
+  final pauseSettings = <int>[];
+
+  @override
+  bool get isReady => true;
+
+  @override
+  Future<bool> restoreConnection() async => true;
+
+  @override
+  Future<String> synthesize({
+    required String text,
+    String? voice,
+    String? model,
+    String language = 'ja',
+    String format = 'mp3',
+    double speed = 1,
+    int sentencePauseMs = 220,
+    bool Function()? isCurrent,
+  }) async {
+    pauseSettings.add(sentencePauseMs);
+    final file = File(
+      '${directory.path}/fish_tts_mcp_fixture_${requests++}.wav',
+    );
+    await file.writeAsBytes(_monoWav());
+    return file.path;
+  }
 }
 
 class _AudioCapture {

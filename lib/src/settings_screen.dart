@@ -1441,9 +1441,9 @@ class SettingsScreenState extends State<SettingsScreen> {
                   title: const Text('AgentAtelierR'),
                   subtitle: Text(
                     language.text(
-                      '版本 1.0.4.7',
-                      'Version 1.0.4.7',
-                      'バージョン 1.0.4.7',
+                      '版本 1.0.4.8',
+                      'Version 1.0.4.8',
+                      'バージョン 1.0.4.8',
                     ),
                   ),
                 ),
@@ -2344,6 +2344,7 @@ class SettingsScreenState extends State<SettingsScreen> {
     final voice = TextEditingController(text: controller.fishMcpVoice);
     final asmrVoice = TextEditingController(text: controller.fishMcpAsmrVoice);
     var speed = controller.fishAudioSpeed;
+    var sentencePauseMs = controller.fishMcpSentencePauseMs;
     var autoFallback = controller.fishMcpAutoFallback;
     var busy = false;
     String? localError;
@@ -2549,6 +2550,49 @@ class SettingsScreenState extends State<SettingsScreen> {
                       defaultTargetPlatform == TargetPlatform.windows
                           ? '普通对话、ASMR 和通话共用。Windows 本地变速需要 WAV 音频。'
                           : '普通对话、ASMR 和通话共用，推荐 0.90×。',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                    const SizedBox(height: 12),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            controller.interfaceLanguage.text(
+                              '句间停顿',
+                              'Sentence pause',
+                              '文間の間',
+                            ),
+                          ),
+                        ),
+                        Text(
+                          sentencePauseMs == 0
+                              ? controller.interfaceLanguage.text(
+                                  '关闭',
+                                  'Off',
+                                  'オフ',
+                                )
+                              : '$sentencePauseMs ms',
+                        ),
+                      ],
+                    ),
+                    Slider(
+                      key: const ValueKey('fish-mcp-sentence-pause'),
+                      value: sentencePauseMs.toDouble(),
+                      min: 0,
+                      max: 800,
+                      divisions: 40,
+                      label: sentencePauseMs == 0
+                          ? controller.interfaceLanguage.text('关闭', 'Off', 'オフ')
+                          : '$sentencePauseMs ms',
+                      onChanged: (value) =>
+                          setDialogState(() => sentencePauseMs = value.round()),
+                    ),
+                    Text(
+                      controller.interfaceLanguage.text(
+                        '普通对话、ASMR 和通话共用。设置分段音频的最小间隔，并分档调整模型句间停顿；云端停顿时长会有差异。0 为关闭，不叠加 ASMR 已有的更长停顿。',
+                        'Shared by chat, ASMR and calls. Sets the minimum gap between clips and adjusts model sentence pauses by level; cloud timing varies. Set to 0 to disable. Longer ASMR pauses are preserved.',
+                        '通常会話・ASMR・通話で共通。音声間の最小間隔とモデルの文間ポーズを段階調整します。クラウド側の長さには差があります。0で無効。ASMRの長い間には加算しません。',
+                      ),
                       style: Theme.of(context).textTheme.bodySmall,
                     ),
                     const SizedBox(height: 8),
@@ -2790,6 +2834,7 @@ class SettingsScreenState extends State<SettingsScreen> {
       voice: voice.text,
       asmrVoice: asmrVoice.text,
       speed: speed,
+      sentencePauseMs: sentencePauseMs,
       autoFallback: autoFallback,
     );
   }
@@ -4215,14 +4260,25 @@ class SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<void> _importData(BuildContext context) async {
-    final file = await FilePicker.pickFile(
-      type: FileType.custom,
-      allowedExtensions: const ['json'],
-    );
-    if (file == null) return;
+    final target = controller;
+    final revision = target.dataRevision;
+    bool canStartImport() =>
+        mounted &&
+        context.mounted &&
+        identical(controller, target) &&
+        target.dataRevision == revision &&
+        _category == SettingsSection.data;
     var dataRestored = false;
     try {
+      final file = await FilePicker.pickFile(
+        type: FileType.custom,
+        allowedExtensions: const ['json'],
+      );
+      if (file == null || !canStartImport()) return;
       final bytes = await file.readAsBytes();
+      // A cloud document can finish reading after the user closes settings or
+      // changes the active save. Do not let that late result replace new data.
+      if (!canStartImport()) return;
       final decoded = jsonDecode(utf8.decode(bytes)) as Map<String, dynamic>;
       final serviceKeys = ServiceApiBackup.parse(
         decoded[ServiceApiBackup.field],
@@ -4230,7 +4286,7 @@ class SettingsScreenState extends State<SettingsScreen> {
       if (decoded.containsKey(ServiceApiBackup.field) && serviceKeys == null) {
         throw const FormatException('备份中的 API 密钥格式无效');
       }
-      await controller.importData(decoded);
+      await target.importData(decoded);
       dataRestored = true;
       if (serviceKeys != null) {
         await serviceKeys.restore(const SecretStore());

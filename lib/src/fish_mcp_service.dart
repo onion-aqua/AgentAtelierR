@@ -15,6 +15,7 @@ import 'package:url_launcher/url_launcher.dart';
 import 'ai_services.dart' show detectAudioContainerExtension;
 import 'fish_mcp_protocol.dart';
 import 'fish_mcp_studio.dart';
+import 'fish_mcp_sentence_timing.dart';
 import 'fish_drama3_tags.dart';
 import 'fish_s2_tags.dart';
 import 'runtime_log.dart';
@@ -663,8 +664,10 @@ class FishMcpService extends ChangeNotifier {
     String language = 'ja',
     String format = 'mp3',
     double speed = 1.0,
+    int sentencePauseMs = 220,
     bool Function()? isCurrent,
   }) async {
+    sentencePauseMs = clampFishMcpSentencePauseMs(sentencePauseMs);
     text = normalizeFishAudioSynthesisText(text);
     final cancellation = _manualDisconnectGeneration;
     if (!isReady) await restoreConnection();
@@ -725,6 +728,7 @@ class FishMcpService extends ChangeNotifier {
           message: '移除过度气声提示后没有可朗读内容，未提交语音生成。',
         );
       }
+      text = addFishMcpSentencePauses(text, sentencePauseMs: sentencePauseMs);
       if (isFishDrama3Model(model)) {
         text = compileFishDrama3Text(text);
       } else if (isFishS2Model(model)) {
@@ -803,6 +807,10 @@ class FishMcpService extends ChangeNotifier {
             ? ['project_id', 'blocks']
             : arguments.keys.toList(),
         'text_utf8_bytes': utf8.encode(text).length,
+        'sentence_pause_ms': sentencePauseMs,
+        'sentence_pause_count': RegExp(r'\[(?:(?:short|long) )?pause\]')
+            .allMatches(text)
+            .length,
         'speech_tag_format': isFishDrama3Model(model)
             ? 'drama3_paired'
             : isFishS2Model(model)

@@ -22,11 +22,13 @@ class FishMcpCallRequest {
     required this.model,
     required this.language,
     required this.speed,
+    this.sentencePauseMs = 220,
     required this.isCurrent,
   });
 
   final String text, voice, model, language;
   final double speed;
+  final int sentencePauseMs;
   final bool Function() isCurrent;
 }
 
@@ -50,6 +52,7 @@ class FishMcpCallTtsClient {
              format: 'wav',
              // The shared service applies speed once, remotely or to the file.
              speed: request.speed,
+             sentencePauseMs: request.sentencePauseMs,
              isCurrent: request.isCurrent,
            )),
        _decodeWav =
@@ -69,6 +72,7 @@ class FishMcpCallTtsClient {
     required String model,
     required String language,
     double speed = 1,
+    int sentencePauseMs = 220,
     bool Function()? isCurrent,
   }) => FishMcpCallTtsStream._(
     text: text,
@@ -76,6 +80,7 @@ class FishMcpCallTtsClient {
     model: model,
     language: language,
     speed: speed,
+    sentencePauseMs: sentencePauseMs,
     synthesizeFile: _synthesizeFile,
     decodeWav: _decodeWav,
     isAndroid: _isAndroid,
@@ -93,6 +98,7 @@ class FishMcpCallTtsStream {
     required String model,
     required String language,
     required double speed,
+    required int sentencePauseMs,
     required this._synthesizeFile,
     required this._decodeWav,
     required this._isAndroid,
@@ -104,6 +110,7 @@ class FishMcpCallTtsStream {
       model: model,
       language: language,
       speed: speed,
+      sentencePauseMs: sentencePauseMs,
       isCurrent: () => _current,
     );
     _output = StreamController<Uint8List>(

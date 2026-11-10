@@ -7,6 +7,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:ryza_chat_mvp/src/app_controller.dart';
 import 'package:ryza_chat_mvp/src/app_localization.dart';
 import 'package:ryza_chat_mvp/src/chat_segments.dart';
+import 'package:ryza_chat_mvp/src/fish_mcp_sentence_timing.dart';
 import 'package:ryza_chat_mvp/src/realtime_call/call_audio.dart';
 import 'package:ryza_chat_mvp/src/realtime_call/call_reply.dart';
 import 'package:ryza_chat_mvp/src/realtime_call/call_session.dart';
@@ -17,6 +18,93 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+
+  for (final provider in [TtsProvider.fishAudioMcp, TtsProvider.fishAudio]) {
+    test(
+      '${provider.name} call sentence spacing is provider-specific',
+      () async {
+        SharedPreferences.setMockInitialValues({});
+        final app = await AppController.load();
+        app.configureAi(
+          enabled: true,
+          baseUrl: 'https://example.test/v1',
+          model: 'm',
+        );
+        app.ttsProvider = provider;
+        app.fishMcpSentencePauseMs = 400;
+        final output = _TimedOutput();
+        final fixture = await _callFixture(
+          app,
+          reply: '莱莎：第一句。第二句。',
+          output: output,
+        );
+        try {
+          await fixture.controller.startCall('primary:ryza');
+          // The active call keeps the pacing captured when it was dialed.
+          app.fishMcpSentencePauseMs = 0;
+          await fixture.controller.sendText('说两句');
+          await _waitUntil(
+            () => fixture.controller.snapshot.phase == CallUiPhase.listening,
+          );
+          expect(output.writes, hasLength(2));
+          final gap = output.writes[1].difference(output.firstDrain!);
+          if (provider == TtsProvider.fishAudioMcp) {
+            expect(
+              gap,
+              greaterThanOrEqualTo(const Duration(milliseconds: 385)),
+            );
+          } else {
+            expect(gap, lessThan(fishMcpClipPause));
+          }
+          // Listening resumes directly after the last sentence; there is no
+          // trailing MCP gap, and both sentences were persisted once.
+          expect(app.callRecords.single.turns.single['assistant'], '第一句。第二句。');
+          await fixture.controller.endCall();
+        } finally {
+          fixture.controller.dispose();
+          app.dispose();
+          await fixture.directory.delete(recursive: true);
+        }
+      },
+    );
+  }
+
+  test(
+    'interrupting the MCP sentence pause never starts the next clip',
+    () async {
+      SharedPreferences.setMockInitialValues({});
+      final app = await AppController.load();
+      app.configureAi(
+        enabled: true,
+        baseUrl: 'https://example.test/v1',
+        model: 'm',
+      );
+      app.ttsProvider = TtsProvider.fishAudioMcp;
+      final output = _TimedOutput();
+      final fixture = await _callFixture(
+        app,
+        reply: '莱莎：第一句。第二句。',
+        output: output,
+      );
+      try {
+        await fixture.controller.startCall('primary:ryza');
+        await fixture.controller.sendText('说两句');
+        await _waitUntil(() => output.firstDrain != null);
+        expect(output.writes, hasLength(1));
+        await fixture.controller.interrupt().timeout(
+          const Duration(milliseconds: 150),
+        );
+        await Future<void>.delayed(fishMcpClipPause);
+        expect(output.writes, hasLength(1));
+        expect(fixture.controller.snapshot.phase, CallUiPhase.listening);
+        await fixture.controller.endCall();
+      } finally {
+        fixture.controller.dispose();
+        app.dispose();
+        await fixture.directory.delete(recursive: true);
+      }
+    },
+  );
 
   test(
     'headset route survives sentences and interruption without bool overrides',
@@ -669,6 +757,58 @@ void main() {
       await directory.delete(recursive: true);
     },
   );
+
+  test(
+    'failed microphone recovery finishes the call and allows redial',
+    () async {
+      SharedPreferences.setMockInitialValues({});
+      final app = await AppController.load();
+      app.configureAi(
+        enabled: true,
+        baseUrl: 'https://example.test/v1',
+        model: 'model',
+      );
+      final asr = _FailingRecoveryAsr();
+      var requests = 0;
+      final fixture = await _callFixture(
+        app,
+        reply: '',
+        output: _FakeOutput(),
+        asr: asr,
+        backend: _CountingReplyBackend(() {
+          requests++;
+          return Stream<String>.error(StateError('upstream failed'));
+        }),
+      );
+      final controller = fixture.controller;
+      try {
+        await controller.startCall('primary:ryza');
+        await controller.sendText('能听见吗？');
+        await _waitUntil(
+          () => app.callRecords.single.status == CallHistoryStatus.failed,
+        );
+        expect(controller.snapshot.phase, CallUiPhase.failed);
+        expect(asr.running, isFalse);
+        expect(requests, 1);
+
+        // Finishing used to wait for the failing turn while that turn awaited
+        // finishing, so both of these operations remained pending forever.
+        await controller.endCall().timeout(const Duration(seconds: 1));
+        asr.failRecovery = false;
+        await controller
+            .startCall('primary:ryza')
+            .timeout(const Duration(seconds: 1));
+        expect(controller.snapshot.phase, CallUiPhase.listening);
+        expect(asr.running, isTrue);
+        expect(requests, 1);
+        await controller.endCall();
+      } finally {
+        controller.dispose();
+        app.dispose();
+        await fixture.directory.delete(recursive: true);
+      }
+    },
+  );
 }
 
 Future<
@@ -713,6 +853,14 @@ _callFixture(
       ),
     ),
     readFishKey: () async => 'fish-key',
+    prepareMcp: (_) async {},
+    mcpSpeechFactory: (text, voice, model, key) {
+      spoken?.add(text);
+      return CallSpeech(
+        Stream.value(Uint8List.fromList([0, 0, 0, 0])),
+        () async {},
+      );
+    },
     speechFactory:
         speechFactory ??
         (text, voice, model, key) {
@@ -766,6 +914,21 @@ class _FakeAsr extends LocalCallAsr {
   Future<void> dispose() => controller.close();
 }
 
+class _FailingRecoveryAsr extends _FakeAsr {
+  bool failRecovery = true;
+
+  @override
+  Future<void> setPlaybackActive(
+    bool active, {
+    bool preserveSpeech = false,
+  }) async {
+    if (!active && failRecovery) {
+      throw StateError('microphone could not resume');
+    }
+    await super.setPlaybackActive(active, preserveSpeech: preserveSpeech);
+  }
+}
+
 class _FakeOutput implements CallPcmOutput {
   int drains = 0;
   @override
@@ -784,6 +947,20 @@ class _RecordingOutput extends _FakeOutput {
   final values = <int>[];
   @override
   Future<void> write(Uint8List pcm) async => values.add(pcm.first);
+}
+
+class _TimedOutput extends _FakeOutput {
+  final writes = <DateTime>[];
+  DateTime? firstDrain;
+
+  @override
+  Future<void> write(Uint8List pcm) async => writes.add(DateTime.now());
+
+  @override
+  Future<void> drain() async {
+    firstDrain ??= DateTime.now();
+    await super.drain();
+  }
 }
 
 class _RoutingOutput extends _FakeOutput implements CallPcmRouteControl {

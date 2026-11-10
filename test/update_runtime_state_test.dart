@@ -273,12 +273,14 @@ void main() {
         isNotNull,
       );
 
-      final foreground = await runtime.check(
-        trigger: UpdateCheckTrigger.foreground,
+      // Keep the persisted-operation queue in the real async zone used for
+      // the initial network check above.
+      final foreground = await tester.runAsync(
+        () => runtime.check(trigger: UpdateCheckTrigger.foreground),
       );
       await tester.pump();
 
-      expect(foreground.status, UpdateCheckStatus.throttled);
+      expect(foreground?.status, UpdateCheckStatus.throttled);
       expect(find.text('1.0.4.1  →  1.0.4.2'), findsOneWidget);
       expect(find.textContaining('Gitee'), findsOneWidget);
       expect(find.text('可以更新'), findsOneWidget);

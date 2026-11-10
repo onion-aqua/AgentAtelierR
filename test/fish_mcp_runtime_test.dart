@@ -268,6 +268,39 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   SharedPreferences.setMockInitialValues({});
 
+  for (final model in ['drama-3', 's2.1-pro']) {
+    for (final (milliseconds, cue) in [
+      (0, ''),
+      (220, '[short pause]'),
+      (800, '[long pause]'),
+    ]) {
+      test(
+        '$model sends the configured $milliseconds ms pause cue once',
+        () async {
+          final harness = await _Harness.create(client: _FakeMcpClient());
+          await harness.service.discoverTools();
+          await harness.service.synthesize(
+            text: '[whispering]你好。晚安。',
+            model: model,
+            sentencePauseMs: milliseconds,
+          );
+          final sent =
+              harness.client.requests.single.arguments['text'] as String;
+          expect(sent, contains('你好。$cue晚安。'));
+          final report = jsonDecode(harness.service.diagnosticReport) as Map;
+          expect(
+            (report['last_request'] as Map)['sentence_pause_ms'],
+            milliseconds,
+          );
+          expect(
+            (report['last_request'] as Map)['sentence_pause_count'],
+            milliseconds == 0 ? 0 : 1,
+          );
+        },
+      );
+    }
+  }
+
   test('ASMR emotion off reaches ordinary MCP with a whole-script whisper and the new built-in voice', () async {
     const original =
         '今日はここでゆっくり休もう。窓の外には静かな夜が広がっているよ。'
@@ -307,7 +340,8 @@ void main() {
     expect(request.name, 'text_to_speech');
     expect(request.arguments['voice_id'], '1380fd182e0f44639df49e1ae8feeed8');
     final text = request.arguments['text'] as String;
-    expect(text, prepared);
+    expect(text, prepared.replaceAll('。 ', '。 [short pause]'));
+    expect(RegExp(r'\[short pause\]').allMatches(text), hasLength(4));
     expect(text, startsWith('[whispering]'));
     expect(RegExp(r'\[whispering\]').allMatches(text), hasLength(1));
     expect(
@@ -385,9 +419,10 @@ void main() {
         expect(
           text
               .substring('<whisper>'.length, text.length - '</whisper>'.length)
-              .replaceAll(RegExp(r'\s+'), ''),
+              .replaceAll(RegExp(r'\[[^\[\]\r\n]+\]|\s+'), ''),
           original,
         );
+        expect(RegExp(r'\[short pause\]').allMatches(text), hasLength(4));
         final creations = harness.client.requests.where(
           (request) => request.name == 'studio_create_project',
         );
@@ -465,6 +500,7 @@ void main() {
       expect(text, contains('</whisper>'));
       expect(text, contains('<emphasis>大切です。</emphasis>'));
       expect(text, contains('<soft>またね。</soft>'));
+      expect(RegExp(r'\[short pause\]').allMatches(text), hasLength(2));
       expect(text, isNot(matches(RegExp(r'panting|gasping|breathy'))));
       expect(block['voice'], claudiaVoice);
       final created = harness.client.requests.singleWhere(
@@ -489,28 +525,31 @@ void main() {
     },
   );
 
-  test('default and unknown models keep their original bracket cues', () async {
-    final harness = await _Harness.create();
-    await harness.service.discoverTools();
-    for (final model in <String?>[null, 'unknown-model']) {
-      await harness.service.synthesize(
-        text: '[happy][whispering]こんにちは。[emphasis]大切です。',
-        model: model,
-      );
+  test(
+    'default and unknown models retain cues alongside sentence timing',
+    () async {
+      final harness = await _Harness.create();
+      await harness.service.discoverTools();
+      for (final model in <String?>[null, 'unknown-model']) {
+        await harness.service.synthesize(
+          text: '[happy][whispering]こんにちは。[emphasis]大切です。',
+          model: model,
+        );
+        expect(
+          harness.client.requests.last.arguments['text'],
+          '[happy][whispering]こんにちは。[short pause][emphasis]大切です。',
+        );
+      }
+      expect(harness.client.requests, hasLength(2));
       expect(
-        harness.client.requests.last.arguments['text'],
-        '[happy][whispering]こんにちは。[emphasis]大切です。',
+        harness.client.requests.every(
+          (request) => request.name == 'text_to_speech',
+        ),
+        isTrue,
       );
-    }
-    expect(harness.client.requests, hasLength(2));
-    expect(
-      harness.client.requests.every(
-        (request) => request.name == 'text_to_speech',
-      ),
-      isTrue,
-    );
-    expect(harness.downloads, isEmpty);
-  });
+      expect(harness.downloads, isEmpty);
+    },
+  );
 
   for (final model in ['s2-pro', 's2.1-pro', 's2.1-pro-free']) {
     test(
@@ -565,7 +604,10 @@ void main() {
         final block = (writes.single.arguments['ops'] as List).single as Map;
         expect(block['voice'], 'c5de0b3f9ac54e08b21fb63120e4ebdb');
         final text = block['text'] as String;
-        expect(text, '$_s2WhisperCue今日はここでゆっくり休もう。 最後まで近くで話しているよ。');
+        expect(
+          text,
+          '$_s2WhisperCue今日はここでゆっくり休もう。 [short pause]最後まで近くで話しているよ。',
+        );
         expect(text, isNot(contains('[whispering]')));
         expect(text, isNot(contains('<whisper>')));
         expect(text.replaceAll(RegExp(r'\[[^\[\]\r\n]+\]|\s+'), ''), original);
@@ -600,7 +642,7 @@ void main() {
 
   for (final asmr in [false, true]) {
     test(
-      'S2 MCP ${asmr ? 'ASMR density off' : 'ordinary speech'} does not introduce delivery cues',
+      'S2 MCP ${asmr ? 'ASMR density off' : 'ordinary speech'} adds timing without emotion or delivery cues',
       () async {
         const original = '明日も会おう。待っているよ。';
         final prepared = normalizeFishAudioSynthesisText(
@@ -618,11 +660,11 @@ void main() {
         expect(harness.client.requests, hasLength(1));
         expect(
           harness.client.requests.single.arguments['text'],
-          '明日も会おう。 待っているよ。',
+          '明日も会おう。 [short pause]待っているよ。',
         );
         expect(
           harness.client.requests.single.arguments['text'],
-          isNot(contains('[')),
+          isNot(matches(RegExp(r'whisper|soft|happy|breath|inhale|exhale'))),
         );
         expect(harness.client.requests.single.arguments['model'], 's2.1-pro');
         expect(harness.downloads, isEmpty);

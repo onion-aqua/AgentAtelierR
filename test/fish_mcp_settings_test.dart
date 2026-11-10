@@ -214,6 +214,42 @@ void main() {
     },
   );
 
+  testWidgets('MCP sentence pause can be cancelled, saved and disabled', (
+    tester,
+  ) async {
+    final controller = await openSettings(tester, expandAdvanced: false);
+    final slider = find.byKey(const ValueKey('fish-mcp-sentence-pause'));
+    final initial = tester.widget<Slider>(slider);
+    expect(initial.value, 220);
+    expect(initial.min, 0);
+    expect(initial.max, 800);
+    expect(initial.divisions, 40);
+    initial.onChanged!(460);
+    await tester.pump();
+    expect(controller.fishMcpSentencePauseMs, 220);
+    await tester.tap(find.text('取消'));
+    await tester.pumpAndSettle();
+    expect(controller.fishMcpSentencePauseMs, 220);
+
+    await openMcpPage(tester);
+    expect(tester.widget<Slider>(slider).value, 220);
+    tester.widget<Slider>(slider).onChanged!(460);
+    await tester.pump();
+    await tester.tap(find.text('保存并使用 MCP'));
+    await tester.pumpAndSettle();
+    expect(controller.fishMcpSentencePauseMs, 460);
+
+    await openMcpPage(tester);
+    expect(tester.widget<Slider>(slider).value, 460);
+    tester.widget<Slider>(slider).onChanged!(0);
+    await tester.pump();
+    expect(tester.widget<Slider>(slider).label, '关闭');
+    await tester.tap(find.text('保存并使用 MCP'));
+    await tester.pumpAndSettle();
+    expect(controller.fishMcpSentencePauseMs, 0);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('OAuth state changes refresh MCP settings without another tap', (
     tester,
   ) async {

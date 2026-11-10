@@ -21,6 +21,7 @@ import 'ai_services.dart';
 import 'qwen_tts_config.dart';
 import 'fish_mcp_protocol.dart';
 import 'fish_mcp_service.dart';
+import 'fish_mcp_sentence_timing.dart';
 import 'continuous_asmr_page.dart';
 import 'auxiliary_llm_tasks.dart';
 import 'performance_planner.dart';
@@ -242,6 +243,7 @@ class ChatScreen extends StatefulWidget {
     this.imageGenerationStore,
     this.aiClient,
     this.secretStore,
+    this.fishMcpService,
     this.imageThumbnailer,
     this.updateRuntime,
     this.sceneBackground,
@@ -262,6 +264,7 @@ class ChatScreen extends StatefulWidget {
   final ImageGenerationStore? imageGenerationStore;
   final OpenAiCompatibleClient? aiClient;
   final SecretStore? secretStore;
+  final FishMcpService? fishMcpService;
   final Future<Uint8List?> Function(Uint8List bytes)? imageThumbnailer;
   final UpdateRuntime? updateRuntime;
 
@@ -275,10 +278,17 @@ class ChatScreen extends StatefulWidget {
 }
 
 class _PreparedSpeech {
-  const _PreparedSpeech({required this.path, required this.envelope});
+  const _PreparedSpeech({
+    required this.path,
+    required this.envelope,
+    required this.usedFishMcp,
+    required this.mcpSentencePauseMs,
+  });
 
   final String path;
   final AudioAmplitudeEnvelope? envelope;
+  final bool usedFishMcp;
+  final int mcpSentencePauseMs;
 }
 
 class _SuspendedMotionGroup {
@@ -307,6 +317,8 @@ class _CachedSpeechSegment {
     required this.action,
     this.posture,
     this.motionGroupIds = const [],
+    this.usedFishMcp = false,
+    this.mcpSentencePauseMs = 0,
   });
 
   final String path;
@@ -319,6 +331,8 @@ class _CachedSpeechSegment {
   final CharacterAction? action;
   final String? posture;
   final List<String> motionGroupIds;
+  final bool usedFishMcp;
+  final int mcpSentencePauseMs;
 
   _CachedSpeechSegment withPerformance(RyzaPerformanceSegment segment) =>
       _CachedSpeechSegment(
@@ -332,6 +346,8 @@ class _CachedSpeechSegment {
         action: segment.action,
         posture: segment.posture,
         motionGroupIds: segment.motionGroupIds,
+        usedFishMcp: usedFishMcp,
+        mcpSentencePauseMs: mcpSentencePauseMs,
       );
 }
 
@@ -352,7 +368,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       widget.imageGenerationService ?? ImageGenerationService();
   final Map<String, ImageGenerationCancellationToken>
   _imageGenerationCancellations = {};
-  final _fishMcpService = FishMcpService.instance;
+  FishMcpService get _fishMcpService =>
+      widget.fishMcpService ?? FishMcpService.instance;
   final _dashScopeTtsClient = DashScopeTtsClient();
   final _genericTtsClient = GenericTtsClient();
   final _mimoTtsClient = MimoTtsClient();
@@ -5038,6 +5055,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       queue.prefetch();
       final rejections = SpeechRejectionBudget();
       Object? lastRejected;
+      var previousUsedFishMcp = false;
+      var previousMcpSentencePauseMs = 0;
+      Stopwatch? previousClipFinished;
       for (var index = 0; index < segments.length; index++) {
         final result = await queue.take(index);
         if (!performanceIsCurrent() ||
@@ -5065,6 +5085,13 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         if (prepared == null) {
           queue.prefetch();
           continue;
+        }
+        if (previousUsedFishMcp && prepared.usedFishMcp) {
+          await _pauseBetweenMcpClips(
+            cancellation.future,
+            Duration(milliseconds: previousMcpSentencePauseMs) -
+                previousClipFinished!.elapsed,
+          );
         }
         if (!performanceIsCurrent() ||
             generation != _speechPlaybackGeneration) {
@@ -5118,6 +5145,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           await _deleteTemporarySpeech(prepared.path);
           return;
         }
+        previousClipFinished = Stopwatch()..start();
         final performance = segment.isPrimary
             ? plannedSegments?.elementAtOrNull(primaryOrdinalAt(index)) ??
                   segment.primaryPerformance
@@ -5136,6 +5164,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                       .length,
             path: prepared.path,
             envelope: prepared.envelope,
+            usedFishMcp: prepared.usedFishMcp,
+            mcpSentencePauseMs: prepared.mcpSentencePauseMs,
             expression: performance?.expression,
             expressionIntensity: performance?.expressionIntensity ?? 'normal',
             action: performance?.action,
@@ -5143,6 +5173,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
             motionGroupIds: performance?.motionGroupIds ?? const [],
           ),
         );
+        previousUsedFishMcp = prepared.usedFishMcp;
+        previousMcpSentencePauseMs = prepared.mcpSentencePauseMs;
         if (hasNext) {
           if (segment.isPrimary && segments[index + 1].isPrimary) {
             _pauseSpeakingBetweenSegments();
@@ -5301,6 +5333,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     );
     final replyLanguage = widget.controller.characterReplyLanguage;
     final requestedSpeed = widget.controller.fishAudioSpeed;
+    final sentencePauseMs = clampFishMcpSentencePauseMs(
+      widget.controller.fishMcpSentencePauseMs,
+    );
     var actualProvider = provider;
     final playbackFormat = provider == TtsProvider.mimo
         ? 'wav'
@@ -5379,6 +5414,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           },
           format: format,
           speed: speed,
+          sentencePauseMs: sentencePauseMs,
         );
       } on Object catch (error) {
         RuntimeLog.instance.warning(
@@ -5599,7 +5635,12 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
               'durationMs=${actualDuration?.inMilliseconds ?? 'unknown'}, '
               'file=${path.split(Platform.pathSeparator).last}',
         );
-        return _PreparedSpeech(path: path, envelope: envelope);
+        return _PreparedSpeech(
+          path: path,
+          envelope: envelope,
+          usedFishMcp: actualProvider == TtsProvider.fishAudioMcp,
+          mcpSentencePauseMs: sentencePauseMs,
+        );
       } on TtsAudioQualityException catch (error) {
         await _deleteTemporarySpeech(path);
         if (provider == TtsProvider.fishAudioMcp) {
@@ -5974,10 +6015,20 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     }
     final cancellation = Completer<void>();
     _speechCancellation = cancellation;
+    Stopwatch? previousClipFinished;
     try {
       for (var index = 0; index < segments.length; index++) {
         final segment = segments[index];
-        if (generation != _speechPlaybackGeneration) return;
+        if (index > 0 &&
+            segments[index - 1].usedFishMcp &&
+            segment.usedFishMcp) {
+          await _pauseBetweenMcpClips(
+            cancellation.future,
+            Duration(milliseconds: segments[index - 1].mcpSentencePauseMs) -
+                previousClipFinished!.elapsed,
+          );
+        }
+        if (!mounted || generation != _speechPlaybackGeneration) return;
         final latestResponse = widget.controller.messages
             .where(
               (message) => !message.isUser && message.text.trim().isNotEmpty,
@@ -6027,6 +6078,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         }
         await _playSpeechClip(segment.path, generation, cancellation.future);
         if (generation != _speechPlaybackGeneration) return;
+        previousClipFinished = Stopwatch()..start();
         if (index + 1 < segments.length) {
           if (segment.speaker == ChatSpeaker.ryza &&
               segments[index + 1].speaker == ChatSpeaker.ryza) {
@@ -6049,6 +6101,20 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       if (identical(_speechCancellation, cancellation)) {
         _speechCancellation = null;
       }
+    }
+  }
+
+  Future<void> _pauseBetweenMcpClips(
+    Future<void> cancellation,
+    Duration remaining,
+  ) async {
+    if (remaining <= Duration.zero) return;
+    final elapsed = Completer<void>();
+    final timer = Timer(remaining, elapsed.complete);
+    try {
+      await Future.any([elapsed.future, cancellation]);
+    } finally {
+      timer.cancel();
     }
   }
 
@@ -6897,24 +6963,42 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     final characterId = widget.controller.activeCharacterId;
     final revision = widget.controller.dataRevision;
     const maxBytes = 10 * 1024 * 1024;
-    final files = await FilePicker.pickFiles(
-      type: imagesOnly ? FileType.image : FileType.custom,
-      allowedExtensions: imagesOnly
-          ? null
-          : const [
-              'pdf',
-              'txt',
-              'md',
-              'csv',
-              'json',
-              'doc',
-              'docx',
-              'xls',
-              'xlsx',
-              'ppt',
-              'pptx',
-            ],
-    );
+    final List<PlatformFile> files;
+    try {
+      files = await FilePicker.pickFiles(
+        type: imagesOnly ? FileType.image : FileType.custom,
+        allowedExtensions: imagesOnly
+            ? null
+            : const [
+                'pdf',
+                'txt',
+                'md',
+                'csv',
+                'json',
+                'doc',
+                'docx',
+                'xls',
+                'xlsx',
+                'ppt',
+                'pptx',
+              ],
+      );
+    } on Object catch (error, stackTrace) {
+      RuntimeLog.instance.error('Attachment', error, stackTrace);
+      if (!mounted || !_conversationIsCurrent(characterId, revision)) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            widget.controller.interfaceLanguage.text(
+              '无法打开附件，请重试或选择其他文件。',
+              'Could not open the attachment. Try again or choose another file.',
+              '添付ファイルを開けません。再試行するか、別のファイルを選んでください。',
+            ),
+          ),
+        ),
+      );
+      return;
+    }
     if (files.isEmpty || !_conversationIsCurrent(characterId, revision)) {
       return;
     }
@@ -6926,15 +7010,21 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     final rejected = <String>[];
     for (final file in files) {
       if (!_conversationIsCurrent(characterId, revision)) return;
-      final size = await file.length();
-      if (!_conversationIsCurrent(characterId, revision)) return;
-      if (size > maxBytes || totalBytes + size > maxBytes) {
-        rejected.add(file.name);
-        continue;
-      }
       try {
+        final size = await file.length();
+        if (!_conversationIsCurrent(characterId, revision)) return;
+        if (size > maxBytes || totalBytes + size > maxBytes) {
+          rejected.add(file.name);
+          continue;
+        }
         final bytes = await file.readAsBytes();
         if (!_conversationIsCurrent(characterId, revision)) return;
+        // Document providers may report a stale or unknown length. Enforce the
+        // request limit against the data that will actually be sent as well.
+        if (bytes.length > maxBytes || totalBytes + bytes.length > maxBytes) {
+          rejected.add(file.name);
+          continue;
+        }
         accepted.add(
           await _createAttachment(
             name: file.name,

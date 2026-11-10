@@ -2,6 +2,8 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:audioplayers/audioplayers.dart';
+import 'package:cross_file/cross_file.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -245,6 +247,63 @@ void main() {
       expect(tester.takeException(), isNull);
     }
   });
+
+  testWidgets(
+    'attachment picker failure is reported without losing the draft',
+    (tester) async {
+      await _mountChat(tester, root);
+      final original = FilePickerPlatform.instance;
+      FilePickerPlatform.instance = _AttachmentFilePicker(
+        () async => throw PlatformException(code: 'provider_unavailable'),
+      );
+      addTearDown(() => FilePickerPlatform.instance = original);
+      final input = find.byWidgetPredicate(
+        (widget) =>
+            widget is TextField &&
+            widget.decoration?.hintText?.contains('说点什么') == true,
+      );
+      await tester.enterText(input, '保留这条草稿');
+      await tester.tap(find.byTooltip('添加附件'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('文件'));
+      await tester.pumpAndSettle();
+      expect(find.text('无法打开附件，请重试或选择其他文件。'), findsOneWidget);
+      expect(tester.widget<TextField>(input).controller!.text, '保留这条草稿');
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  for (final failure in ['length', 'actual_bytes', 'combined_bytes']) {
+    testWidgets('attachment $failure failure keeps other readable files', (
+      tester,
+    ) async {
+      await _mountChat(tester, root);
+      final original = FilePickerPlatform.instance;
+      FilePickerPlatform.instance = _AttachmentFilePicker(
+        () async => [
+          if (failure == 'combined_bytes')
+            _AttachmentFile('first.txt', Uint8List(6 * 1024 * 1024)),
+          _AttachmentFile(
+            'unavailable.txt',
+            Uint8List(failure == 'length' ? 1 : 6 * 1024 * 1024),
+            reportedLength: failure == 'length' ? null : 1,
+            failLength: failure == 'length',
+            actualSize: failure == 'actual_bytes' ? 10 * 1024 * 1024 + 1 : null,
+          ),
+          _AttachmentFile('readable.txt', Uint8List.fromList([65, 66, 67])),
+        ],
+      );
+      addTearDown(() => FilePickerPlatform.instance = original);
+      await tester.tap(find.byTooltip('添加附件'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('文件'));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('readable.txt\n'), findsOneWidget);
+      expect(find.textContaining('unavailable.txt\n'), findsNothing);
+      expect(find.textContaining('附件读取失败或单次总大小超过 10MB'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+  }
 
   testWidgets('light bubble split composer keeps dark readable input text', (
     tester,
@@ -934,6 +993,58 @@ void main() {
       expect(tester.takeException(), isNull);
     },
   );
+}
+
+final class _AttachmentFile extends PlatformFile {
+  _AttachmentFile(
+    this.name,
+    Uint8List bytes, {
+    this.reportedLength,
+    this.failLength = false,
+    this.actualSize,
+  }) : xFile = XFile.fromData(bytes, name: name);
+
+  @override
+  final String name;
+  @override
+  final XFile xFile;
+  final int? reportedLength;
+  final bool failLength;
+  final int? actualSize;
+  @override
+  Uri get uri => Uri.parse('memory:$name');
+  @override
+  Future<int> length() async {
+    if (failLength) throw const FileSystemException('Document unavailable');
+    return reportedLength ?? await xFile.length();
+  }
+
+  @override
+  Future<Uint8List> readAsBytes() async =>
+      actualSize == null ? xFile.readAsBytes() : Uint8List(actualSize!);
+  @override
+  Stream<Uint8List> readAsByteStream() =>
+      xFile.openRead().map(Uint8List.fromList);
+}
+
+class _AttachmentFilePicker extends FilePickerPlatform {
+  _AttachmentFilePicker(this.pick);
+  final Future<List<PlatformFile>> Function() pick;
+
+  @override
+  Future<List<PlatformFile>> pickFiles({
+    String? dialogTitle,
+    String? initialDirectory,
+    FileType type = FileType.any,
+    List<String>? allowedExtensions,
+    Function(FilePickerStatus)? onFileLoading,
+    int compressionQuality = 0,
+    AndroidOptions androidOptions = const AndroidOptions(),
+    DarwinOptions darwinOptions = const DarwinOptions(),
+    WindowsOptions windowsOptions = const WindowsOptions(),
+    LinuxOptions linuxOptions = const LinuxOptions(),
+    WebOptions webOptions = const WebOptions(),
+  }) => pick();
 }
 
 Future<AppController> _mountChat(

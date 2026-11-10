@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:cryptography/cryptography.dart';
@@ -88,6 +89,7 @@ final class _FakeSource implements ReleaseSource {
   FetchedUpdateManifest fetched;
   int calls = 0;
   UpdateSourcePreference? lastPreference;
+  Completer<void>? gate;
 
   @override
   Future<FetchedUpdateManifest> fetchLatest({
@@ -95,6 +97,7 @@ final class _FakeSource implements ReleaseSource {
   }) async {
     calls++;
     lastPreference = preference;
+    await gate?.future;
     return fetched;
   }
 }
@@ -115,6 +118,62 @@ InstalledUpdateState _installed() => InstalledUpdateState(
 );
 
 void main() {
+  test('concurrent preference changes preserve both user choices', () async {
+    final fixture = await _fixture();
+    final store = _MemoryStore();
+    final service = UpdateService(
+      source: _FakeSource(fixture.fetched),
+      verifier: fixture.verifier,
+      store: store,
+    );
+
+    await Future.wait([
+      service.setAutoCheck(false),
+      service.setSourcePreference(UpdateSourcePreference.github),
+    ]);
+
+    expect(store.value.autoCheck, isFalse);
+    expect(store.value.sourcePreference, UpdateSourcePreference.github);
+  });
+
+  test('late check preserves settings and dismissal across restart', () async {
+    final fixture = await _fixture();
+    final source = _FakeSource(fixture.fetched)..gate = Completer<void>();
+    final store = _MemoryStore();
+    final now = DateTime.utc(2026, 11, 1, 10);
+    final service = UpdateService(
+      source: source,
+      verifier: fixture.verifier,
+      store: store,
+      clock: () => now,
+    );
+    final checking = service.check(_installed());
+    await pumpEventQueue();
+    expect(source.calls, 1);
+    await service.setAutoCheck(false);
+    await service.setSourcePreference(UpdateSourcePreference.github);
+    await service.dismissRelease('release-47');
+    source.gate!.complete();
+
+    expect((await checking).status, UpdateCheckStatus.disabled);
+    expect(store.value.autoCheck, isFalse);
+    expect(store.value.sourcePreference, UpdateSourcePreference.github);
+    expect(store.value.dismissedReleaseId, 'release-47');
+    expect(store.value.highestSeenReleaseSeq, 47);
+
+    final restarted = UpdateService(
+      source: source,
+      verifier: fixture.verifier,
+      store: store,
+      clock: () => now.add(const Duration(minutes: 1)),
+    );
+    await restarted.setAutoCheck(true);
+    expect(
+      (await restarted.check(_installed())).status,
+      UpdateCheckStatus.suppressed,
+    );
+  });
+
   test('disabled automatic checks do not touch the network', () async {
     final fixture = await _fixture();
     final source = _FakeSource(fixture.fetched);

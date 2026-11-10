@@ -12,6 +12,7 @@ import '../chat_segments.dart' show klaudiaFishAudioReferenceId;
 import '../dialogue_language_guard.dart';
 import '../platform_capabilities.dart';
 import '../fish_mcp_service.dart';
+import '../fish_mcp_sentence_timing.dart';
 import '../runtime_log.dart';
 import '../speech_preparation.dart';
 import 'call_speech_prefetch.dart';
@@ -76,6 +77,7 @@ class RealtimeCallController extends CallUiController
               AppLanguage.japanese => 'ja',
             },
             speed: app.fishAudioSpeed,
+            sentencePauseMs: _mcpSentencePauseMs,
           );
           return CallSpeech(stream.pcm, stream.cancel);
         };
@@ -95,6 +97,7 @@ class RealtimeCallController extends CallUiController
   late final CallSpeechFactory _mcpSpeechFactory;
   final Future<void> Function(String model) _prepareMcp;
   TtsProvider? _provider;
+  int _mcpSentencePauseMs = 220;
   late final StreamSubscription<LocalCallAsrEvent> _asrEvents;
   StreamSubscription<CallAudioRoute>? _audioRouteEvents;
   CallAudioRoute _audioRoute = CallAudioRoute.unknown;
@@ -113,6 +116,8 @@ class RealtimeCallController extends CallUiController
   DateTime? _connected;
   CallRecord? _record;
   Timer? _clock, _ringTimeout;
+  Timer? _sentencePauseTimer;
+  Completer<void>? _sentencePause;
   CallSpeech? _speech;
   CallSpeechPrefetch? _speechPrefetch;
   StreamIterator<String>? _llm;
@@ -384,6 +389,9 @@ class RealtimeCallController extends CallUiController
     _speaker = true;
     _audioRoute = CallAudioRoute.unknown;
     _provider = app.ttsProvider;
+    _mcpSentencePauseMs = clampFishMcpSentencePauseMs(
+      app.fishMcpSentencePauseMs,
+    );
     _phase = CallUiPhase.preparing;
     if (!incoming) _newRecord(false);
     _notify();
@@ -659,6 +667,8 @@ class RealtimeCallController extends CallUiController
       },
     );
     Future<void> tail = Future.value();
+    var hasSpokenSentence = false;
+    Stopwatch? previousSentenceFinished;
     void enqueue(String sentence) {
       final prepared = prefetch.add(
         () => (_provider == TtsProvider.fishAudioMcp
@@ -673,11 +683,20 @@ class RealtimeCallController extends CallUiController
               speech == null) {
             return;
           }
+          if (hasSpokenSentence && _provider == TtsProvider.fishAudioMcp) {
+            await _pauseBetweenMcpSentences(
+              Duration(milliseconds: _mcpSentencePauseMs) -
+                  previousSentenceFinished!.elapsed,
+            );
+            if (!_current(session, turn) || speechError != null) return;
+          }
           await _speak(
             speech,
             session,
             turn,
             onDrained: () {
+              hasSpokenSentence = true;
+              previousSentenceFinished = Stopwatch()..start();
               spoken.write(sentence);
               _persistPendingRecordProgress();
             },
@@ -763,7 +782,10 @@ class RealtimeCallController extends CallUiController
         }
       } catch (resumeError) {
         if (!_closed && _sessionEpoch == session && active) {
-          await _finish(CallHistoryStatus.failed, _safeError(resumeError));
+          // Teardown waits for this turn to settle. Awaiting it here would
+          // make _finishNow and _runTurn wait on each other forever, blocking
+          // hangup and every later call after microphone recovery fails.
+          unawaited(_finish(CallHistoryStatus.failed, _safeError(resumeError)));
         }
       }
     } finally {
@@ -935,6 +957,11 @@ class RealtimeCallController extends CallUiController
   }
 
   Future<void> _cancelActiveProducers() async {
+    _sentencePauseTimer?.cancel();
+    _sentencePauseTimer = null;
+    final pause = _sentencePause;
+    _sentencePause = null;
+    if (pause != null && !pause.isCompleted) pause.complete();
     final llm = _llm;
     _llm = null;
     final audio = _audio;
@@ -949,6 +976,21 @@ class RealtimeCallController extends CallUiController
       if (audio != null) audio.cancel().catchError((Object _) {}),
       if (speech != null) speech.cancel().catchError((Object _) {}),
     ]);
+  }
+
+  Future<void> _pauseBetweenMcpSentences(Duration remaining) async {
+    if (remaining <= Duration.zero) return;
+    final pause = Completer<void>();
+    final timer = Timer(remaining, pause.complete);
+    _sentencePause = pause;
+    _sentencePauseTimer = timer;
+    try {
+      await pause.future;
+    } finally {
+      timer.cancel();
+      if (identical(_sentencePause, pause)) _sentencePause = null;
+      if (identical(_sentencePauseTimer, timer)) _sentencePauseTimer = null;
+    }
   }
 
   Future<void> _settleTurn(Future<void>? task) async {

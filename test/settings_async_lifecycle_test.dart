@@ -109,6 +109,79 @@ void main() {
     await (callback as dynamic)();
   }
 
+  testWidgets('data import picker failure reports an error without mutation', (
+    tester,
+  ) async {
+    final controller = await setup(tester, SettingsSection.data);
+    final revision = controller.dataRevision;
+    final original = FilePickerPlatform.instance;
+    FilePickerPlatform.instance = _FilePicker(
+      pickOne: () async =>
+          throw PlatformException(code: 'document_provider_unavailable'),
+    );
+    addTearDown(() => FilePickerPlatform.instance = original);
+    final tile = tester.widget<ListTile>(
+      find.widgetWithText(ListTile, '导入本地数据'),
+    );
+    await (tile.onTap as dynamic)();
+    await tester.pump();
+    expect(find.textContaining('导入失败'), findsOneWidget);
+    expect(controller.dataRevision, revision);
+    expect(tester.takeException(), isNull);
+  });
+
+  for (final scenario in ['picker_closed', 'read_closed', 'read_left_data']) {
+    testWidgets('late data import $scenario leaves the current data intact', (
+      tester,
+    ) async {
+      final controller = await setup(tester, SettingsSection.data);
+      controller.addUserMessage('保留现有对话');
+      final originalMessages = controller.messages.map((m) => m.text).toList();
+      final revision = controller.dataRevision;
+      final backup = controller.exportData()
+        ..['messages'] = [
+          const ChatMessage(text: '不应导入的旧对话', isUser: true).toJson(),
+        ];
+      final encoded = Uint8List.fromList(utf8.encode(jsonEncode(backup)));
+      final picked = Completer<PlatformFile?>();
+      final read = Completer<Uint8List>();
+      final original = FilePickerPlatform.instance;
+      FilePickerPlatform.instance = _FilePicker(pickOne: () => picked.future);
+      addTearDown(() => FilePickerPlatform.instance = original);
+      final tile = tester.widget<ListTile>(
+        find.widgetWithText(ListTile, '导入本地数据'),
+      );
+      final action = (tile.onTap as dynamic)() as Future<void>;
+      if (scenario.startsWith('read')) {
+        picked.complete(_MemoryFile('backup.json', read: () => read.future));
+        await tester.pump();
+      }
+      if (scenario == 'read_left_data') {
+        await tester.pumpWidget(
+          MaterialApp(
+            home: SettingsScreen(
+              controller: controller,
+              onMenuPressed: () {},
+              initialSection: SettingsSection.audio,
+            ),
+          ),
+        );
+      } else {
+        await tester.pumpWidget(const MaterialApp(home: SizedBox.shrink()));
+      }
+      if (scenario.startsWith('picker')) {
+        picked.complete(_MemoryFile('backup.json', data: encoded));
+      } else {
+        read.complete(encoded);
+      }
+      await action;
+      await tester.pump();
+      expect(controller.messages.map((m) => m.text), originalMessages);
+      expect(controller.dataRevision, revision);
+      expect(tester.takeException(), isNull);
+    });
+  }
+
   for (final stage in ['picker', 'read']) {
     testWidgets('Qwen reference $stage completion after returning is ignored', (
       tester,

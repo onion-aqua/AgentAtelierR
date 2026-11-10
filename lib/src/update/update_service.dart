@@ -211,25 +211,44 @@ final class UpdateService {
   final Duration dismissDuration;
 
   Future<UpdateCheckResult>? _inFlight;
+  Future<void>? _preferencesTail;
   final Set<String> _dismissedThisSession = {};
 
-  Future<UpdatePreferences> preferences() => store.load();
-
-  Future<void> setAutoCheck(bool enabled) async {
-    final current = await store.load();
-    await store.save(current.copyWith(autoCheck: enabled));
+  // Serialize only short storage transactions. Never hold this queue while
+  // fetching a release: users must be able to change settings or dismiss it.
+  Future<T> _withPreferences<T>(
+    Future<T> Function(UpdatePreferences current) action,
+  ) {
+    final operation = (_preferencesTail ?? Future<void>.value()).then((
+      _,
+    ) async {
+      return action(await store.load());
+    });
+    _preferencesTail = operation.then<void>(
+      (_) {},
+      onError: (Object _, StackTrace _) {},
+    );
+    return operation;
   }
 
-  Future<void> setSourcePreference(UpdateSourcePreference preference) async {
-    final current = await store.load();
-    await store.save(current.copyWith(sourcePreference: preference));
-  }
+  Future<UpdatePreferences> preferences() =>
+      _withPreferences((current) async => current);
+
+  Future<void> setAutoCheck(bool enabled) => _withPreferences(
+    (current) => store.save(current.copyWith(autoCheck: enabled)),
+  );
+
+  Future<void> setSourcePreference(UpdateSourcePreference preference) =>
+      _withPreferences(
+        (current) => store.save(current.copyWith(sourcePreference: preference)),
+      );
 
   Future<void> dismissRelease(String releaseId) async {
     _dismissedThisSession.add(releaseId);
-    final current = await store.load();
-    await store.save(
-      current.copyWith(dismissedReleaseId: releaseId, dismissedAt: _now()),
+    await _withPreferences(
+      (current) => store.save(
+        current.copyWith(dismissedReleaseId: releaseId, dismissedAt: _now()),
+      ),
     );
   }
 
@@ -255,7 +274,7 @@ final class UpdateService {
     required UpdateCheckTrigger trigger,
   }) async {
     final now = _now();
-    var settings = await store.load();
+    var settings = await preferences();
     final manual = trigger == UpdateCheckTrigger.manual;
     if (!manual && !settings.autoCheck) {
       return const UpdateCheckResult.disabled();
@@ -267,8 +286,11 @@ final class UpdateService {
         now.difference(settings.lastCheckAt!) < foregroundThrottle) {
       return const UpdateCheckResult.throttled();
     }
-    settings = settings.copyWith(lastCheckAt: now);
-    await store.save(settings);
+    settings = await _withPreferences((latest) async {
+      final next = latest.copyWith(lastCheckAt: now);
+      await store.save(next);
+      return next;
+    });
 
     try {
       final fetched = await source.fetchLatest(
@@ -290,47 +312,52 @@ final class UpdateService {
       final payloadSha256 = digest.bytes
           .map((byte) => byte.toRadixString(16).padLeft(2, '0'))
           .join();
-      if (manifest.releaseSeq < settings.highestSeenReleaseSeq) {
-        return const UpdateCheckResult.failed('release_replay');
-      }
-      if (manifest.releaseSeq == settings.highestSeenReleaseSeq &&
-          ((settings.highestSeenReleaseId != null &&
-                  settings.highestSeenReleaseId != manifest.releaseId) ||
-              (settings.highestSeenPayloadSha256 != null &&
-                  settings.highestSeenPayloadSha256 != payloadSha256))) {
-        return const UpdateCheckResult.failed('release_identity_conflict');
-      }
-      settings = settings.copyWith(
-        lastSuccessfulCheckAt: now,
-        highestSeenReleaseSeq:
-            manifest.releaseSeq > settings.highestSeenReleaseSeq
-            ? manifest.releaseSeq
-            : settings.highestSeenReleaseSeq,
-        highestSeenReleaseId:
-            manifest.releaseSeq > settings.highestSeenReleaseSeq ||
-                settings.highestSeenReleaseId == null
-            ? manifest.releaseId
-            : settings.highestSeenReleaseId,
-        highestSeenPayloadSha256:
-            manifest.releaseSeq > settings.highestSeenReleaseSeq ||
-                settings.highestSeenPayloadSha256 == null
-            ? payloadSha256
-            : settings.highestSeenPayloadSha256,
-      );
-      await store.save(settings);
-      final plan = planner.plan(current, manifest);
-      if (!plan.isAvailable) {
-        return UpdateCheckResult.failed(
-          plan.unavailableReason ?? 'update_incompatible',
+      return await _withPreferences((settings) async {
+        if (manifest.releaseSeq < settings.highestSeenReleaseSeq) {
+          return const UpdateCheckResult.failed('release_replay');
+        }
+        if (manifest.releaseSeq == settings.highestSeenReleaseSeq &&
+            ((settings.highestSeenReleaseId != null &&
+                    settings.highestSeenReleaseId != manifest.releaseId) ||
+                (settings.highestSeenPayloadSha256 != null &&
+                    settings.highestSeenPayloadSha256 != payloadSha256))) {
+          return const UpdateCheckResult.failed('release_identity_conflict');
+        }
+        settings = settings.copyWith(
+          lastSuccessfulCheckAt: now,
+          highestSeenReleaseSeq:
+              manifest.releaseSeq > settings.highestSeenReleaseSeq
+              ? manifest.releaseSeq
+              : settings.highestSeenReleaseSeq,
+          highestSeenReleaseId:
+              manifest.releaseSeq > settings.highestSeenReleaseSeq ||
+                  settings.highestSeenReleaseId == null
+              ? manifest.releaseId
+              : settings.highestSeenReleaseId,
+          highestSeenPayloadSha256:
+              manifest.releaseSeq > settings.highestSeenReleaseSeq ||
+                  settings.highestSeenPayloadSha256 == null
+              ? payloadSha256
+              : settings.highestSeenPayloadSha256,
         );
-      }
-      if (!plan.hasUpdate) {
-        return UpdateCheckResult.upToDate(plan, fetched.origin);
-      }
-      if (!manual && _isSuppressed(manifest.releaseId, settings, now)) {
-        return UpdateCheckResult.suppressed(plan, fetched.origin);
-      }
-      return UpdateCheckResult.available(plan, fetched.origin);
+        await store.save(settings);
+        if (!manual && !settings.autoCheck) {
+          return const UpdateCheckResult.disabled();
+        }
+        final plan = planner.plan(current, manifest);
+        if (!plan.isAvailable) {
+          return UpdateCheckResult.failed(
+            plan.unavailableReason ?? 'update_incompatible',
+          );
+        }
+        if (!plan.hasUpdate) {
+          return UpdateCheckResult.upToDate(plan, fetched.origin);
+        }
+        if (!manual && _isSuppressed(manifest.releaseId, settings, now)) {
+          return UpdateCheckResult.suppressed(plan, fetched.origin);
+        }
+        return UpdateCheckResult.available(plan, fetched.origin);
+      });
     } on UpdateVerificationException catch (error) {
       return UpdateCheckResult.failed(error.code);
     } on ReleaseSourceException catch (error) {
